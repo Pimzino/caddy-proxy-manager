@@ -65,7 +65,10 @@ export function TimeSeriesChart({
   let dataMax = 0;
   for (const s of series) for (const v of s.values) if (v != null && v > dataMax) dataMax = v;
   const axisMax = yMax ?? dataMax;
-  const { ticks: yTicks, top } = bytes ? byteTicks(axisMax, 4) : valueTicks(axisMax, 4);
+  const nice = bytes ? byteTicks(axisMax, 4) : valueTicks(axisMax, 4);
+  // yMax is a hard ceiling (100 %, total memory): end the axis exactly there instead of at the next round number.
+  const yTicks = yMax && yMax > 0 && nice.top > yMax ? [...nice.ticks.filter((t) => t < yMax * 0.9), yMax] : nice.ticks;
+  const top = yMax && yMax > 0 && nice.top > yMax ? yMax : nice.top;
 
   const lastIdx = (s: ChartSeries) => {
     for (let i = s.values.length - 1; i >= 0; i--) if (s.values[i] != null) return i;
