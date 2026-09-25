@@ -4,14 +4,15 @@
 [![Latest release](https://img.shields.io/github/v/release/Pimzino/caddy-proxy-manager?sort=semver&display_name=tag&label=release)](https://github.com/Pimzino/caddy-proxy-manager/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Pimzino/caddy-proxy-manager/total?label=downloads)](https://github.com/Pimzino/caddy-proxy-manager/releases)
 [![Caddy](https://img.shields.io/github/v/release/caddyserver/caddy?label=caddy%20(latest)&color=1F88C0)](https://github.com/caddyserver/caddy/releases/latest)
-[![Windows Server 2025](https://img.shields.io/badge/Windows%20Server-2025-0078D4?logo=windows&logoColor=white)](docs/installation.md)
+[![Windows](https://img.shields.io/badge/Windows-Server%202019%2B%20%7C%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)](docs/installation.md#requirements)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Last commit](https://img.shields.io/github/last-commit/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/commits/main)
 [![License: MIT](https://img.shields.io/github/license/Pimzino/caddy-proxy-manager)](LICENSE)
 [![Open issues](https://img.shields.io/github/issues/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/issues)
 
 A Windows-native reverse proxy manager: for **[Caddy](https://caddyserver.com)**,
-built to run on **Windows Server 2025** as a proper Windows service.
+built to run natively on **Windows** as a proper Windows service — Windows Server 2019, 2022 and 2025
+(Desktop Experience or Server Core) and Windows 10/11, 64-bit.
 
 One self-contained executable installs, updates and supervises Caddy, generates Caddy's configuration from a
 clean admin console, manages certificates (automatic ACME, Caddy's internal CA, or your own), checks that the

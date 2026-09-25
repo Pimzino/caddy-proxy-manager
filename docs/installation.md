@@ -2,7 +2,9 @@
 
 ## Requirements
 
-- Windows Server 2025 (Server 2022/2019 and Windows 10/11 x64 also work), 64-bit.
+- 64-bit Windows: Windows Server 2019, 2022 or 2025 — **Desktop Experience or Server Core** — or Windows 10 (1809+)
+  / Windows 11. Nothing runs on the server's desktop: the UI is used from a browser on any machine, so Server Core
+  works exactly like a full install (install with `msiexec … /qn` or `install.ps1`).
 - Local administrator rights to install.
 - Inbound TCP 80 and 443 (and UDP 443 for HTTP/3) reachable from clients; TCP 81 (UI) from admin networks.
 - Outbound HTTPS to `api.github.com`, `github.com`, `objects.githubusercontent.com` (Caddy downloads),

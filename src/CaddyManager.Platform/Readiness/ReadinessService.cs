@@ -373,17 +373,17 @@ public sealed partial class ReadinessService(
             return new ReadinessCheck
             {
                 Id = "system.os", Category = "System", Title = "Operating system", Status = CheckStatus.Info,
-                Summary = $"{RuntimeInformation.OSDescription} — development platform (production target: Windows Server 2025).",
+                Summary = $"{RuntimeInformation.OSDescription} — development platform (production: 64-bit Windows 10/11 or Windows Server 2019 and later).",
             };
         var (product, display, build, ubr, installType) = WindowsVersion();
-        var isServer = installType?.StartsWith("Server", StringComparison.OrdinalIgnoreCase) == true;
+        // InstallationType: "Server" (Desktop Experience), "Server Core" or "Client". All are supported — the UI is used
+        // from a browser, so Server Core needs nothing extra.
         var name = $"{product ?? "Windows"} (build {build}{(ubr > 0 ? "." + ubr : "")}{(installType is null ? "" : ", " + installType)})";
-        var (status, summary) = isServer switch
+        var (status, summary) = build switch
         {
-            true when build >= 26100 => (CheckStatus.Pass, $"{name} — Windows Server 2025 or newer."),
-            true when build >= 17763 => (CheckStatus.Warn, $"{name} — works, but the tested target is Windows Server 2025 (build 26100)."),
-            true => (CheckStatus.Warn, $"{name} — old Windows Server release; Windows Server 2025 is recommended."),
-            false => (CheckStatus.Warn, $"{name} — not a server edition. Fine for testing; use Windows Server 2025 in production."),
+            // 17763 = Windows 10 1809 / Windows Server 2019, the oldest supported release.
+            >= 17763 => (CheckStatus.Pass, $"{name} — supported."),
+            _ => (CheckStatus.Warn, $"{name} — older than Windows 10 1809 / Windows Server 2019; not supported, upgrade recommended."),
         };
         return new ReadinessCheck
         {

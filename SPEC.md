@@ -2,7 +2,7 @@
 
 A Windows-native reverse proxy manager for Caddy. One self-contained executable
 (`CaddyManager.exe`) runs as a Windows service (LocalSystem — no service account and no
-logged-on user needed) on Windows Server 2025. It:
+logged-on user needed) on 64-bit Windows Server 2019/2022/2025 (Desktop Experience or Server Core) and Windows 10/11. It:
 
 - downloads/installs/updates the Caddy binary (optionally with plugins) and shows when updates exist;
 - registers and supervises Caddy as its own Windows service (`Caddy`);
@@ -202,7 +202,7 @@ alertRule "updateAvailable") once per new version; optional auto-install.
 | GET /api/readiness/gpo-script (viewer) → text/plain PowerShell |
 
 Checks (Windows; on other OS return Info/Skipped items so the UI still renders):
-- System: OS edition/build (Server 2025 = build 26100), running as LocalSystem/service, free disk on DataDir (warn <5 GB, fail <1 GB), clock skew vs HTTP `Date` from `acme-v02.api.letsencrypt.org` (warn >30s, fail >5m), pending reboot (info).
+- System: OS edition/build (pass on build ≥ 17763 = Windows 10 1809 / Server 2019, any edition incl. Server Core), running as LocalSystem/service, free disk on DataDir (warn <5 GB, fail <1 GB), clock skew vs HTTP `Date` from `acme-v02.api.letsencrypt.org` (warn >30s, fail >5m), pending reboot (info).
 - Firewall: Windows Defender Firewall service (mpssvc) running; each profile enabled; inbound allow rules for TCP HttpPort, TCP HttpsPort, UDP HttpsPort (HTTP/3, when enabled), TCP UI port — evaluated against the **ActiveStore** (includes GPO rules) and the active profile(s); detect GPO setting `AllowLocalFirewallRules = False` (local rules ignored → must deploy via GPO); Fixable → creates local rules named `Caddy Proxy Manager - HTTP (TCP-In)` etc. via `New-NetFirewallRule`.
 - Network: connection profiles (Get-NetConnectionProfile). Domain-joined machine on Public/Private instead of DomainAuthenticated → warn (NLA couldn't reach a DC; remediation: check DNS points at DCs, `Restart-Service NlaSvc`). Non-domain machine on Public → warn, Fixable → `Set-NetConnectionProfile -NetworkCategory Private`.
 - Domain: joined? domain name, computer DN (via ADSI/`[adsisearcher]`). If joined → Info check with the GPO recommendation and Script = BuildGpoScript() (creates/updates GPO "Caddy Proxy Manager - Firewall", adds the inbound rules to it via `New-NetFirewallRule -PolicyStore "<domain>\<GPO>"`, links it to the computer's OU, `gpupdate` hint). Also mention deploying the Caddy internal CA root to "Trusted Root Certification Authorities" via GPO when any host uses Internal TLS.

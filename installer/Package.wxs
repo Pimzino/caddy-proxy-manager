@@ -50,7 +50,7 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Launch Condition="VersionNT64" Message="[ProductName] requires 64-bit Windows." />
-    <Launch Condition="Installed OR VersionNT &gt;= 603" Message="[ProductName] requires Windows Server 2016 or later (Windows Server 2025 recommended)." />
+    <Launch Condition="Installed OR VersionNT &gt;= 603" Message="[ProductName] requires 64-bit Windows 10 / Windows Server 2019 or later." />
     <Launch Condition="Privileged" Message="[ProductName] must be installed by an administrator." />
 
     <!-- ===================================================================== properties -->
@@ -198,7 +198,7 @@
     <!-- ===================================================================== wizard UI -->
     <!-- Finish page text (shown after a successful install, not after repair/uninstall). Formatted here so the port is filled in. -->
     <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogText"
-                 Value="Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ on this server (Start menu: Caddy Proxy Manager). To create the first administrator, paste the setup token from C:\ProgramData\CaddyProxyManager\setup-token.txt - show it in an elevated PowerShell with: Get-Content C:\ProgramData\CaddyProxyManager\setup-token.txt"
+                 Value="Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ and create the first administrator with the setup token in C:\ProgramData\CaddyProxyManager\setup-token.txt (readable from an elevated prompt)."
                  After="CostFinalize" Sequence="ui" />
 
     <!-- Minimal wizard without a license page, built from the WixUI dialog library (WixToolset.UI.wixext):
