@@ -83,12 +83,9 @@ export default function ServersPage() {
                 <TH>Name</TH>
                 <TH>Status</TH>
                 <TH>Host</TH>
-                <TH>Manager</TH>
-                <TH>Caddy</TH>
-                <TH>CPU</TH>
-                <TH>Memory</TH>
+                <TH>Versions</TH>
+                <TH>Load</TH>
                 <TH>Sync</TH>
-                <TH>Last seen</TH>
                 <TH className="w-12">
                   <span className="sr-only">Actions</span>
                 </TH>
@@ -145,7 +142,7 @@ function ServerRow({
 
   return (
     <TR interactive onClick={onOpen}>
-      <TD className="min-w-44">
+      <TD className="max-w-60 min-w-40">
         <div className="flex flex-wrap items-center gap-1.5">
           <Link
             to={`/servers/${encodeURIComponent(s.id)}`}
@@ -164,13 +161,19 @@ function ServerRow({
       </TD>
       <TD>
         <StatusDot tone={st.tone} label={st.label} pulse={st.pulse} className="whitespace-nowrap" />
-        {s.lastError && s.status !== 'online' && (
-          <p className="max-w-56 truncate text-xs text-fg-subtle" title={s.lastError}>
+        {s.lastError && s.status !== 'online' ? (
+          <p className="max-w-44 truncate text-xs text-fg-subtle" title={s.lastError}>
             {s.lastError}
           </p>
+        ) : (
+          !s.isLocal && (
+            <p className="text-xs whitespace-nowrap text-fg-subtle" title={formatDateTime(s.lastSeenAt)}>
+              {s.lastSeenAt ? `Seen ${formatRelative(s.lastSeenAt, now)}` : 'Never seen'}
+            </p>
+          )
         )}
       </TD>
-      <TD className="max-w-56">
+      <TD className="max-w-44">
         {info ? (
           <>
             <p className="mono truncate text-sm" title={info.fqdn ?? info.hostname}>
@@ -186,40 +189,42 @@ function ServerRow({
       </TD>
       <TD className="whitespace-nowrap">
         {info ? (
-          <span className="inline-flex items-center gap-1">
-            <span className="mono">v{info.managerVersion.replace(/^v/, '')}</span>
-            {managerMismatch && <StaleIcon title={`Differs from this server (v${local?.info?.managerVersion.replace(/^v/, '')})`} />}
-          </span>
-        ) : (
-          <span className="text-fg-subtle">—</span>
-        )}
-      </TD>
-      <TD className="whitespace-nowrap">
-        {info?.caddyVersion ? (
-          <>
+          <div className="grid grid-cols-[auto_auto] items-center gap-x-2 text-sm">
+            <span className="text-xs text-fg-subtle">Manager</span>
             <span className="inline-flex items-center gap-1">
-              <span className="mono">{info.caddyVersion}</span>
-              {caddyMismatch && <StaleIcon title={`Differs from this server (${local?.info?.caddyVersion ?? 'unknown'})`} />}
+              <span className="mono">v{info.managerVersion.replace(/^v/, '')}</span>
+              {managerMismatch && <StaleIcon title={`Differs from this server (v${local?.info?.managerVersion.replace(/^v/, '')})`} />}
             </span>
-            <p className={cn('text-xs', caddyMismatch ? 'text-warning' : caddyState.tone === 'danger' ? 'text-danger' : 'text-fg-subtle')}>
-              {caddyMismatch ? 'Differs from this server' : caddyState.label}
-            </p>
-          </>
-        ) : (
-          <span className="text-fg-subtle">{info ? caddyState.label : '—'}</span>
-        )}
-      </TD>
-      <TD className={stale ? 'opacity-60' : undefined}>
-        {latest ? (
-          <MiniMeter percent={latest.cpuPercent} label={`CPU of ${s.name}`} text={formatPercent(latest.cpuPercent, 0)} />
+            <span className="text-xs text-fg-subtle">Caddy</span>
+            <span className="inline-flex items-center gap-1">
+              {info.caddyVersion ? (
+                <>
+                  <span className="mono">{info.caddyVersion}</span>
+                  {caddyMismatch && <StaleIcon title={`Differs from this server (${local?.info?.caddyVersion ?? 'unknown'})`} />}
+                  {caddyState.tone === 'danger' && <span className="text-xs text-danger">{caddyState.label}</span>}
+                </>
+              ) : (
+                <span className="text-fg-subtle">{caddyState.label}</span>
+              )}
+            </span>
+          </div>
         ) : (
           <span className="text-fg-subtle">—</span>
         )}
       </TD>
-      <TD className={stale ? 'opacity-60' : undefined}>
-        {latest && memPct !== null ? (
-          <div title={`${formatBytes(latest.memoryUsedBytes)} of ${formatBytes(latest.memoryTotalBytes)}`}>
-            <MiniMeter percent={memPct} label={`Memory of ${s.name}`} text={formatPercent(memPct, 0)} />
+      <TD className={cn('whitespace-nowrap', stale && 'opacity-60')}>
+        {latest ? (
+          <div className="grid grid-cols-[auto_auto] items-center gap-x-2 gap-y-1">
+            <span className="text-xs text-fg-subtle">CPU</span>
+            <MiniMeter percent={latest.cpuPercent} label={`CPU of ${s.name}`} text={formatPercent(latest.cpuPercent, 0)} />
+            <span className="text-xs text-fg-subtle">Memory</span>
+            {memPct !== null ? (
+              <div title={`${formatBytes(latest.memoryUsedBytes)} of ${formatBytes(latest.memoryTotalBytes)}`}>
+                <MiniMeter percent={memPct} label={`Memory of ${s.name}`} text={formatPercent(memPct, 0)} />
+              </div>
+            ) : (
+              <span className="text-fg-subtle">—</span>
+            )}
           </div>
         ) : (
           <span className="text-fg-subtle">—</span>
@@ -241,9 +246,6 @@ function ServerRow({
             {s.status === 'pending' ? 'Not joined' : s.sync.lastError ? 'Sync failed' : 'Out of date'}
           </Badge>
         )}
-      </TD>
-      <TD className="whitespace-nowrap text-fg-muted" title={formatDateTime(s.lastSeenAt)}>
-        {s.isLocal ? 'Now' : s.lastSeenAt ? formatRelative(s.lastSeenAt, now) : 'Never'}
       </TD>
       <TD onClick={(e) => e.stopPropagation()} className="text-right">
         <DropdownMenu

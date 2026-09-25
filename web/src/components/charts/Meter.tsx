@@ -60,9 +60,14 @@ export function Meter({
 export function MiniMeter({ percent, label, text }: { percent: number; label: string; text: string }) {
   const level = meterLevel(percent);
   return (
-    <div className="flex min-w-24 items-center gap-2">
-      <Meter value={percent} label={label} valueText={text} size="sm" className="w-14 shrink-0" />
-      <span className={cn('text-xs tabular-nums', level === 'normal' ? 'text-fg-muted' : level === 'warning' ? 'text-warning' : 'text-danger')}>{text}</span>
+    <div className="flex items-center gap-2">
+      {/* Meter is w-full: the wrapper fixes the bar width so the value never spills into the next column. */}
+      <div className="w-14 shrink-0">
+        <Meter value={percent} label={label} valueText={text} size="sm" />
+      </div>
+      <span className={cn('w-9 shrink-0 text-right text-xs tabular-nums', level === 'normal' ? 'text-fg-muted' : level === 'warning' ? 'text-warning' : 'text-danger')}>
+        {text}
+      </span>
     </div>
   );
 }
