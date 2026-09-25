@@ -56,6 +56,7 @@ public static class ConfigModule
         SettingsEndpoints.Map(app);
         ConfigEndpoints.Map(app);
         CaddyfileImportEndpoints.Map(app);
+        DnsDelegationEndpoints.Map(app);
         return app;
     }
 }

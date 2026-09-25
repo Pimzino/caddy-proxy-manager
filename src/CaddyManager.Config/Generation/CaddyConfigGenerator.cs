@@ -1448,7 +1448,8 @@ public static partial class CaddyConfigGenerator
         var issuerExtra = AcmeIssuerExtra(ctx);
         var legacyDnsProvider = DnsProviderName(issuerExtra, out var legacyDns);
         var providerConfigured = DnsProviderConfigured(s);
-        var acmeNames = new List<(string Domain, bool Dns)>();
+        // DNS names also carry the host's effective delegation name (challenges.dns.override_domain).
+        var acmeNames = new List<(string Domain, bool Dns, string? Override)>();
         foreach (var site in sites.Where(x => x.Host.Tls == TlsMode.Acme))
         {
             var challenge = EffectiveChallenge(site.Host, s);
@@ -1457,8 +1458,12 @@ public static partial class CaddyConfigGenerator
                 ctx.Warn($"Host '{site.Domains[0]}' uses the DNS challenge, but no DNS provider is configured under Settings > Caddy; the HTTP challenge is used instead.");
                 challenge = AcmeChallengeType.Http;
             }
+            var overrideDomain = EffectiveDnsOverrideDomain(site.Host, s);
             foreach (var d in site.Domains)
-                acmeNames.Add((d, challenge == AcmeChallengeType.Dns || (IsWildcard(d) && providerConfigured)));
+            {
+                var dns = challenge == AcmeChallengeType.Dns || (IsWildcard(d) && providerConfigured);
+                acmeNames.Add((d, dns, dns ? overrideDomain : null));
+            }
         }
 
         // Since v2.10 Caddy serves a managed wildcard for covered subdomains instead of obtaining their own
@@ -1486,7 +1491,13 @@ public static partial class CaddyConfigGenerator
         var internalDomains = sites.Where(x => x.Host.Tls == TlsMode.Internal).SelectMany(x => x.Domains)
             .Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
         var httpDomains = acmeNames.Where(a => !a.Dns).Select(a => a.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
-        var dnsDomains = acmeNames.Where(a => a.Dns).Select(a => a.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
+        // One DNS policy per effective delegation name (hosts without delegation share the first one), so each policy's
+        // issuers carry their own override_domain. Round 3b in SPEC.md.
+        var dnsGroups = acmeNames.Where(a => a.Dns).DistinctBy(a => a.Domain)
+            .GroupBy(a => a.Override ?? "", StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => (Override: g.Key.Length == 0 ? null : g.Key, Domains: g.Select(a => a.Domain).OrderBy(d => d, StringComparer.Ordinal).ToList()))
+            .ToList();
 
         if (internalDomains.Count > 0)
         {
@@ -1510,23 +1521,31 @@ public static partial class CaddyConfigGenerator
                 foreach (var iss in issuers) CaddyJson.DeepMerge(iss!.AsObject(), issuerExtra);
             policies.Add(new JsonObject { ["subjects"] = StringArray(httpDomains), ["issuers"] = issuers });
         }
-        if (dnsDomains.Count > 0)
+        if (dnsGroups.Count > 0)
         {
             var provider = DnsProviderCatalog.Normalize(s.DnsProvider)!;
             if (ctx.Input.InstalledModules is { } installed && !installed.Contains(DnsProviderCatalog.ModulePrefix + provider, StringComparer.Ordinal))
                 ctx.Warn($"The DNS provider '{provider}' is not included in the installed Caddy binary (module '{DnsProviderCatalog.ModulePrefix}{provider}'), so DNS challenges fail. Add the plugin '{DnsProviderCatalog.PackagePrefix}{provider}' under Caddy > Plugins and rebuild Caddy.");
             var dns = DnsChallenge(s, ctx);
-            var issuers = AcmeIssuers(s, ctx);
-            foreach (var iss in issuers)
+            foreach (var (overrideDomain, domains) in dnsGroups)
             {
-                // Enabling the DNS challenge disables HTTP-01 and TLS-ALPN-01 (certmagic acmeclient.go), so their options
-                // are replaced. apps.tls.resolvers is NOT read by the ACME issuer in v2.11.4, hence resolvers on every
-                // issuer. docs/research/round3-dns01.md §1 ;
-                // https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/
-                iss!["challenges"] = new JsonObject { ["dns"] = dns.DeepClone() };
-                if (issuerExtra is not null) CaddyJson.DeepMerge(iss.AsObject(), issuerExtra);
+                // override_domain: certmagic writes the TXT record at this name instead of _acme-challenge.<domain>
+                // (DNS01Solver.Present/Wait/CleanUp); the CA follows the user's CNAME to it.
+                // https://github.com/caddyserver/certmagic/blob/v0.25.3/solvers.go
+                var groupDns = dns.DeepClone().AsObject();
+                if (overrideDomain is not null) groupDns["override_domain"] = overrideDomain;
+                var issuers = AcmeIssuers(s, ctx);
+                foreach (var iss in issuers)
+                {
+                    // Enabling the DNS challenge disables HTTP-01 and TLS-ALPN-01 (certmagic acmeclient.go), so their options
+                    // are replaced. apps.tls.resolvers is NOT read by the ACME issuer in v2.11.4, hence resolvers on every
+                    // issuer. docs/research/round3-dns01.md §1 ;
+                    // https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/
+                    iss!["challenges"] = new JsonObject { ["dns"] = groupDns.DeepClone() };
+                    if (issuerExtra is not null) CaddyJson.DeepMerge(iss.AsObject(), issuerExtra);
+                }
+                policies.Add(new JsonObject { ["subjects"] = StringArray(domains), ["issuers"] = issuers });
             }
-            policies.Add(new JsonObject { ["subjects"] = StringArray(dnsDomains), ["issuers"] = issuers });
         }
         if (legacyDnsProvider is not null && acmeNames.Count > 0 && ctx.Input.InstalledModules is { } modules
             && !modules.Contains("dns.providers." + legacyDnsProvider, StringComparer.Ordinal))
@@ -1572,7 +1591,7 @@ public static partial class CaddyConfigGenerator
     /// <summary>
     /// challenges.dns of the ACME issuers of DNS policies: the provider (name + fields typed per the catalog + secrets),
     /// ttl / propagation_delay / propagation_timeout as caddy.Duration strings ("30s"; -1 disables the propagation check),
-    /// resolvers and override_domain. https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/ ;
+    /// resolvers (override_domain is set per policy by the caller). https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/ ;
     /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddytls/automation.go (DNSChallengeConfig)
     /// </summary>
     private static JsonObject DnsChallenge(CaddySettings s, Ctx ctx)
@@ -1592,8 +1611,29 @@ public static partial class CaddyConfigGenerator
         }
         var resolvers = (s.DnsResolvers ?? []).Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).Distinct().ToList();
         if (resolvers.Count > 0) dns["resolvers"] = StringArray(resolvers);
-        if (!string.IsNullOrWhiteSpace(s.DnsOverrideDomain)) dns["override_domain"] = s.DnsOverrideDomain.Trim();
         return dns;
+    }
+
+    /// <summary>
+    /// The host uses the DNS challenge for at least one name: its effective challenge is DNS, or it has a wildcard and a
+    /// DNS provider is configured (wildcards always use DNS then). Only such hosts may choose a delegation.
+    /// </summary>
+    public static bool UsesDnsChallenge(SiteHost h, CaddySettings s) =>
+        h.Tls == TlsMode.Acme && (EffectiveChallenge(h, s) == AcmeChallengeType.Dns || (DnsProviderConfigured(s) && h.Domains.Any(IsWildcard)));
+
+    /// <summary>
+    /// The delegation name (challenges.dns.override_domain) of a host's DNS-challenge names: Custom → the host's name,
+    /// Off → none, Default → CaddySettings.DnsOverrideDomain (none when empty). Lower case, without a trailing dot.
+    /// </summary>
+    public static string? EffectiveDnsOverrideDomain(SiteHost h, CaddySettings s)
+    {
+        var name = h.DnsDelegation switch
+        {
+            HostDnsDelegation.Off => null,
+            HostDnsDelegation.Custom => h.DnsOverrideDomain,
+            _ => s.DnsOverrideDomain,
+        };
+        return string.IsNullOrWhiteSpace(name) ? null : name.Trim().TrimEnd('.').ToLowerInvariant();
     }
 
     private static JsonArray AcmeIssuers(CaddySettings s, Ctx ctx)

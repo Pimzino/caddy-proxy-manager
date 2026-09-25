@@ -7,11 +7,17 @@ using System.Text;
 namespace CaddyManager.Config.Tests;
 
 /// <summary>
-/// Minimal authoritative DNS server for one test zone (UDP + TCP on 127.0.0.1), used as the rfc2136 target of Caddy's
-/// DNS-01 solver and as the resolver of Pebble's validation authority. It answers SOA/NS at the apex, A for the name
-/// server, TXT from its record store (NOERROR/NODATA with the SOA otherwise, REFUSED outside the zone), and accepts
-/// RFC 2136 UPDATE messages only when they carry a valid RFC 8945 TSIG (hmac-sha256) for the configured key; responses
-/// to signed updates are signed too (the client, miekg/dns, verifies them).
+/// Minimal authoritative DNS server for a few test zones (UDP + TCP on 127.0.0.1), used as the rfc2136 target of Caddy's
+/// DNS-01 solver and as the resolver of Pebble's validation authority. It answers SOA/NS at each apex, A for the name
+/// server, TXT from its record store, static CNAMEs (NOERROR/NODATA with the SOA otherwise, REFUSED outside its zones),
+/// and accepts RFC 2136 UPDATE messages only when they carry a valid RFC 8945 TSIG (hmac-sha256) for the configured key
+/// and target a writable zone (read-only zones answer REFUSED, unknown zones NOTAUTH, names outside the zone NOTZONE);
+/// responses to signed updates are signed too (the client, miekg/dns, verifies them).
+///
+/// CNAMEs (challenge delegation): a query of another type at a CNAME owner is answered with the CNAME plus the records of
+/// the target when the target is in one of the zones, restarting at most 8 times (RFC 1034 §4.3.2 step 3a) — the way a
+/// recursive resolver answers, which Pebble's Go resolver relies on (it takes the TXT records from the same answer).
+/// A CNAME query returns only the CNAME.
 ///
 /// Ways it could fail (and what guards against each):
 /// - Name compression pointers in received messages (miekg compresses names in UPDATE sections) → ReadName follows
@@ -26,16 +32,20 @@ namespace CaddyManager.Config.Tests;
 /// - Truncation → answers are small (a few TXT records), far below 512 bytes.
 /// - Concurrent UDP/TCP handlers mutating the record store → all store access under one lock.
 /// - Port already taken → the listener binds port 0 for TCP first and reuses that port for UDP, retrying on conflicts.
+/// - CNAME loops in the static data → the chase stops after 8 restarts.
+/// - Overlapping zones (a.test inside test.) → the longest matching zone owns a name.
 /// </summary>
 public sealed class DnsTestServer : IAsyncDisposable
 {
-    public sealed record UpdateSeen(string Zone, string Operation, string Name, string Type, string? Data, bool TsigValid, string? KeyName, string? Error);
+    /// <summary>One RR of an UPDATE. TsigValid: the signature verified; Rcode: the server's answer (0 = applied).</summary>
+    public sealed record UpdateSeen(string Zone, string Operation, string Name, string Type, string? Data, bool TsigValid, string? KeyName, string? Error, int Rcode = 0);
     public sealed record QuerySeen(string Transport, string Name, string Type, int Rcode, int Answers);
 
-    private const ushort TypeA = 1, TypeNs = 2, TypeSoa = 6, TypeTxt = 16, TypeAny = 255, TypeTsig = 250;
+    private const ushort TypeA = 1, TypeNs = 2, TypeCname = 5, TypeSoa = 6, TypeTxt = 16, TypeAny = 255, TypeTsig = 250;
     private const ushort ClassIn = 1, ClassNone = 254, ClassAny = 255;
 
-    private readonly string _zone;        // "dns01.test." lower case
+    private readonly Dictionary<string, bool> _zones = new(StringComparer.Ordinal); // "dns01.test." → writable
+    private readonly Dictionary<string, string> _cnames = new(StringComparer.Ordinal); // owner → target, both FQDN lower case
     private readonly string _keyName;     // "cpm-e2e." lower case
     private readonly byte[] _key;
     private readonly UdpClient _udp;
@@ -48,11 +58,16 @@ public sealed class DnsTestServer : IAsyncDisposable
 
     public int Port { get; }
     public string Endpoint => $"127.0.0.1:{Port}";
-    public string Zone => _zone.TrimEnd('.');
+    /// <summary>The first zone.</summary>
+    public string Zone => _zones.Keys.First().TrimEnd('.');
 
-    public DnsTestServer(string zone, string keyName, byte[] key)
+    /// <summary>One writable zone.</summary>
+    public DnsTestServer(string zone, string keyName, byte[] key) : this([(zone, true)], keyName, key) { }
+
+    /// <summary>Several zones; only the writable ones accept UPDATEs.</summary>
+    public DnsTestServer(IEnumerable<(string Zone, bool Writable)> zones, string keyName, byte[] key)
     {
-        _zone = Fqdn(zone);
+        foreach (var (zone, writable) in zones) _zones[Fqdn(zone)] = writable;
         _keyName = Fqdn(keyName);
         _key = key;
         for (var attempt = 0; ; attempt++)
@@ -82,7 +97,24 @@ public sealed class DnsTestServer : IAsyncDisposable
     /// <summary>TXT values currently stored for a name.</summary>
     public IReadOnlyList<string> Txt(string name) { lock (_txt) return _txt.TryGetValue(Fqdn(name), out var l) ? l.ToList() : []; }
 
+    /// <summary>Adds a static CNAME (the owner must be inside one of the zones).</summary>
+    public void AddCname(string owner, string target) { lock (_txt) _cnames[Fqdn(owner)] = Fqdn(target); }
+
+    /// <summary>Adds a static TXT record (e.g. a leftover manual challenge record).</summary>
+    public void AddTxt(string name, string value)
+    {
+        lock (_txt)
+        {
+            if (!_txt.TryGetValue(Fqdn(name), out var list)) _txt[Fqdn(name)] = list = new();
+            list.Add(value);
+        }
+    }
+
     private static string Fqdn(string name) => (name.EndsWith('.') ? name : name + ".").ToLowerInvariant();
+
+    /// <summary>The zone a name belongs to (longest match), or null.</summary>
+    private string? ZoneOf(string fqdn) =>
+        _zones.Keys.Where(z => fqdn == z || fqdn.EndsWith("." + z, StringComparison.Ordinal)).OrderByDescending(z => z.Length).FirstOrDefault();
 
     // ------------------------------------------------------------------ transports
 
@@ -176,7 +208,7 @@ public sealed class DnsTestServer : IAsyncDisposable
         var answers = new List<byte[]>();
         var authority = new List<byte[]>();
         int rcode;
-        if (!(lname == _zone || lname.EndsWith("." + _zone, StringComparison.Ordinal)))
+        if (ZoneOf(lname) is not { } zone)
         {
             rcode = 5; // REFUSED: not authoritative
         }
@@ -185,13 +217,27 @@ public sealed class DnsTestServer : IAsyncDisposable
             rcode = 0;
             lock (_txt)
             {
-                if (qtype is TypeSoa or TypeAny && lname == _zone) answers.Add(SoaRr());
-                if (qtype is TypeNs or TypeAny && lname == _zone) answers.Add(RrBytes(_zone, TypeNs, 60, NameBytes("ns1." + _zone)));
-                if (qtype is TypeA or TypeAny && lname == "ns1." + _zone) answers.Add(RrBytes(lname, TypeA, 60, [127, 0, 0, 1]));
-                if (qtype is TypeTxt or TypeAny && _txt.TryGetValue(lname, out var values))
-                    foreach (var v in values) answers.Add(RrBytes(lname, TypeTxt, 1, TxtRData(v)));
+                var name = lname;
+                for (var restarts = 0; ; restarts++)
+                {
+                    if (_cnames.TryGetValue(name, out var target))
+                    {
+                        answers.Add(RrBytes(name, TypeCname, 60, NameBytes(target)));
+                        // Chase within our zones unless the CNAME itself was asked for (RFC 1034 §4.3.2 step 3a).
+                        if (qtype == TypeCname || restarts >= 8 || ZoneOf(target) is not { } targetZone) break;
+                        name = target;
+                        zone = targetZone;
+                        continue;
+                    }
+                    if (qtype is TypeSoa or TypeAny && name == zone) answers.Add(SoaRr(zone));
+                    if (qtype is TypeNs or TypeAny && name == zone) answers.Add(RrBytes(zone, TypeNs, 60, NameBytes("ns1." + zone)));
+                    if (qtype is TypeA or TypeAny && name == "ns1." + zone) answers.Add(RrBytes(name, TypeA, 60, [127, 0, 0, 1]));
+                    if (qtype is TypeTxt or TypeAny && _txt.TryGetValue(name, out var values))
+                        foreach (var v in values) answers.Add(RrBytes(name, TypeTxt, 1, TxtRData(v)));
+                    break;
+                }
             }
-            if (answers.Count == 0) authority.Add(SoaRr());
+            if (answers.Count == 0) authority.Add(SoaRr(zone));
         }
         lock (_txt) _queries.Add(new QuerySeen(transport, lname, TypeName(qtype), rcode, answers.Count));
         return Header(id, flags, rcode, questions, answers, authority);
@@ -203,9 +249,15 @@ public sealed class DnsTestServer : IAsyncDisposable
         var tsig = additional.Count > 0 && additional[^1].Type == TypeTsig ? additional[^1] : null;
         string? error = null;
         byte[]? requestMac = null;
+        var rcode = 0;
         if (tsig is null) error = "no TSIG";
         else error = VerifyTsig(msg, tsig, out requestMac);
-        if (error is null && zone != _zone) error = $"not authoritative for zone '{zone}'";
+        var tsigValid = tsig is not null && error is null;
+        if (error is not null) rcode = 9; // NOTAUTH for a missing/invalid signature
+        else if (!_zones.TryGetValue(zone, out var writable)) (rcode, error) = (9, $"not authoritative for zone '{zone}' (NOTAUTH)");
+        else if (!writable) (rcode, error) = (5, $"zone '{zone}' is read-only (REFUSED)");
+        else if (updates.Any(rr => !(rr.Name.ToLowerInvariant() == zone || rr.Name.ToLowerInvariant().EndsWith("." + zone, StringComparison.Ordinal))))
+            (rcode, error) = (10, $"a record name is outside zone '{zone}' (NOTZONE)");
 
         var ops = new List<UpdateSeen>();
         foreach (var rr in updates)
@@ -217,8 +269,8 @@ public sealed class DnsTestServer : IAsyncDisposable
             else if (rr.Class == ClassNone) op = "delete";
             else if (rr.Class == ClassAny) op = rr.Type == TypeAny ? "delete-name" : "delete-rrset";
             else op = "class-" + rr.Class;
-            ops.Add(new UpdateSeen(zone, op, name, TypeName(rr.Type), data, tsig is not null && error is null, tsig?.Name.ToLowerInvariant(), error));
-            if (error is not null || !(name == _zone || name.EndsWith("." + _zone, StringComparison.Ordinal))) continue;
+            ops.Add(new UpdateSeen(zone, op, name, TypeName(rr.Type), data, tsigValid, tsig?.Name.ToLowerInvariant(), error, rcode));
+            if (rcode != 0) continue; // RFC 2136 §3.7: an update is applied entirely or not at all
             lock (_txt)
             {
                 switch (op)
@@ -237,11 +289,10 @@ public sealed class DnsTestServer : IAsyncDisposable
                 }
             }
         }
-        if (ops.Count == 0) ops.Add(new UpdateSeen(zone, "none", "", "", null, tsig is not null && error is null, tsig?.Name, error));
+        if (ops.Count == 0) ops.Add(new UpdateSeen(zone, "none", "", "", null, tsigValid, tsig?.Name, error, rcode));
         lock (_txt) _updates.AddRange(ops);
 
-        // NOTAUTH (9) for a missing/invalid signature or a foreign zone; responses to signed requests are signed.
-        var rcode = error is null ? 0 : 9;
+        // Responses to validly signed requests are signed, refusals included.
         var response = Header(id, flags, rcode, zoneSection, [], []);
         return tsig is not null && requestMac is not null ? Sign(response, requestMac) : response;
     }
@@ -313,10 +364,10 @@ public sealed class DnsTestServer : IAsyncDisposable
 
     // ------------------------------------------------------------------ wire helpers
 
-    private byte[] SoaRr()
+    private static byte[] SoaRr(string zone)
     {
-        var rdata = Concat(NameBytes("ns1." + _zone), NameBytes("hostmaster." + _zone), U32(2026092501), U32(3600), U32(600), U32(86400), U32(60));
-        return RrBytes(_zone, TypeSoa, 60, rdata);
+        var rdata = Concat(NameBytes("ns1." + zone), NameBytes("hostmaster." + zone), U32(2026092501), U32(3600), U32(600), U32(86400), U32(60));
+        return RrBytes(zone, TypeSoa, 60, rdata);
     }
 
     private static byte[] Header(ushort id, ushort requestFlags, int rcode, List<(string Name, ushort Type, ushort Class)> questions,
@@ -430,7 +481,7 @@ public sealed class DnsTestServer : IAsyncDisposable
 
     private static string TypeName(ushort t) => t switch
     {
-        TypeA => "A", TypeNs => "NS", TypeSoa => "SOA", TypeTxt => "TXT", TypeAny => "ANY", TypeTsig => "TSIG", 28 => "AAAA", 257 => "CAA", 41 => "OPT",
+        TypeA => "A", TypeNs => "NS", TypeCname => "CNAME", TypeSoa => "SOA", TypeTxt => "TXT", TypeAny => "ANY", TypeTsig => "TSIG", 28 => "AAAA", 257 => "CAA", 41 => "OPT",
         _ => "TYPE" + t,
     };
 

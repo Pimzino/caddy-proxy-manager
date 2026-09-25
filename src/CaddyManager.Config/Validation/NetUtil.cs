@@ -13,6 +13,10 @@ public static partial class NetUtil
     [GeneratedRegex("^(?!-)[a-z0-9-]{1,63}(?<!-)$", RegexOptions.CultureInvariant)]
     private static partial Regex LabelRegex();
 
+    // DNS owner-name label: host-name characters plus '_' (e.g. "_acme-challenge"), RFC 2181 §11 / RFC 8552.
+    [GeneratedRegex("^(?!-)[a-z0-9_-]{1,63}(?<!-)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DnsLabelRegex();
+
     // RFC 7230 token characters minus '*': Caddy's header "delete" treats '*' as a wildcard ("*" deletes every header).
     [GeneratedRegex("^[A-Za-z0-9!#$%&'+.^_`|~-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex HeaderNameRegex();
@@ -84,6 +88,25 @@ public static partial class NetUtil
         // An all-numeric last label is not a host name (RFC 3696 §2); it is a mistyped IP such as "10.1" or "010.1.1.1".
         if (labels[^1].All(char.IsAsciiDigit) || IsNonCanonicalIpv4(d)) return false;
         return labels.All(l => LabelRegex().IsMatch(l));
+    }
+
+    /// <summary>
+    /// Valid DNS record name such as "_acme-challenge.validation.example.net" (already normalised: lower case, no trailing
+    /// dot): labels of letters, digits, '-' and '_', at least two labels, no wildcard, no IP address.
+    /// </summary>
+    public static bool IsValidDnsName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 253 || name.Contains('*')) return false;
+        var labels = name.Split('.');
+        if (labels.Length < 2 || labels[^1].All(char.IsAsciiDigit) || TryParseIp(name, out _)) return false;
+        return labels.All(l => DnsLabelRegex().IsMatch(l));
+    }
+
+    /// <summary>The DNS-01 challenge record of a domain: "_acme-challenge.&lt;domain&gt;", a wildcard's "*." removed (RFC 8555 §8.4).</summary>
+    public static string AcmeChallengeRecord(string domain)
+    {
+        var d = domain.Trim().TrimEnd('.').ToLowerInvariant();
+        return "_acme-challenge." + (d.StartsWith("*.", StringComparison.Ordinal) ? d[2..] : d);
     }
 
     /// <summary>Valid upstream host: DNS name or IP address (no scheme, no port, no wildcard).</summary>
