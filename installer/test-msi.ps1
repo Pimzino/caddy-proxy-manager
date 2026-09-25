@@ -56,7 +56,12 @@ function Query-Msi([string] $sql) {
         $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
         if ($null -eq $rec) { break }
         $count = $rec.GetType().InvokeMember('FieldCount', 'GetProperty', $null, $rec, $null)
-        $rows += , @(1..$count | ForEach-Object { $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @($_)) })
+        # A plain loop with an [int]: inside ForEach-Object $_ is a PSObject wrapper, which the COM IDispatch call
+        # rejects with DISP_E_TYPEMISMATCH.
+        $fields = for ([int] $i = 1; $i -le $count; $i++) {
+            $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, [object[]] @([int] $i))
+        }
+        $rows += , @($fields)
     }
     $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null
