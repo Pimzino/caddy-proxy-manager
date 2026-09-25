@@ -52,6 +52,14 @@ public sealed record BinaryOverview
     /// <summary>True when installed plugins differ from desired plugins (rebuild needed).</summary>
     public bool PluginsOutOfSync { get; init; }
     public string Platform { get; init; } = "";          // "windows/amd64"
+    /// <summary>A previous binary (caddy.exe.previous) exists and POST /api/caddy/binary/rollback is possible.</summary>
+    public bool CanRollback { get; init; }
+    public string? PreviousVersion { get; init; }
+    /// <summary>Version of Caddy Proxy Manager itself.</summary>
+    public string? ManagerVersion { get; init; }
+    public string? ManagerLatestVersion { get; init; }
+    public string? ManagerLatestUrl { get; init; }
+    public bool ManagerUpdateAvailable { get; init; }
 }
 
 public sealed record PluginPackage

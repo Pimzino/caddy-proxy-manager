@@ -275,3 +275,57 @@ tables with status and add/edit dialogs with tabs, in a modern admin-console loo
 - Windows-only code guarded with `OperatingSystem.IsWindows()`; the app must build and run on macOS/Linux for development.
 - Record audit entries (`IAuditLog.Record`) for every mutation; raise events via `IEventSink` for operational problems.
 - Secrets always through `ISecretProtector`; never returned by the API.
+
+---
+
+## Round 2 additions (contract)
+
+All new settings fields follow the settings wire-shape rule above. New Core fields: `SiteHost.UpstreamNtlm`;
+`CertificateSource.PfxFile|WindowsStore` + `Certificate.SourcePath, PfxPasswordProtected, StoreLocation, StoreName,
+StoreThumbprint, StoreSubject, LastSyncedAt, LastSyncError`; `CaddySettings.ExtraAppsJson, AcmeIssuerJsonProtected
+(wire hasAcmeIssuerJson/acmeIssuerJson), TlsConnectionPolicyJson`; `BinarySettings.ProxyCaddyTraffic, NoProxy,
+ManagerReleaseRepo`; `NotificationSettings.SmtpAuth (none|password|oAuth2ClientCredentials), OAuthTenantId,
+OAuthClientId, OAuthClientSecretProtected (wire hasOAuthClientSecret/oAuthClientSecret), WebhookFormat
+(generic|slack|teamsWorkflow)`; `UiSettings.RedirectHttpToHttps`; `BinaryOverview.CanRollback, PreviousVersion,
+ManagerVersion, ManagerLatestVersion, ManagerLatestUrl, ManagerUpdateAvailable`; `User.ExternalSource, ExternalId`;
+`ICaddyBinaryManager.StartInstallFromFile, StartRollback, CanRollback`.
+
+### Privilege boundaries (Config)
+- Operators may NOT: set/change `AdvancedRoutesJson` (admin only — 403 when an operator changes it), point Static
+  `RootPath` at/inside DataDir, the Caddy storage dir, the certificate store, a drive root, %WINDIR%, %ProgramFiles%
+  (400 for everyone; UNC roots admin-only), or target the Caddy admin endpoint / manager UI ports on loopback with
+  an upstream or stream (400 for everyone).
+- Certificate path-based sources (`/path`, `/pfx-path`, `/windows-store`, JSON re-point) are admin-only; only
+  `.pem .crt .cer .key .pfx .p12` extensions; never inside DataDir except the configured certificate store; generic
+  "cannot read" errors.
+- Viewers get redacted configs: `/api/config/preview|running|revisions/{id}` replace ACME `external_account.mac_key`,
+  DNS provider secrets from `acmeIssuerJson` and `http_basic` password hashes with `"***"` unless the caller is admin.
+  `GET /api/settings/caddy` hides `rawCaddyfile`/`serverOptionsJson`/`extraAppsJson` values from non-admins.
+
+### New endpoints
+| Module | Method | Path | Notes |
+|---|---|---|---|
+| Config | POST | /api/certificates/pfx-path | admin; `{ name?, pfxPath, pfxPassword? }` → `{item, apply}`; PFX converted to PEM under `<store>/<id>/`, re-converted when the PFX changes (watcher) |
+| Config | GET | /api/certificates/windows-store?location=LocalMachine&store=My | admin; `[{ thumbprint, subject, dnsNames[], issuer, notBefore, notAfter, hasPrivateKey, exportable, template? }]` (non-Windows: `[]`) |
+| Config | POST | /api/certificates/windows-store | admin; `{ name?, storeLocation?, storeName?, thumbprint? , subject? }` (exactly one of thumbprint/subject) → `{item, apply}`; exported to PEM; re-synced every 15 min and on `/sync` (follows AD CS autoenrollment renewals when `subject` is used) |
+| Config | POST | /api/certificates/{id}/sync | operator; re-read/re-export now → `{item, apply}` |
+| Config | POST | /api/config/caddyfile/import | admin; `{ caddyfile }` → `{ drafts: SiteHost[], unmapped: string[], warnings: string[] }` (nothing saved) |
+| Config | POST | /api/config/caddyfile/import/commit | admin; `{ hosts: SiteHost[] }` → `{ created: number, apply }` (transactional, 409 on domain conflicts) |
+| Platform | POST | /api/caddy/binary/upload | admin; multipart `file` (caddy.exe or official release .zip), optional `sha512` → JobInfo (offline/air-gapped install through the verified swap pipeline) |
+| Platform | POST | /api/caddy/binary/rollback | admin → JobInfo |
+| Ops | GET/PUT | /api/settings/ldap | admin; LdapSettings (Ops-owned doc): `{ enabled, server, port, security: none|startTls|ldaps, allowInvalidCertificate, bindDn, hasBindPassword/bindPassword, baseDn, userFilter ("(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))" default), adminGroupDn, operatorGroupDn, viewerGroupDn, nestedGroups: bool }` |
+| Ops | POST | /api/settings/ldap/test | admin; `{ username, password }` → `{ ok, role?, displayName?, email?, groups?: string[], error? }` |
+| Ops | GET/PUT | /api/settings/backup | admin; BackupSettings (Ops-owned): `{ enabled, hourLocal (0-23), directory (local or UNC; default DataDir\backups), keep (1-365), hasPassword/password (AES-256 zip encryption) }` |
+| Ops | GET | /api/backups | admin; `[{ name, size, createdAt }]` of scheduled backups |
+| Ops | GET | /api/backups/{name} | admin; download |
+| Ops | POST | /api/backups/run | admin; run a scheduled-style backup now → `{ name }` |
+
+Login with LDAP enabled: the login `email` field also accepts `DOMAIN\user`, `user` or a UPN; local accounts are
+tried first (break-glass), then LDAP; LDAP users are provisioned/updated as `User{ExternalSource="ldap"}` with the
+role from group membership (no matching group → 403 "not authorised"); `UserDto` gains `externalSource?`.
+
+### Monitoring additions (Ops)
+- `cert-missing:<domain>`: an enabled Acme/Internal host (non-wildcard domain) has no covering certificate
+  10 minutes after `UpdatedAt` → Warning (alertRule `certificateExpiry`) with the last `tls.obtain`/`tls.issuance`
+  error lines from caddy.log; Recovered when issued.
+- Manager behind Caddy: the host uses forwarded headers from loopback proxies only (X-Forwarded-For/Proto).

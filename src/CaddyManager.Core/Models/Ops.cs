@@ -20,6 +20,10 @@ public sealed class User : Entity
     public DateTime? LastLoginAt { get; set; }
     /// <summary>Bumped on password change / disable to invalidate sessions.</summary>
     public int SecurityStamp { get; set; }
+    /// <summary>null = local account; "ldap" = Active Directory/LDAP account (no local password; role from group mapping at each sign-in).</summary>
+    public string? ExternalSource { get; set; }
+    /// <summary>Directory identifier (objectGUID or DN) for external accounts.</summary>
+    public string? ExternalId { get; set; }
 }
 
 public sealed class AuditEntry : Entity
