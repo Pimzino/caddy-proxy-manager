@@ -21,8 +21,11 @@ public sealed partial class CaddyConfigService(
     ISecretProtector secrets,
     CaddyAdminClient admin,
     IServiceProvider services,
-    ILogger<CaddyConfigService> logger) : ICaddyConfigService
+    ILogger<CaddyConfigService> logger) : ICaddyConfigService, IConfigChangeFeed
 {
+    /// <summary>Raised after every successful apply (also WrittenOnly), outside the apply lock; handler exceptions are logged and swallowed.</summary>
+    public event Action<ApplyResult, string>? Applied;
+
     public const int RevisionsToKeep = 100;
     public const string EventKey = "config-apply";
     public const string AlertRule = "configFailure";
@@ -62,33 +65,20 @@ public sealed partial class CaddyConfigService(
         var hosts = store.Col<SiteHost>().FindAll().ToList();
         var certs = store.Col<Certificate>().FindAll().ToList();
         var extraWarnings = new List<string>();
-        string? mac = null;
-        if (!string.IsNullOrEmpty(settings.EabMacKeyProtected))
+        var plain = SettingsSecrets.Read(settings, secrets);
+        foreach (var name in plain.Undecryptable)
         {
-            try
+            logger.LogWarning("The stored Caddy setting {Setting} could not be decrypted", name);
+            extraWarnings.Add(name switch
             {
-                mac = secrets.Unprotect(settings.EabMacKeyProtected);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "EAB MAC key could not be decrypted");
-                extraWarnings.Add("The stored EAB MAC key could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Caddy.");
-            }
+                "eabMacKey" => "The stored EAB MAC key could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Caddy.",
+                "acmeIssuerJson" => "The stored ACME issuer JSON (DNS challenge settings) could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Caddy.",
+                "dnsProviderSecrets" => "The stored DNS provider credentials could not be decrypted (was the database restored from another server?). Re-enter them under Settings > Caddy.",
+                _ => $"The stored storage secret '{name}' could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Cluster.",
+            });
         }
-
-        string? acmeIssuerJson = null;
-        if (!string.IsNullOrEmpty(settings.AcmeIssuerJsonProtected))
-        {
-            try
-            {
-                acmeIssuerJson = secrets.Unprotect(settings.AcmeIssuerJsonProtected);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "ACME issuer JSON could not be decrypted");
-                extraWarnings.Add("The stored ACME issuer JSON (DNS challenge settings) could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Caddy.");
-            }
-        }
+        var mac = plain.EabMacKey;
+        var acmeIssuerJson = plain.AcmeIssuerJson;
 
         var input = new ConfigGeneratorInput
         {
@@ -103,6 +93,8 @@ public sealed partial class CaddyConfigService(
             AcmeIssuerJson = acmeIssuerJson,
             UnavailableCertificateIds = UnavailableCertificates(hosts, certs),
             EndpointGuard = Validation.LocalEndpointGuard.Create(settings, store.GetSettings<UiSettings>(), includeUi: false),
+            DnsProviderSecrets = plain.DnsProviderSecrets,
+            StorageSecrets = plain.Storage,
         };
         var result = CaddyConfigGenerator.Generate(input);
         result.Warnings.InsertRange(0, extraWarnings);
@@ -170,16 +162,55 @@ public sealed partial class CaddyConfigService(
 
     public async Task<ApplyResult> ApplyAsync(string reason, CancellationToken ct = default)
     {
+        reason = string.IsNullOrWhiteSpace(reason) ? "apply" : reason;
+        ApplyResult result;
         await _applyLock.WaitAsync(ct);
         try
         {
-            return await ApplyCoreAsync(string.IsNullOrWhiteSpace(reason) ? "apply" : reason, ct);
+            result = await ApplyCoreAsync(reason, ct);
         }
         finally
         {
             _applyLock.Release();
         }
+        if (result.Success) RaiseApplied(result, reason);
+        return result;
     }
+
+    /// <summary>Notifies IConfigChangeFeed subscribers; never throws into the apply.</summary>
+    private void RaiseApplied(ApplyResult result, string reason)
+    {
+        var handlers = Applied;
+        if (handlers is null) return;
+        foreach (var h in handlers.GetInvocationList().Cast<Action<ApplyResult, string>>())
+        {
+            try
+            {
+                h(result, reason);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "A configuration change subscriber failed");
+            }
+        }
+    }
+
+    /// <summary>Every configured secret value (see SettingsSecrets.Values), for scrubbing Caddy's messages.</summary>
+    private IReadOnlyList<string> SecretValues(CaddySettings? settings = null)
+    {
+        try
+        {
+            return SettingsSecrets.Read(settings ?? store.GetSettings<CaddySettings>(), secrets).Values();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not read the configured secrets for scrubbing");
+            return [];
+        }
+    }
+
+    /// <summary>Removes every configured secret value from a message Caddy produced (errors can echo credentials).</summary>
+    public string Scrub(string message) => SettingsSecrets.Scrub(message, SecretValues());
 
     private async Task<ApplyResult> ApplyCoreAsync(string reason, CancellationToken ct)
     {
@@ -202,7 +233,7 @@ public sealed partial class CaddyConfigService(
                     return new ApplyResult { Success = true, WrittenOnly = true, Warnings = warnings };
                 }
                 warnings.AddRange(adapted.Value.Warnings);
-                json = CaddyConfigGenerator.CompleteAdaptedConfig(adapted.Value.Json, settings, paths, warnings);
+                json = CaddyConfigGenerator.CompleteAdaptedConfig(adapted.Value.Json, settings, paths, warnings, SettingsSecrets.Read(settings, secrets).Storage);
             }
             catch (CaddyAdminException ex)
             {
@@ -286,6 +317,8 @@ public sealed partial class CaddyConfigService(
 
     private Task<ApplyResult> FailAsync(string reason, string? json, string error, List<string> warnings)
     {
+        // Before the error reaches the log, the revision, the event and the API response.
+        error = Scrub(error);
         logger.LogWarning("Applying the Caddy configuration failed ({Reason}): {Error}", reason, error);
         ConfigRevision? rev = null;
         try
@@ -590,6 +623,7 @@ public sealed partial class CaddyConfigService(
                 var r = await CaddyProcessRunner.RunAsync(paths.CaddyExe, args, environment: CaddyEnvironment(), timeout: TimeSpan.FromSeconds(120), ct: ct);
                 (exit, output) = (r.ExitCode, r.Combined);
             }
+            output = Scrub(output);
             return exit == 0
                 ? new ValidationResult { Valid = true, Output = output }
                 : new ValidationResult { Valid = false, Error = ExtractCliError(output), Output = output };
@@ -611,7 +645,7 @@ public sealed partial class CaddyConfigService(
     {
         if (File.Exists(paths.CaddyConfigFile)) return;
         var settings = store.GetSettings<CaddySettings>();
-        var json = CaddyJson.Serialize(CaddyConfigGenerator.BuildBootConfig(settings, paths));
+        var json = CaddyJson.Serialize(CaddyConfigGenerator.BuildBootConfig(settings, paths, SettingsSecrets.Read(settings, secrets).Storage));
         WriteAtomic(paths.CaddyConfigFile, json);
         logger.LogInformation("Wrote minimal boot configuration to {File}", paths.CaddyConfigFile);
     }

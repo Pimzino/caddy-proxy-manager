@@ -28,6 +28,16 @@ public sealed record ConfigGeneratorInput
     /// server are dropped with a warning (safety net behind the API validation).
     /// </summary>
     public Validation.LocalEndpointGuard? EndpointGuard { get; init; }
+    /// <summary>Plain-text DNS provider secrets (CaddySettings.DnsProviderSecretsProtected, already unprotected) by field name.</summary>
+    public IReadOnlyDictionary<string, string> DnsProviderSecrets { get; init; } = new Dictionary<string, string>();
+    /// <summary>Plain-text storage secrets (Redis password / encryption key, custom storage JSON).</summary>
+    public StorageSecrets StorageSecrets { get; init; } = StorageSecrets.None;
+}
+
+/// <summary>Plain-text secrets of the Caddy storage settings (already unprotected).</summary>
+public sealed record StorageSecrets(string? RedisPassword, string? RedisEncryptionKey, string? StorageJson)
+{
+    public static readonly StorageSecrets None = new(null, null, null);
 }
 
 public sealed record ConfigGeneratorResult(JsonObject Config, List<string> Warnings)

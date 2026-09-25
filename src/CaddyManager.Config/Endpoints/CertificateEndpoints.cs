@@ -40,7 +40,7 @@ internal static class CertificateEndpoints
             var (parsed, name, problem) = await ReadUploadAsync(http);
             if (problem is not null) return problem;
             return await CreateAsync(http, store, files, parsed!, name, CertificateSource.Uploaded);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPost("/pem", async (CertificatePemInput? body, HttpContext http, IStore store, CertificateFileStore files) =>
         {
@@ -55,7 +55,7 @@ internal static class CertificateEndpoints
                 return ApiResults.BadRequest(ex.Message);
             }
             return await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.Uploaded);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         // ---- path-based sources: administrators only (Caddy runs as LocalSystem and can read almost any file)
 
@@ -82,7 +82,7 @@ internal static class CertificateEndpoints
             });
             http.RequestServices.GetService<CertificateWatcher>()?.Poke();
             return result;
-        }).RequireAuthorization(Policies.Admin);
+        }).RequireAuthorization(Policies.Admin).RejectOnManagedNode();
 
         g.MapPost("/pfx-path", async (CertificatePfxPathInput? body, HttpContext http, IStore store, CertificateFileStore files, AppPaths paths, ISecretProtector secrets) =>
         {
@@ -107,7 +107,7 @@ internal static class CertificateEndpoints
             });
             http.RequestServices.GetService<CertificateWatcher>()?.Poke();
             return result;
-        }).RequireAuthorization(Policies.Admin);
+        }).RequireAuthorization(Policies.Admin).RejectOnManagedNode();
 
         g.MapGet("/windows-store", (string? location, string? store, IWindowsCertificateSource windows) =>
         {
@@ -161,7 +161,7 @@ internal static class CertificateEndpoints
                 c.StoreSubject = hasSubject ? body.Subject!.Trim() : null;
                 c.LastSyncedAt = DateTime.UtcNow;
             });
-        }).RequireAuthorization(Policies.Admin);
+        }).RequireAuthorization(Policies.Admin).RejectOnManagedNode();
 
         // ---- maintenance
 
@@ -186,7 +186,7 @@ internal static class CertificateEndpoints
                     ConfigTransaction.Audit(http, "updated", "certificate", id, name);
                     return Results.Ok(new { item = ToWire(updated), apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPost("/{id}/replace", async (string id, HttpContext http, IStore store, CertificateFileStore files, AppPaths paths, ISecretProtector secrets, CertificateSyncService sync) =>
         {
@@ -239,7 +239,7 @@ internal static class CertificateEndpoints
                 if (backup is not null) files.Restore(backup);
                 else files.DeleteFolder(id);
             }, afterCommit: null);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPost("/{id}/sync", async (string id, HttpContext http, IStore store, CertificateSyncService sync, ICaddyConfigService config) =>
         {
@@ -272,7 +272,7 @@ internal static class CertificateEndpoints
                     ConfigTransaction.Audit(http, "synced", "certificate", id, r.Certificate.Name, details);
                     return Results.Ok(new { item = ToWire(r.Certificate), apply, changed = r.ThumbprintChanged });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapDelete("/{id}", async (string id, HttpContext http, IStore store, CertificateFileStore files, CertificateSyncService sync) =>
         {
@@ -292,7 +292,7 @@ internal static class CertificateEndpoints
                     ConfigTransaction.Audit(http, "deleted", "certificate", id, existing.Name);
                     return Results.Ok(new { apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
     }
 
     // ------------------------------------------------------------------ wire shape

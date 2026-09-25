@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CaddyManager.Config.DnsProviders;
 using CaddyManager.Config.Validation;
 using CaddyManager.Core;
 using CaddyManager.Core.Models;
@@ -59,11 +60,11 @@ public static partial class CaddyConfigGenerator
     // ------------------------------------------------------------------ boot config
 
     /// <summary>Minimal bootable config: admin endpoint, storage and process log only.</summary>
-    public static JsonObject BuildBootConfig(CaddySettings settings, AppPaths paths) => new()
+    public static JsonObject BuildBootConfig(CaddySettings settings, AppPaths paths, StorageSecrets? storage = null) => new()
     {
         ["admin"] = Admin(settings),
         ["logging"] = new JsonObject { ["logs"] = ProcessLoggers(settings, paths, []) },
-        ["storage"] = Storage(paths),
+        ["storage"] = Storage(settings, paths, storage ?? StorageSecrets.None, null),
     };
 
     // ------------------------------------------------------------------ Caddyfile mode
@@ -73,7 +74,8 @@ public static partial class CaddyConfigGenerator
     /// does not set them itself: the admin endpoint (otherwise Caddy falls back to localhost:2019 and the manager
     /// loses contact when AdminListen differs), storage (ACME certificates / internal CA) and the process log.
     /// </summary>
-    public static string CompleteAdaptedConfig(string adaptedJson, CaddySettings settings, AppPaths paths, List<string> warnings)
+    public static string CompleteAdaptedConfig(string adaptedJson, CaddySettings settings, AppPaths paths, List<string> warnings,
+        StorageSecrets? storage = null)
     {
         if (JsonNode.Parse(adaptedJson) is not JsonObject root) return adaptedJson;
         var expected = Admin(settings)["listen"]!.GetValue<string>();
@@ -88,7 +90,7 @@ public static partial class CaddyConfigGenerator
         {
             root["admin"] = Admin(settings);
         }
-        root["storage"] ??= Storage(paths);
+        root["storage"] ??= Storage(settings, paths, storage ?? StorageSecrets.None, warnings);
         if (root["logging"] is null) root["logging"] = new JsonObject { ["logs"] = ProcessLoggers(settings, paths, []) };
         DisableTrustInstall(root);
         return root.ToJsonString();
@@ -224,10 +226,11 @@ public static partial class CaddyConfigGenerator
         MergeExtraApps(apps, s, ctx);
 
         // ---- logging
-        // Access log lines go to the per-host files only; the process log excludes the whole access namespace so that
-        // requests routed to a host whose Host header does not match a logger_names key exactly (e.g. upper case) do
-        // not end up in caddy.log.
-        var logs = ProcessLoggers(s, input.Paths, accessLoggers.Count > 0 ? ["http.log.access"] : []);
+        // Access log lines go to the per-host files (and the traffic statistics log) only; the process log excludes the
+        // whole access namespace so that requests routed to a host whose Host header does not match a logger_names key
+        // exactly (e.g. upper case) do not end up in caddy.log.
+        var logs = ProcessLoggers(s, input.Paths, accessLoggers.Count > 0 || s.TrafficStatsEnabled ? ["http.log.access"] : []);
+        if (s.TrafficStatsEnabled) logs[StatsLogName] = StatsLog(input.Paths);
         foreach (var (name, (domain, _)) in accessLoggers)
         {
             logs[name] = new JsonObject
@@ -249,7 +252,7 @@ public static partial class CaddyConfigGenerator
         {
             ["admin"] = Admin(s),
             ["logging"] = new JsonObject { ["logs"] = logs },
-            ["storage"] = Storage(input.Paths),
+            ["storage"] = Storage(s, input.Paths, input.StorageSecrets, ctx.Warnings),
             ["apps"] = apps,
         };
         return new ConfigGeneratorResult(root, ctx.Warnings);
@@ -1294,11 +1297,21 @@ public static partial class CaddyConfigGenerator
             srv["trusted_proxies_strict"] = 1;
         }
 
-        if (loggerNames.Count > 0)
+        // Access logging only happens when servers.*.logs is set ({} suffices). With traffic statistics every request must
+        // be logged, so skip_unmapped_hosts is not used then: unmapped hosts go to the base http.log.access logger, which
+        // only the statistics sink includes. https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/logging.go
+        // (ServerLogConfig; docs/research/round3-accesslog.md §2)
+        if (loggerNames.Count > 0 || s.TrafficStatsEnabled)
         {
-            var names = new JsonObject();
-            foreach (var (domain, logger) in loggerNames) names[domain] = new JsonArray(logger);
-            srv["logs"] = new JsonObject { ["logger_names"] = names, ["skip_unmapped_hosts"] = true };
+            var logs = new JsonObject();
+            if (loggerNames.Count > 0)
+            {
+                var names = new JsonObject();
+                foreach (var (domain, logger) in loggerNames) names[domain] = new JsonArray(logger);
+                logs["logger_names"] = names;
+                if (!s.TrafficStatsEnabled) logs["skip_unmapped_hosts"] = true;
+            }
+            srv["logs"] = logs;
         }
     }
 
@@ -1429,6 +1442,25 @@ public static partial class CaddyConfigGenerator
             tls["certificates"] = new JsonObject { ["load_files"] = files };
         }
 
+        // Challenge per ACME name: the host's choice (or the default); wildcards of an HTTP-challenge host use DNS when a
+        // provider is configured (a public CA only issues wildcards over DNS-01). The legacy ACME issuer JSON may still
+        // hold a complete challenges.dns, which applies to every ACME issuer.
+        var issuerExtra = AcmeIssuerExtra(ctx);
+        var legacyDnsProvider = DnsProviderName(issuerExtra, out var legacyDns);
+        var providerConfigured = DnsProviderConfigured(s);
+        var acmeNames = new List<(string Domain, bool Dns)>();
+        foreach (var site in sites.Where(x => x.Host.Tls == TlsMode.Acme))
+        {
+            var challenge = EffectiveChallenge(site.Host, s);
+            if (challenge == AcmeChallengeType.Dns && !providerConfigured)
+            {
+                ctx.Warn($"Host '{site.Domains[0]}' uses the DNS challenge, but no DNS provider is configured under Settings > Caddy; the HTTP challenge is used instead.");
+                challenge = AcmeChallengeType.Http;
+            }
+            foreach (var d in site.Domains)
+                acmeNames.Add((d, challenge == AcmeChallengeType.Dns || (IsWildcard(d) && providerConfigured)));
+        }
+
         // Since v2.10 Caddy serves a managed wildcard for covered subdomains instead of obtaining their own
         // certificates, unless the name is listed in the "automate" loader (tls.go Manage: managingWildcardFor looks
         // at the names being managed, not at whether the wildcard was ever issued). So an exact host is forced into
@@ -1436,13 +1468,12 @@ public static partial class CaddyConfigGenerator
         // the other host's certificate and issuer), or when the wildcard is ACME without a DNS challenge (a public
         // wildcard cannot be issued then, and the exact host would never get any certificate).
         // https://github.com/caddyserver/caddy/releases/tag/v2.10.0 ; .../v2.11.4/modules/caddytls/tls.go (Manage)
-        DnsProviderName(AcmeIssuerExtra(ctx), out var acmeHasDnsChallenge);
         var managedWildcards = sites.Where(x => x.Host.Tls is TlsMode.Acme or TlsMode.Internal)
-            .SelectMany(x => x.Domains.Where(IsWildcard).Select(w => (Wildcard: w, x.Host.Tls))).ToList();
+            .SelectMany(x => x.Domains.Where(IsWildcard).Select(w => (Wildcard: w, x.Host.Tls,
+                Issuable: x.Host.Tls == TlsMode.Internal || legacyDns || acmeNames.Any(a => a.Domain == w && a.Dns)))).ToList();
         var automate = sites.Where(x => x.Host.Tls is TlsMode.Acme or TlsMode.Internal)
             .SelectMany(x => x.Domains.Where(d => !IsWildcard(d)).Select(d => (Domain: d, x.Host.Tls)))
-            .Where(x => managedWildcards.Any(w => CoveredByWildcard(x.Domain, w.Wildcard)
-                && (w.Tls != x.Tls || (w.Tls == TlsMode.Acme && !acmeHasDnsChallenge))))
+            .Where(x => managedWildcards.Any(w => CoveredByWildcard(x.Domain, w.Wildcard) && (w.Tls != x.Tls || !w.Issuable)))
             .Select(x => x.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
         if (automate.Count > 0)
         {
@@ -1454,8 +1485,8 @@ public static partial class CaddyConfigGenerator
         var policies = new JsonArray();
         var internalDomains = sites.Where(x => x.Host.Tls == TlsMode.Internal).SelectMany(x => x.Domains)
             .Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
-        var acmeDomains = sites.Where(x => x.Host.Tls == TlsMode.Acme).SelectMany(x => x.Domains)
-            .Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
+        var httpDomains = acmeNames.Where(a => !a.Dns).Select(a => a.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
+        var dnsDomains = acmeNames.Where(a => a.Dns).Select(a => a.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
 
         if (internalDomains.Count > 0)
         {
@@ -1465,28 +1496,41 @@ public static partial class CaddyConfigGenerator
                 ["issuers"] = new JsonArray(new JsonObject { ["module"] = "internal" }),
             });
         }
-        if (acmeDomains.Count > 0)
+        if (httpDomains.Count > 0)
         {
-            var issuerExtra = AcmeIssuerExtra(ctx);
-            var dnsProvider = DnsProviderName(issuerExtra, out var hasDnsChallenge);
-            if (!hasDnsChallenge)
+            if (!legacyDns)
             {
-                foreach (var w in acmeDomains.Where(IsWildcard))
-                    ctx.Warn($"'{w}': wildcard certificates from a public ACME CA need the DNS challenge, which requires a DNS provider plugin (caddy-dns) and its settings in the ACME issuer JSON under Settings > Caddy. Use Internal or Custom TLS for wildcards, or expect issuance to fail.");
+                foreach (var w in httpDomains.Where(IsWildcard))
+                    ctx.Warn($"'{w}': wildcard certificates from a public ACME CA need the DNS challenge. Configure a DNS provider under Settings > Caddy (ACME challenge), or use Internal or Custom TLS for wildcards; otherwise expect issuance to fail.");
                 if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge)
                     ctx.Warn("Both the HTTP and TLS-ALPN ACME challenges are disabled and no DNS challenge is configured; public certificates cannot be obtained.");
             }
-            if (dnsProvider is not null && ctx.Input.InstalledModules is { } modules && !modules.Contains("dns.providers." + dnsProvider, StringComparer.Ordinal))
-                ctx.Warn($"The ACME issuer JSON uses the DNS provider '{dnsProvider}', but the installed Caddy binary does not include the module 'dns.providers.{dnsProvider}'. Add the matching caddy-dns plugin (e.g. github.com/caddy-dns/{dnsProvider}) under Caddy > Plugins and rebuild Caddy.");
             var issuers = AcmeIssuers(s, ctx);
             if (issuerExtra is not null)
                 foreach (var iss in issuers) CaddyJson.DeepMerge(iss!.AsObject(), issuerExtra);
-            policies.Add(new JsonObject
-            {
-                ["subjects"] = StringArray(acmeDomains),
-                ["issuers"] = issuers,
-            });
+            policies.Add(new JsonObject { ["subjects"] = StringArray(httpDomains), ["issuers"] = issuers });
         }
+        if (dnsDomains.Count > 0)
+        {
+            var provider = DnsProviderCatalog.Normalize(s.DnsProvider)!;
+            if (ctx.Input.InstalledModules is { } installed && !installed.Contains(DnsProviderCatalog.ModulePrefix + provider, StringComparer.Ordinal))
+                ctx.Warn($"The DNS provider '{provider}' is not included in the installed Caddy binary (module '{DnsProviderCatalog.ModulePrefix}{provider}'), so DNS challenges fail. Add the plugin '{DnsProviderCatalog.PackagePrefix}{provider}' under Caddy > Plugins and rebuild Caddy.");
+            var dns = DnsChallenge(s, ctx);
+            var issuers = AcmeIssuers(s, ctx);
+            foreach (var iss in issuers)
+            {
+                // Enabling the DNS challenge disables HTTP-01 and TLS-ALPN-01 (certmagic acmeclient.go), so their options
+                // are replaced. apps.tls.resolvers is NOT read by the ACME issuer in v2.11.4, hence resolvers on every
+                // issuer. docs/research/round3-dns01.md §1 ;
+                // https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/
+                iss!["challenges"] = new JsonObject { ["dns"] = dns.DeepClone() };
+                if (issuerExtra is not null) CaddyJson.DeepMerge(iss.AsObject(), issuerExtra);
+            }
+            policies.Add(new JsonObject { ["subjects"] = StringArray(dnsDomains), ["issuers"] = issuers });
+        }
+        if (legacyDnsProvider is not null && acmeNames.Count > 0 && ctx.Input.InstalledModules is { } modules
+            && !modules.Contains("dns.providers." + legacyDnsProvider, StringComparer.Ordinal))
+            ctx.Warn($"The ACME issuer JSON uses the DNS provider '{legacyDnsProvider}', but the installed Caddy binary does not include the module 'dns.providers.{legacyDnsProvider}'. Add the matching caddy-dns plugin (e.g. {DnsProviderCatalog.PackagePrefix}{legacyDnsProvider}) under Caddy > Plugins and rebuild Caddy.");
         if (policies.Count > 0) tls["automation"] = new JsonObject { ["policies"] = policies };
 
         return tls.Count == 0 ? null : tls;
@@ -1512,6 +1556,44 @@ public static partial class CaddyConfigGenerator
         return issuerExtra?["challenges"]?["dns"]?["provider"]?["name"] is JsonValue v && v.GetValueKind() == JsonValueKind.String
             ? v.GetValue<string>().Trim()
             : null;
+    }
+
+    /// <summary>A first-class DNS provider is configured (CaddySettings.DnsProvider).</summary>
+    public static bool DnsProviderConfigured(CaddySettings s) => DnsProviderCatalog.Normalize(s.DnsProvider) is not null;
+
+    /// <summary>The host's ACME challenge: SiteHost.AcmeChallenge, or CaddySettings.DefaultAcmeChallenge for Default.</summary>
+    public static AcmeChallengeType EffectiveChallenge(SiteHost h, CaddySettings s) => h.AcmeChallenge switch
+    {
+        HostAcmeChallenge.Http => AcmeChallengeType.Http,
+        HostAcmeChallenge.Dns => AcmeChallengeType.Dns,
+        _ => s.DefaultAcmeChallenge,
+    };
+
+    /// <summary>
+    /// challenges.dns of the ACME issuers of DNS policies: the provider (name + fields typed per the catalog + secrets),
+    /// ttl / propagation_delay / propagation_timeout as caddy.Duration strings ("30s"; -1 disables the propagation check),
+    /// resolvers and override_domain. https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/ ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddytls/automation.go (DNSChallengeConfig)
+    /// </summary>
+    private static JsonObject DnsChallenge(CaddySettings s, Ctx ctx)
+    {
+        var name = DnsProviderCatalog.Normalize(s.DnsProvider)!;
+        var problems = new List<string>();
+        var provider = DnsProviderCatalog.BuildProvider(name, s.DnsProviderOptions ?? new(), ctx.Input.DnsProviderSecrets, problems);
+        foreach (var p in problems) ctx.Warn(p);
+        var dns = new JsonObject { ["provider"] = provider };
+        static string Seconds(int v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture) + "s";
+        if (s.DnsTtlSeconds is int ttl && ttl > 0) dns["ttl"] = Seconds(ttl);
+        if (s.DnsPropagationDelaySeconds is int delay && delay > 0) dns["propagation_delay"] = Seconds(delay);
+        if (s.DnsPropagationTimeoutSeconds is { } timeout)
+        {
+            if (timeout < 0) dns["propagation_timeout"] = -1; // caddy.Duration -1 = skip the propagation check
+            else if (timeout > 0) dns["propagation_timeout"] = Seconds(timeout);
+        }
+        var resolvers = (s.DnsResolvers ?? []).Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).Distinct().ToList();
+        if (resolvers.Count > 0) dns["resolvers"] = StringArray(resolvers);
+        if (!string.IsNullOrWhiteSpace(s.DnsOverrideDomain)) dns["override_domain"] = s.DnsOverrideDomain.Trim();
+        return dns;
     }
 
     private static JsonArray AcmeIssuers(CaddySettings s, Ctx ctx)
@@ -1657,10 +1739,103 @@ public static partial class CaddyConfigGenerator
         ["config"] = new JsonObject { ["persist"] = false },
     };
 
-    private static JsonObject Storage(AppPaths paths) => new()
+    /// <summary>Module id of the Redis storage plugin (github.com/pberkel/caddy-storage-redis).</summary>
+    public const string RedisStorageModule = "caddy.storage.redis";
+    public const string RedisStoragePlugin = "github.com/pberkel/caddy-storage-redis";
+
+    /// <summary>
+    /// The top-level `storage` for the configured backend. Every Caddy instance using the same storage shares certificates,
+    /// ACME accounts, locks and the internal CA, i.e. forms a cluster (docs/research/round3-cluster.md §1,
+    /// https://caddyserver.com/docs/automatic-https#storage). Falls back to local storage (with a warning) when the
+    /// backend settings are unusable, so Caddy never runs without storage.
+    /// </summary>
+    internal static JsonObject Storage(CaddySettings s, AppPaths paths, StorageSecrets secrets, List<string>? warnings)
     {
-        ["module"] = "file_system",
-        ["root"] = paths.CaddyStorageDir,
+        JsonObject Local() => new() { ["module"] = "file_system", ["root"] = paths.CaddyStorageDir };
+        void Warn(string m) { if (warnings is not null && !warnings.Contains(m)) warnings.Add(m); }
+        switch (s.StorageBackend)
+        {
+            case StorageBackend.FileSystem:
+                if (string.IsNullOrWhiteSpace(s.StoragePath))
+                {
+                    Warn("Shared file-system storage is selected but no folder is set; Caddy uses its local storage.");
+                    return Local();
+                }
+                return new JsonObject { ["module"] = "file_system", ["root"] = s.StoragePath.Trim() };
+            case StorageBackend.Redis:
+            {
+                var addresses = s.RedisAddresses.Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a.Trim()).Distinct().ToList();
+                if (addresses.Count == 0)
+                {
+                    Warn("Redis storage is selected but no address is set; Caddy uses its local storage.");
+                    return Local();
+                }
+                // pberkel/caddy-storage-redis: address is an ARRAY of host:port (docs/research/round3-cluster.md §2).
+                var o = new JsonObject
+                {
+                    ["module"] = "redis",
+                    ["client_type"] = "simple",
+                    ["address"] = StringArray(addresses),
+                    ["db"] = s.RedisDb,
+                };
+                if (!string.IsNullOrWhiteSpace(s.RedisUsername)) o["username"] = s.RedisUsername.Trim();
+                if (!string.IsNullOrEmpty(secrets.RedisPassword)) o["password"] = secrets.RedisPassword;
+                o["key_prefix"] = string.IsNullOrWhiteSpace(s.RedisKeyPrefix) ? "caddy" : s.RedisKeyPrefix.Trim();
+                if (!string.IsNullOrEmpty(secrets.RedisEncryptionKey)) o["encryption_key"] = secrets.RedisEncryptionKey;
+                if (s.RedisTls) o["tls_enabled"] = true;
+                if (s.RedisTls && s.RedisTlsInsecure) o["tls_insecure"] = true;
+                return o;
+            }
+            case StorageBackend.Custom:
+            {
+                var custom = CaddyJson.ParseObject(secrets.StorageJson, out var error);
+                if (custom?["module"] is JsonValue m && m.GetValueKind() == JsonValueKind.String && m.GetValue<string>().Trim().Length > 0)
+                    return custom;
+                Warn(error is not null
+                    ? $"The custom storage JSON {error}; Caddy uses its local storage."
+                    : "Custom storage is selected but its JSON (with a \"module\") is missing or could not be decrypted; Caddy uses its local storage.");
+                return Local();
+            }
+            default:
+                return Local();
+        }
+    }
+
+    /// <summary>Name of the log sink that writes the traffic statistics log.</summary>
+    public const string StatsLogName = "cpm_stats";
+
+    /// <summary>
+    /// Compact access log of every HTTP request for the Telemetry module: all access loggers (include is a dot-boundary
+    /// prefix match, so http.log.access also matches every per-host http.log.access.&lt;name&gt;), request/response
+    /// headers and TLS details removed by the filter encoder (nested fields are addressed with "&gt;"), rolled
+    /// uncompressed so the tailer can finish a rotated file.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/logging/filterencoder.go ;
+    /// docs/research/round3-accesslog.md §2-3
+    /// </summary>
+    private static JsonObject StatsLog(AppPaths paths) => new()
+    {
+        ["writer"] = new JsonObject
+        {
+            ["output"] = "file",
+            ["filename"] = paths.StatsLogFile,
+            ["roll_size_mb"] = 10,
+            ["roll_keep"] = 5,
+            ["roll_compression"] = "none",
+            ["mode"] = "0600",
+        },
+        ["encoder"] = new JsonObject
+        {
+            ["format"] = "filter",
+            ["wrap"] = new JsonObject { ["format"] = "json" },
+            ["fields"] = new JsonObject
+            {
+                ["request>headers"] = new JsonObject { ["filter"] = "delete" },
+                ["resp_headers"] = new JsonObject { ["filter"] = "delete" },
+                ["request>tls"] = new JsonObject { ["filter"] = "delete" },
+            },
+        },
+        ["level"] = "INFO",
+        ["include"] = new JsonArray("http.log.access"),
     };
 
     /// <summary>Caddy's logger for admin API requests. The manager polls the admin API every few seconds.</summary>

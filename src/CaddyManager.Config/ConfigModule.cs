@@ -29,8 +29,10 @@ public static class ConfigModule
 
         services.AddSingleton<CaddyConfigService>();
         services.AddSingleton<ICaddyConfigService>(sp => sp.GetRequiredService<CaddyConfigService>());
+        services.AddSingleton<IConfigChangeFeed>(sp => sp.GetRequiredService<CaddyConfigService>());
 
         services.AddSingleton<CertificateFileStore>();
+        services.AddSingleton<ICertificateMaterialStore>(sp => sp.GetRequiredService<CertificateFileStore>());
         services.AddSingleton<CertificateInventory>();
         services.AddSingleton<ICertificateInventory>(sp => sp.GetRequiredService<CertificateInventory>());
 

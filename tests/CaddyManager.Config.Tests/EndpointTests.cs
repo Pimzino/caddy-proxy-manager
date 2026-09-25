@@ -39,9 +39,9 @@ public sealed class ApiHost : IAsyncDisposable
     public RecordingAuditLog Audit { get; } = new();
     public RecordingEventSink Events { get; } = new();
 
-    private ApiHost(bool installBinary, Action<IServiceCollection>? configure)
+    private ApiHost(bool installBinary, Action<IServiceCollection>? configure, string? caddyBinary = null)
     {
-        if (installBinary) ConfigServices.InstallBinary(Env.Paths);
+        if (installBinary) ConfigServices.InstallBinary(Env.Paths, caddyBinary);
         // Keep the admin API pointed at a port where nothing listens.
         Env.Store.SaveSettings(new CaddySettings { AdminListen = $"127.0.0.1:{Net.FreeTcpPort()}", HttpPort = 18090, HttpsPort = 18453 });
 
@@ -69,7 +69,18 @@ public sealed class ApiHost : IAsyncDisposable
         Client = App.GetTestClient();
     }
 
-    public static ApiHost Start(bool installBinary = false, Action<IServiceCollection>? configure = null) => new(installBinary, configure);
+    public static ApiHost Start(bool installBinary = false, Action<IServiceCollection>? configure = null, string? caddyBinary = null) =>
+        new(installBinary, configure, caddyBinary);
+
+    /// <summary>Sends a request as the given role (X-Test-Role) with the CSRF header and an optional JSON body.</summary>
+    public Task<HttpResponseMessage> SendAsync(HttpMethod method, string url, object? body = null, string role = "admin")
+    {
+        var req = new HttpRequestMessage(method, url);
+        req.Headers.Add("X-Test-Role", role);
+        req.Headers.Add("X-CPM-Request", "1");
+        if (body is not null) req.Content = System.Net.Http.Json.JsonContent.Create(body, options: JsonDefaults.Api);
+        return Client.SendAsync(req);
+    }
 
     public IStore Store => Env.Store;
 

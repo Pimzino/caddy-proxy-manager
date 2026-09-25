@@ -50,8 +50,9 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(_env.Paths.CaddyProcessLog, def["writer"]!["filename"]!.GetValue<string>());
         Assert.Equal(20, def["writer"]!["roll_size_mb"]!.GetValue<int>());
         Assert.Equal(10, def["writer"]!["roll_keep"]!.GetValue<int>());
-        // Admin API request logging (the manager polls every few seconds) is split off at WARN into the same file.
-        Assert.Equal(["admin.api"], Strings(def["exclude"]));
+        // Admin API request logging (the manager polls every few seconds) is split off at WARN into the same file; access
+        // logs (traffic statistics are on by default) never go to caddy.log.
+        Assert.Equal(["admin.api", "http.log.access"], Strings(def["exclude"]));
         var adminLog = cfg["logging"]!["logs"]!["cpm_admin_api"]!;
         Assert.Equal(["admin.api"], Strings(adminLog["include"]));
         Assert.Equal("WARN", adminLog["level"]!.GetValue<string>());
@@ -625,7 +626,12 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(["http.log.access.cpm_access_h1"], Strings(logger["include"]));
         var srvLogs = Srv(cfg, "srv0")["logs"]!;
         Assert.Equal(["cpm_access_h1"], Strings(srvLogs["logger_names"]!["*.logs.example.com"]));
-        Assert.True(srvLogs["skip_unmapped_hosts"]!.GetValue<bool>());
+        // Traffic statistics (on by default) need every request logged: unmapped hosts are not skipped.
+        Assert.Null(srvLogs["skip_unmapped_hosts"]);
+
+        var noStats = Gen(new CaddySettings { TrafficStatsEnabled = false }, hosts: [h]).Config;
+        Assert.True(Srv(noStats, "srv0")["logs"]!["skip_unmapped_hosts"]!.GetValue<bool>());
+        Assert.Null(noStats["logging"]!["logs"]!["cpm_stats"]);
     }
 
     [Fact]

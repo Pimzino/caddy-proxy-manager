@@ -24,9 +24,16 @@ public sealed class RecordingEventSink : IEventSink
 {
     public List<(EventSeverity Severity, string Category, string Message, string? Key, string? AlertRule)> Events { get; } = new();
 
+    /// <summary>The details text of every event, in order.</summary>
+    public List<string?> Details { get; } = new();
+
     public void Raise(EventSeverity severity, string category, string message, string? details = null, string? key = null, string? alertRule = null)
     {
-        lock (Events) Events.Add((severity, category, message, key, alertRule));
+        lock (Events)
+        {
+            Events.Add((severity, category, message, key, alertRule));
+            Details.Add(details);
+        }
     }
 }
 
@@ -47,9 +54,9 @@ public sealed class ConfigServices : IDisposable
     public ServiceProvider Provider { get; }
     public RecordingEventSink Events { get; } = new();
 
-    public ConfigServices(bool installBinary)
+    public ConfigServices(bool installBinary, string? caddyBinary = null)
     {
-        if (installBinary) InstallBinary(Env.Paths);
+        if (installBinary) InstallBinary(Env.Paths, caddyBinary);
         var services = new ServiceCollection();
         services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
         services.AddCore(Env.Paths, Env.Store);
@@ -62,9 +69,9 @@ public sealed class ConfigServices : IDisposable
     public AppPaths Paths => Env.Paths;
     public CaddyConfigService Config => Provider.GetRequiredService<CaddyConfigService>();
 
-    public static void InstallBinary(AppPaths paths)
+    public static void InstallBinary(AppPaths paths, string? source = null)
     {
-        var src = CaddyBinary.Path ?? throw new InvalidOperationException("no caddy binary");
+        var src = source ?? CaddyBinary.Path ?? throw new InvalidOperationException("no caddy binary");
         Directory.CreateDirectory(paths.CaddyBinDir);
         if (File.Exists(paths.CaddyExe)) return;
         if (OperatingSystem.IsWindows()) File.Copy(src, paths.CaddyExe);

@@ -3,10 +3,22 @@ using CaddyManager.Config.Validation;
 using CaddyManager.Core;
 using CaddyManager.Core.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace CaddyManager.Config.Endpoints;
+
+/// <summary>
+/// Replicated resources (hosts, streams, access lists, certificates, Caddy settings) are read-only on a managed cluster
+/// node: their mutating endpoints answer ApiResults.RejectIfManagedNode (409 "Managed by the cluster primary").
+/// </summary>
+internal static class NodeGuard
+{
+    public static TBuilder RejectOnManagedNode<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder =>
+        builder.AddEndpointFilter(async (context, next) =>
+            ApiResults.RejectIfManagedNode(context.HttpContext.RequestServices) ?? await next(context));
+}
 
 /// <summary>Role checks inside endpoints whose route policy is broader than one of their operations.</summary>
 internal static class EndpointSecurity
@@ -40,6 +52,13 @@ internal static class EndpointSecurity
     public static string CertificateStore(HttpContext http) =>
         http.RequestServices.GetRequiredService<CertificateFileStore>().StoreRoot;
 
+    /// <summary>The shared file-system Caddy storage folder when that backend is used (never served as a static root).</summary>
+    public static string? SharedStorage(HttpContext http)
+    {
+        var s = http.RequestServices.GetRequiredService<IStore>().GetSettings<CaddySettings>();
+        return s.StorageBackend == StorageBackend.FileSystem && !string.IsNullOrWhiteSpace(s.StoragePath) ? s.StoragePath.Trim() : null;
+    }
+
     /// <summary>
     /// Privilege boundaries for a host (after field validation): advanced routes are admin-only, static roots may not
     /// expose protected folders, upstreams and advanced-route dials may not target the Caddy admin API or the manager UI.
@@ -61,7 +80,7 @@ internal static class EndpointSecurity
             // An administrator's UNC root stays editable for operators as long as they keep it unchanged.
             var rootUnchanged = existing is { Kind: HostKind.Static } &&
                                 string.Equals(existing.RootPath?.Trim(), host.RootPath?.Trim(), StringComparison.OrdinalIgnoreCase);
-            var problem = PathGuard.CheckStaticRoot(host.RootPath, paths, CertificateStore(http), isAdmin || rootUnchanged);
+            var problem = PathGuard.CheckStaticRoot(host.RootPath, paths, CertificateStore(http), isAdmin || rootUnchanged, SharedStorage(http));
             if (problem is { Status: 403 }) return Forbidden(problem.Message);
             if (problem is not null) v.Add(fieldPrefix + "rootPath", problem.Message);
         }

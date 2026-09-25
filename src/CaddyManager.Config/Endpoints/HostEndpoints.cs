@@ -43,7 +43,7 @@ internal static class HostEndpoints
             body.CreatedAt = body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
             if (await EndpointSecurity.CheckHostAsync(http, body, null, store) is { } denied) return denied;
-            if (ModelValidation.Validate(body, store) is { } problem) return problem;
+            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>()) is { } problem) return problem;
 
             var col = store.Col<SiteHost>();
             var isAdmin = await EndpointSecurity.IsAdminAsync(http);
@@ -55,7 +55,7 @@ internal static class HostEndpoints
                     ConfigTransaction.Audit(http, "created", "host", body.Id, Name(body), body.Kind.ToString().ToLowerInvariant());
                     return Results.Ok(new { item = isAdmin ? body : EndpointSecurity.ForViewer(body), apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPut("/{id}", async (string id, SiteHost? body, IStore store, HttpContext http) =>
         {
@@ -68,7 +68,7 @@ internal static class HostEndpoints
             body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
             if (await EndpointSecurity.CheckHostAsync(http, body, existing, store) is { } denied) return denied;
-            if (ModelValidation.Validate(body, store) is { } problem) return problem;
+            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>()) is { } problem) return problem;
 
             var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             return await ConfigTransaction.RunAsync(http, $"Host updated: {Name(body)}",
@@ -79,7 +79,7 @@ internal static class HostEndpoints
                     ConfigTransaction.Audit(http, "updated", "host", id, Name(body));
                     return Results.Ok(new { item = isAdmin ? body : EndpointSecurity.ForViewer(body), apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapDelete("/{id}", async (string id, IStore store, HttpContext http) =>
         {
@@ -94,12 +94,12 @@ internal static class HostEndpoints
                     ConfigTransaction.Audit(http, "deleted", "host", id, Name(existing));
                     return Results.Ok(new { apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPost("/{id}/enable", (string id, IStore store, HttpContext http) => SetEnabled(id, true, store, http))
-            .RequireAuthorization(Policies.Operator);
+            .RequireAuthorization(Policies.Operator).RejectOnManagedNode();
         g.MapPost("/{id}/disable", (string id, IStore store, HttpContext http) => SetEnabled(id, false, store, http))
-            .RequireAuthorization(Policies.Operator);
+            .RequireAuthorization(Policies.Operator).RejectOnManagedNode();
     }
 
     private static string Name(SiteHost h) => h.Domains.FirstOrDefault() ?? h.Id;
@@ -116,7 +116,7 @@ internal static class HostEndpoints
         if (enabled && EndpointSecurity.TargetProblems(updated, EndpointSecurity.Guard(store, includeUi: false)).FirstOrDefault() is { Message: not null } target)
             return ApiResults.BadRequest($"The host cannot be enabled: {target.Message}");
         if (enabled && updated.Kind == HostKind.Static &&
-            PathGuard.CheckStaticRoot(updated.RootPath, http.RequestServices.GetRequiredService<AppPaths>(), EndpointSecurity.CertificateStore(http), isAdmin: true) is { } rootProblem)
+            PathGuard.CheckStaticRoot(updated.RootPath, http.RequestServices.GetRequiredService<AppPaths>(), EndpointSecurity.CertificateStore(http), isAdmin: true, EndpointSecurity.SharedStorage(http)) is { } rootProblem)
             return ApiResults.BadRequest($"The host cannot be enabled: {rootProblem.Message}");
 
         var verb = enabled ? "enabled" : "disabled";
@@ -171,7 +171,7 @@ internal static class StreamEndpoints
                     return Results.Ok(new { item = body, apply });
                 },
                 concernsStreams: true);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPut("/{id}", async (string id, StreamHost? body, IStore store, HttpContext http) =>
         {
@@ -193,7 +193,7 @@ internal static class StreamEndpoints
                     return Results.Ok(new { item = body, apply });
                 },
                 concernsStreams: true);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapDelete("/{id}", async (string id, IStore store, HttpContext http) =>
         {
@@ -209,7 +209,7 @@ internal static class StreamEndpoints
                     return Results.Ok(new { apply });
                 },
                 concernsStreams: true);
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
     }
 
     private static string Name(StreamHost s) =>

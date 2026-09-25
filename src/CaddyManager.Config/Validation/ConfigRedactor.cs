@@ -7,14 +7,16 @@ namespace CaddyManager.Config.Validation;
 
 /// <summary>
 /// Removes secrets from Caddy JSON shown to non-administrators: ACME EAB MAC keys, DNS-provider credentials (everything
-/// under an issuer's challenges.dns.provider except its name), http_basic password hashes, inline PEM private keys and any value whose
-/// key name marks it as a secret (password, secret, token, api_key, ...). Values are replaced with "***".
+/// under an issuer's challenges.dns.provider except its name), http_basic password hashes, inline PEM private keys, every string
+/// of a custom storage module (top-level storage other than file_system/redis; Redis password and encryption_key match the
+/// key names) and any value whose key name marks it as a secret (password, secret, token, api_key, ...). Values are
+/// replaced with "***".
 /// </summary>
 public static partial class ConfigRedactor
 {
     public const string Mask = "***";
 
-    [GeneratedRegex(@"(password|passwd|secret|token|api_?key|apikey|mac_key|private_?key|client_secret|credential|auth_key|access_key|salt)",
+    [GeneratedRegex(@"(password|passwd|secret|token|api_?key|apikey|mac_key|private_?key|client_secret|credential|auth_key|access_key|encryption_?key|aes_key|salt)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SecretKeyRegex();
 
@@ -69,6 +71,15 @@ public static partial class ConfigRedactor
                         if (key != "name") o[key] = Mask;
                     return;
                 }
+                if (path is ["storage"] && o["module"] is JsonValue m && m.GetValueKind() == JsonValueKind.String
+                    && m.GetValue<string>() is not ("file_system" or "redis"))
+                {
+                    // A custom storage module (CaddySettings.StorageJsonProtected): every string value can be a
+                    // credential (connection strings, S3 keys, consul tokens); only the module name stays.
+                    foreach (var key in o.Select(p => p.Key).ToList())
+                        if (key != "module") MaskStrings(o, key);
+                    return;
+                }
                 foreach (var key in o.Select(p => p.Key).ToList())
                 {
                     var child = o[key];
@@ -86,6 +97,24 @@ public static partial class ConfigRedactor
             case JsonArray a:
                 foreach (var child in a)
                     if (child is not null) RedactNode(child, path);
+                break;
+        }
+    }
+
+    private static void MaskStrings(JsonObject parent, string key)
+    {
+        switch (parent[key])
+        {
+            case JsonValue v when v.GetValueKind() == JsonValueKind.String:
+                parent[key] = Mask;
+                break;
+            case JsonObject o:
+                foreach (var k in o.Select(p => p.Key).ToList()) MaskStrings(o, k);
+                break;
+            case JsonArray a:
+                for (var i = 0; i < a.Count; i++)
+                    if (a[i] is JsonValue av && av.GetValueKind() == JsonValueKind.String) a[i] = Mask;
+                    else if (a[i] is JsonObject ao) foreach (var k in ao.Select(p => p.Key).ToList()) MaskStrings(ao, k);
                 break;
         }
     }

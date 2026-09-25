@@ -19,7 +19,7 @@ internal static class CaddyfileImportEndpoints
 
     public static void Map(IEndpointRouteBuilder app)
     {
-        var g = app.MapGroup("/api/config/caddyfile/import").RequireAuthorization(Policies.Admin);
+        var g = app.MapGroup("/api/config/caddyfile/import").RequireAuthorization(Policies.Admin).RejectOnManagedNode();
 
         g.MapPost("/", async (CaddyfileAdaptInput? body, CaddyConfigService config, IStore store, CancellationToken ct) =>
         {
@@ -64,8 +64,8 @@ internal static class CaddyfileImportEndpoints
                 h.CreatedAt = h.UpdatedAt = now;
                 ModelValidation.Normalize(h);
                 var prefix = $"hosts[{i}].";
-                ModelValidation.ValidateFields(h, store, v, prefix);
-                if (h.Kind == HostKind.Static && PathGuard.CheckStaticRoot(h.RootPath, paths, storeRoot, isAdmin: true) is { } rootProblem)
+                ModelValidation.ValidateFields(h, store, v, prefix, http.RequestServices.GetService<ISecretProtector>());
+                if (h.Kind == HostKind.Static && PathGuard.CheckStaticRoot(h.RootPath, paths, storeRoot, isAdmin: true, EndpointSecurity.SharedStorage(http)) is { } rootProblem)
                     v.Add(prefix + "rootPath", rootProblem.Message);
                 foreach (var (field, message) in EndpointSecurity.TargetProblems(h, guard))
                     v.Add(prefix + field, message);

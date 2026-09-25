@@ -8,8 +8,27 @@ using Microsoft.Extensions.Logging;
 namespace CaddyManager.Config.Certificates;
 
 /// <summary>Writes uploaded certificates to the shared certificate store: &lt;store&gt;/&lt;certId&gt;/fullchain.pem + privkey.pem.</summary>
-public sealed class CertificateFileStore(IStore store, AppPaths paths, ILogger<CertificateFileStore> logger)
+public sealed class CertificateFileStore(IStore store, AppPaths paths, ILogger<CertificateFileStore> logger) : ICertificateMaterialStore
 {
+    /// <summary>
+    /// ICertificateMaterialStore (certificates replicated from a cluster primary): parses and validates the PEM (the key
+    /// must match the certificate) and writes it like an upload, with the same folder ACL. Throws
+    /// CertificateImportException when the material is invalid or cannot be written.
+    /// </summary>
+    public (string CertPath, string KeyPath) WritePem(string certificateId, string certificatePem, string privateKeyPem)
+    {
+        if (string.IsNullOrWhiteSpace(certificateId) || certificateId.IndexOfAny(['/', '\\', ':']) >= 0 || certificateId.Contains("..", StringComparison.Ordinal))
+            throw new CertificateImportException($"'{certificateId}' is not a valid certificate id.");
+        return Write(certificateId, CertificateParser.FromPem(certificatePem, privateKeyPem));
+    }
+
+    /// <summary>ICertificateMaterialStore: removes the certificate's folder from the store (no error when missing).</summary>
+    public void Delete(string certificateId)
+    {
+        if (string.IsNullOrWhiteSpace(certificateId) || certificateId.IndexOfAny(['/', '\\', ':']) >= 0 || certificateId.Contains("..", StringComparison.Ordinal)) return;
+        DeleteFolder(certificateId);
+    }
+
     public const string ChainFileName = "fullchain.pem";
     public const string KeyFileName = "privkey.pem";
 

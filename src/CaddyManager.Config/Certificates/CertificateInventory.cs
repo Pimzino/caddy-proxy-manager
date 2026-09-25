@@ -11,7 +11,10 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
     public const string InternalIssuerDir = "local";
     public const string InternalRootId = "pki/authorities/local/root";
 
-    public string InternalRootPath => Path.Combine(paths.CaddyStorageDir, "pki", "authorities", "local", "root.crt");
+    /// <summary>File-system root of the configured Caddy storage; null for Redis / custom storage modules.</summary>
+    public string? StorageRoot => Services.CaddyStorage.FileSystemRoot(store.GetSettings<CaddySettings>(), paths);
+
+    public string InternalRootPath => Services.CaddyStorage.InternalRootPath(StorageRoot ?? paths.CaddyStorageDir);
 
     public Task<List<CertificateInfo>> ListAsync(CancellationToken ct = default) => Task.Run(() => List(ct), ct);
 
@@ -43,7 +46,9 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
             });
         }
 
-        result.AddRange(ScanStorage(hosts, now, ct));
+        // Redis / custom storage modules cannot be scanned from here: only custom certificates are listed then.
+        if (StorageRoot is { } root) result.AddRange(ScanStorage(root, hosts, now, ct));
+        else logger.LogDebug("Certificates are kept in {Backend} storage; only custom certificates are listed", Services.CaddyStorage.BackendName(store.GetSettings<CaddySettings>().StorageBackend));
         return result;
     }
 
@@ -84,10 +89,11 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
         }
     }
 
-    private IEnumerable<CertificateInfo> ScanStorage(List<SiteHost> hosts, DateTime now, CancellationToken ct)
+    private IEnumerable<CertificateInfo> ScanStorage(string storageRoot, List<SiteHost> hosts, DateTime now, CancellationToken ct)
     {
         var list = new List<CertificateInfo>();
-        var certRoot = Path.Combine(paths.CaddyStorageDir, "certificates");
+        var certRoot = Path.Combine(storageRoot, "certificates");
+        var rootCa = Services.CaddyStorage.InternalRootPath(storageRoot);
         if (Directory.Exists(certRoot))
         {
             try
@@ -115,9 +121,9 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
             }
         }
 
-        if (File.Exists(InternalRootPath))
+        if (File.Exists(rootCa))
         {
-            var info = Describe(InternalRootId, CertificateKind.InternalRoot, "Caddy Local Authority (root CA)", InternalRootPath, null,
+            var info = Describe(InternalRootId, CertificateKind.InternalRoot, "Caddy Local Authority (root CA)", rootCa, null,
                 InternalIssuerDir, hosts, now, _ => false);
             list.Add(info with
             {

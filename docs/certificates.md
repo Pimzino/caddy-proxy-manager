@@ -32,21 +32,66 @@ Set **Settings › Caddy › Certificate store path** to use a shared location i
 Windows-store certificates must have an **exportable private key** (certificate template: *Allow private key to be
 exported*), because Caddy reads PEM files.
 
+## DNS-01 challenge (wildcards, servers not reachable from the internet)
+
+With the DNS challenge the CA checks a TXT record `_acme-challenge.<domain>` that Caddy creates through your DNS
+provider's API, so no inbound port 80/443 is needed and **wildcard** names (`*.example.com`) can be issued.
+
+1. **Caddy › Plugins**: add the provider's plugin (e.g. `github.com/caddy-dns/cloudflare`) and *Rebuild & install*.
+   Settings › Caddy offers this when the selected provider is not in the installed Caddy.
+2. **Settings › Caddy › ACME challenge**: pick the **DNS provider** from the list (Cloudflare, Route 53, Azure DNS,
+   DigitalOcean, Google Cloud DNS, OVHcloud, Hetzner, GoDaddy, Porkbun, Namecheap, Gandi, Duck DNS, IONOS, deSEC,
+   Linode, Vultr, Netlify, DNSimple, Bunny, NameSilo, Alibaba Cloud, PowerDNS, ACME-DNS, RFC 2136) and fill in its
+   fields. Credentials (tokens, secrets, TSIG keys) are **write-only**: stored encrypted, never shown again, and
+   replaced by `***` in any Caddy error message, event or configuration a non-administrator can see. Other providers
+   can be used by their module name (`dns.providers.<name>`) with plain options.
+3. Choose where DNS-01 is used: **Default challenge** = DNS for every ACME host, or per host on the TLS tab
+   (*ACME challenge*: Default / HTTP / DNS). Wildcard names always use DNS once a provider is configured.
+
+Optional settings: **propagation delay** (wait before the first check), **propagation timeout** (default 2 minutes;
+`-1` skips the check — useful when the check cannot see your authoritative servers), **TTL** of the TXT record,
+**resolvers** (`host:port`, e.g. `10.0.0.53:53`; used for the zone lookup and propagation check — set them behind
+split-horizon DNS where the internal resolvers do not show the public zone), and **override domain** for delegated
+challenges (CNAME `_acme-challenge.example.com` → `_acme-challenge.delegated.example.net`).
+
+*RFC 2136* works with BIND, Knot, PowerDNS and Windows DNS configured for secure dynamic updates with a TSIG key
+(`server` host:port, key name, algorithm such as `hmac-sha256`, base64 secret).
+
+Enabling DNS disables the HTTP and TLS-ALPN challenges for those names. The *ACME issuer JSON* (Plugins & advanced)
+is still merged into every ACME issuer after generation, for options the form does not cover.
+
 ## Wildcard certificates
 
 - **Internal CA / custom**: supported directly.
-- **ACME**: wildcard names require the DNS-01 challenge, which needs a DNS provider plugin:
-  1. **Caddy › Plugins**: add e.g. `github.com/caddy-dns/cloudflare`, then *Rebuild & install*.
-  2. **Settings › Caddy › Plugins & advanced › ACME issuer JSON** (stored encrypted):
-     ```json
-     { "challenges": { "dns": { "provider": { "name": "cloudflare", "api_token": "<token>" } } } }
-     ```
+- **ACME**: needs the DNS-01 challenge (above). Without a DNS provider the configuration warns and issuance fails;
+  exact names covered by such a wildcard get their own certificates.
+
+## Shared storage (several servers)
+
+Caddy keeps ACME accounts, issued certificates, locks and the internal CA in its **storage**. Servers configured with
+the **same storage** coordinate as one certificate cluster: one server obtains or renews a certificate, the others
+load it, and they share the internal CA root. HTTP-01 and TLS-ALPN-01 challenges are answered by any of them, so they
+work behind a load balancer. (Configuration itself is not shared by storage — the manager's cluster feature pushes it.)
+
+**Settings › Cluster › Shared storage**:
+
+| Backend | Setting | Notes |
+|---|---|---|
+| Local (default) | `C:\ProgramData\CaddyProxyManager\caddy\data` | Not shared. |
+| Shared folder | Local path or UNC share, e.g. `\\fileserver\caddy$` | Grant the computer accounts (`DOMAIN\SERVER$`) *Modify*; mapped drive letters are not visible to services. The manager tests that it can write there before saving. |
+| Redis | `host:port` addresses, database, user/password, key prefix, optional TLS and encryption key | Needs the plugin `github.com/pberkel/caddy-storage-redis`. |
+| Custom | Storage JSON with `"module"` (e.g. consul, s3, postgres) | Needs the plugin providing `caddy.storage.<module>`; stored encrypted. |
+
+Switching from **Local** to a shared folder copies `certificates\`, `acme\`, `pki\` and `ocsp\` to the new folder when
+they do not exist there yet (existing data is never overwritten), so issued certificates and the internal CA root are
+kept; the result message lists what was copied. With Redis or a custom module the Certificates page lists only custom
+certificates (ACME/internal certificates live in that storage).
 
 ## Internal CA root
 
 **Certificates › Internal root CA** downloads Caddy's root certificate. Deploy it to *Trusted Root Certification
 Authorities* with Group Policy (see [group-policy.md](group-policy.md)). The root key lives in
-`C:\ProgramData\CaddyProxyManager\caddy\data\pki` — back it up (it is included in backups) and protect it.
+`C:\ProgramData\CaddyProxyManager\caddy\data\pki` (or `pki\` in the shared storage folder) — back it up (it is included in backups) and protect it.
 
 ## Monitoring
 

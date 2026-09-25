@@ -51,6 +51,7 @@ public static partial class ModelValidation
         h.RootPath = h.RootPath?.Trim();
         h.ResponseContentType = string.IsNullOrWhiteSpace(h.ResponseContentType) ? "text/plain; charset=utf-8" : h.ResponseContentType.Trim();
         if (h.Tls != TlsMode.Custom) h.CertificateId = null;
+        if (h.Tls != TlsMode.Acme) h.AcmeChallenge = HostAcmeChallenge.Default;
     }
 
     /// <summary>Validator that prefixes field names (e.g. "hosts[2]." for bulk imports).</summary>
@@ -59,16 +60,17 @@ public static partial class ModelValidation
         public void Add(string field, string message) => target.Add(prefix + field, message);
     }
 
-    public static IResult? Validate(SiteHost h, IStore store)
+    public static IResult? Validate(SiteHost h, IStore store, ISecretProtector? secrets = null)
     {
         var v = new Validator();
-        ValidateFields(h, store, v, "");
+        ValidateFields(h, store, v, "", secrets);
         if (!v.IsValid) return v.ToResult();
         return DomainConflict(h, store);
     }
 
     /// <summary>Field validation of a host (no conflict check); errors are added to <paramref name="target"/> with the prefix.</summary>
-    internal static void ValidateFields(SiteHost h, IStore store, Validator target, string prefix)
+    /// <param name="secrets">When given, the DNS provider's required secret fields are checked for hosts using the DNS challenge.</param>
+    internal static void ValidateFields(SiteHost h, IStore store, Validator target, string prefix, ISecretProtector? secrets = null)
     {
         var v = new FieldErrors(target, prefix);
         if (h.Domains.Count == 0) v.Add("domains", "At least one domain is required.");
@@ -128,6 +130,18 @@ public static partial class ModelValidation
         }
         if (h.AccessListId is not null && store.Col<AccessList>().FindById(h.AccessListId) is null)
             v.Add("accessListId", "The selected access list does not exist.");
+        if (h.Tls == TlsMode.Acme && h.AcmeChallenge == HostAcmeChallenge.Dns)
+        {
+            var settings = store.GetSettings<CaddySettings>();
+            if (!CaddyConfigGenerator.DnsProviderConfigured(settings))
+                v.Add("acmeChallenge", "The DNS challenge needs a DNS provider: configure it under Settings > Caddy (ACME challenge) first.");
+            else if (DnsProviders.DnsProviderCatalog.Find(settings.DnsProvider) is { } provider)
+            {
+                var missing = MissingProviderFields(settings, secrets is null ? null : Services.SettingsSecrets.Read(settings, secrets).DnsProviderSecrets);
+                if (missing.Count > 0)
+                    v.Add("acmeChallenge", $"The {provider.Label} DNS provider settings are incomplete (missing: {string.Join(", ", missing)}). Complete them under Settings > Caddy.");
+            }
+        }
 
         if (h.AdvancedRoutesJson is not null)
         {
@@ -257,8 +271,9 @@ public static partial class ModelValidation
             v.Add("eabKeyId", "External account binding needs both the key ID and the MAC key.");
         if (s.AcmeCa == AcmeCa.ZeroSsl && string.IsNullOrWhiteSpace(s.AcmeEmail) && string.IsNullOrWhiteSpace(s.EabKeyId))
             v.Add("acmeEmail", "ZeroSSL needs an e-mail address (or EAB credentials).");
-        if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge && !hasDnsChallenge)
-            v.Add("disableTlsAlpnChallenge", "At least one ACME challenge (HTTP or TLS-ALPN) must stay enabled unless a DNS challenge is configured in the ACME issuer JSON.");
+        if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge && !hasDnsChallenge
+            && !(s.DefaultAcmeChallenge == AcmeChallengeType.Dns && CaddyConfigGenerator.DnsProviderConfigured(s)))
+            v.Add("disableTlsAlpnChallenge", "At least one ACME challenge (HTTP or TLS-ALPN) must stay enabled unless the DNS challenge is the default (Settings > Caddy > ACME challenge) or configured in the ACME issuer JSON.");
         if (ui is not null)
         {
             if (s.HttpPort == ui.Port || (ui.HttpsEnabled && s.HttpPort == ui.HttpsPort))
@@ -318,5 +333,146 @@ public static partial class ModelValidation
             }
         }
         return v.IsValid ? null : v.ToResult();
+    }
+
+    // ------------------------------------------------------------------ Round 3: DNS challenge + storage
+
+    [GeneratedRegex("^[A-Za-z0-9_]+$", RegexOptions.CultureInvariant)]
+    private static partial Regex FieldNameRegex();
+
+    [GeneratedRegex("^[a-z0-9_.]+$", RegexOptions.CultureInvariant)]
+    private static partial Regex StorageModuleRegex();
+
+    /// <summary>Plugins that provide common storage modules (docs/research/round3-cluster.md §2).</summary>
+    private static readonly Dictionary<string, string> StoragePlugins = new(StringComparer.Ordinal)
+    {
+        ["redis"] = CaddyConfigGenerator.RedisStoragePlugin,
+        ["postgres"] = "github.com/yroc92/postgres-storage",
+        ["consul"] = "github.com/pteich/caddy-tlsconsul",
+        ["s3"] = "github.com/ss098/certmagic-s3",
+    };
+
+    /// <summary>Missing required fields of the configured catalog provider (options or secrets), e.g. ["api_token"].</summary>
+    /// <param name="secrets">Plain secrets; null = unknown (secret fields are not checked).</param>
+    public static List<string> MissingProviderFields(CaddySettings s, IReadOnlyDictionary<string, string>? secrets)
+    {
+        if (DnsProviders.DnsProviderCatalog.Find(s.DnsProvider) is not { } info) return [];
+        return info.Fields.Where(f => f.Required && (f.Secret
+                ? secrets is not null && (!secrets.TryGetValue(f.Name, out var sv) || string.IsNullOrWhiteSpace(sv))
+                : !(s.DnsProviderOptions ?? new()).TryGetValue(f.Name, out var ov) || string.IsNullOrWhiteSpace(ov)))
+            .Select(f => f.Name).ToList();
+    }
+
+    /// <summary>
+    /// Validates the DNS challenge (provider name, typed fields, required fields when DNS is used by default or by an
+    /// enabled ACME host, resolvers, durations) and the storage backend (FileSystem: absolute path the manager can write
+    /// — tested only when <paramref name="storageChanged"/>; Redis: addresses; Custom: object with a "module"; plugin
+    /// modules present when the installed binary is known).
+    /// </summary>
+    public static IResult? ValidateDnsAndStorage(CaddySettings s, Services.SettingsSecrets plain, IStore store,
+        IReadOnlyCollection<string>? modules, bool storageChanged)
+    {
+        var v = new Validator();
+        var provider = DnsProviders.DnsProviderCatalog.Normalize(s.DnsProvider);
+        var info = DnsProviders.DnsProviderCatalog.Find(provider);
+        if (provider is not null && !DnsProviders.DnsProviderCatalog.IsValidName(provider))
+            v.Add("dnsProvider", "Enter the provider's module name (lower-case letters, digits and '_'), e.g. cloudflare for dns.providers.cloudflare.");
+        foreach (var (key, value) in s.DnsProviderOptions ?? new())
+        {
+            if (!FieldNameRegex().IsMatch(key)) { v.Add($"dnsProviderOptions.{key}", $"'{key}' is not a valid provider field name."); continue; }
+            if (key == "name") { v.Add("dnsProviderOptions.name", "'name' is set by the provider selection."); continue; }
+            if (info is null) continue;
+            var field = info.Fields.FirstOrDefault(f => f.Name == key);
+            if (field is null) v.Add($"dnsProviderOptions.{key}", $"'{key}' is not a field of the {info.Label} provider.");
+            else if (field.Secret) v.Add($"dnsProviderOptions.{key}", $"'{key}' is a secret; send it in dnsProviderSecrets so it is stored encrypted.");
+            else
+            {
+                DnsProviders.DnsProviderCatalog.Convert(field.Type, value, out var error);
+                if (error is not null) v.Add($"dnsProviderOptions.{key}", $"{field.Label} {error}.");
+            }
+        }
+        foreach (var key in plain.DnsProviderSecrets.Keys)
+        {
+            if (!FieldNameRegex().IsMatch(key) || key == "name") v.Add($"dnsProviderSecrets.{key}", $"'{key}' is not a valid provider field name.");
+            else if (info is not null && info.Fields.FirstOrDefault(f => f.Name == key) is not { Secret: true })
+                v.Add($"dnsProviderSecrets.{key}", $"'{key}' is not a secret field of the {info.Label} provider.");
+        }
+
+        var acmeHosts = store.Col<SiteHost>().FindAll().Where(h => h.Enabled && h.Tls == TlsMode.Acme).ToList();
+        var dnsHost = acmeHosts.FirstOrDefault(h => h.AcmeChallenge == HostAcmeChallenge.Dns);
+        var dnsUsed = s.DefaultAcmeChallenge == AcmeChallengeType.Dns || dnsHost is not null;
+        if (dnsUsed && provider is null)
+            v.Add("dnsProvider", s.DefaultAcmeChallenge == AcmeChallengeType.Dns
+                ? "The DNS challenge is the default challenge: select the DNS provider that manages your zones."
+                : $"The host '{dnsHost!.Domains.FirstOrDefault() ?? dnsHost.Id}' uses the DNS challenge: select the DNS provider that manages your zones.");
+        // Wildcard ACME hosts use the provider as soon as one is selected.
+        if (provider is not null && (dnsUsed || acmeHosts.Any(h => h.Domains.Any(d => d.StartsWith("*.", StringComparison.Ordinal)))))
+            foreach (var missing in MissingProviderFields(s, plain.DnsProviderSecrets))
+            {
+                var field = info!.Fields.First(f => f.Name == missing);
+                v.Add(field.Secret ? $"dnsProviderSecrets.{missing}" : $"dnsProviderOptions.{missing}", $"{info.Label}: '{field.Label}' is required.");
+            }
+
+        for (var i = 0; i < s.DnsResolvers.Count; i++)
+            if (!IsHostPort(s.DnsResolvers[i]))
+                v.Add($"dnsResolvers[{i}]", $"'{s.DnsResolvers[i]}' is not host:port (e.g. 1.1.1.1:53).");
+        if (s.DnsPropagationDelaySeconds is < 0 or > 86400) v.Add("dnsPropagationDelaySeconds", "Propagation delay must be 0-86400 seconds.");
+        if (s.DnsPropagationTimeoutSeconds is not null and (< -1 or > 86400))
+            v.Add("dnsPropagationTimeoutSeconds", "Propagation timeout must be 1-86400 seconds, or -1 to skip the propagation check.");
+        if (s.DnsTtlSeconds is < 0 or > 604800) v.Add("dnsTtlSeconds", "TTL must be 0-604800 seconds.");
+        if (s.DnsOverrideDomain is { } od && (od.Any(char.IsWhiteSpace) || od.Length > 253))
+            v.Add("dnsOverrideDomain", "Enter a domain name such as _acme-challenge.delegated.example.net.");
+
+        switch (s.StorageBackend)
+        {
+            case StorageBackend.FileSystem:
+                if (string.IsNullOrWhiteSpace(s.StoragePath))
+                    v.Add("storagePath", "Enter the shared folder (local path or UNC share, e.g. \\\\fileserver\\caddy).");
+                else if (!IsAbsolutePath(s.StoragePath) || !Path.IsPathFullyQualified(s.StoragePath))
+                    v.Add("storagePath", "The storage folder must be an absolute path on this server or a UNC share (\\\\server\\share\\caddy). Mapped drive letters are not visible to services.");
+                else if (storageChanged && Services.CaddyStorage.CheckWritable(s.StoragePath) is { } writeError)
+                    v.Add("storagePath", $"The manager cannot write to '{s.StoragePath}': {writeError} On a share, grant the computer accounts (DOMAIN\\SERVER$) modify rights.");
+                break;
+            case StorageBackend.Redis:
+                if (s.RedisAddresses.Count == 0) v.Add("redisAddresses", "Enter at least one Redis address (host:port).");
+                for (var i = 0; i < s.RedisAddresses.Count; i++)
+                    if (!IsHostPort(s.RedisAddresses[i])) v.Add($"redisAddresses[{i}]", $"'{s.RedisAddresses[i]}' is not host:port (e.g. redis.corp.local:6379).");
+                if (s.RedisDb < 0) v.Add("redisDb", "The Redis database index cannot be negative.");
+                if (modules is not null && !modules.Contains(CaddyConfigGenerator.RedisStorageModule, StringComparer.Ordinal))
+                    v.Add("storageBackend", $"The installed Caddy binary does not include Redis storage. Add the plugin '{CaddyConfigGenerator.RedisStoragePlugin}' under Caddy > Plugins and rebuild Caddy first.");
+                break;
+            case StorageBackend.Custom:
+                var custom = CaddyJson.ParseObject(plain.StorageJson, out var customError);
+                if (custom is null)
+                    v.Add("storageJson", customError is null ? "Enter the storage JSON object, including its \"module\"." : "The storage JSON " + customError + ".");
+                else if (custom["module"] is not JsonValue mv || mv.GetValueKind() != JsonValueKind.String || mv.GetValue<string>().Trim().Length == 0)
+                    v.Add("storageJson", "The storage JSON needs a string \"module\" (e.g. \"redis\", \"consul\", \"s3\").");
+                else
+                {
+                    var module = mv.GetValue<string>().Trim();
+                    if (!StorageModuleRegex().IsMatch(module))
+                        v.Add("storageJson", $"'{module}' is not a storage module name (the part after caddy.storage.).");
+                    else if (modules is not null && !modules.Contains("caddy.storage." + module, StringComparer.Ordinal))
+                        v.Add("storageBackend", StoragePlugins.TryGetValue(module, out var plugin)
+                            ? $"The installed Caddy binary does not include the storage module 'caddy.storage.{module}'. Add the plugin '{plugin}' under Caddy > Plugins and rebuild Caddy first."
+                            : $"The installed Caddy binary does not include the storage module 'caddy.storage.{module}'. Add the plugin that provides it under Caddy > Plugins and rebuild Caddy first.");
+                }
+                break;
+        }
+        return v.IsValid ? null : v.ToResult();
+    }
+
+    /// <summary>host:port with a valid host (IPv6 in brackets) and port.</summary>
+    internal static bool IsHostPort(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var t = value.Trim();
+        var colon = t.LastIndexOf(':');
+        if (colon <= 0 || !int.TryParse(t[(colon + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var port) || !NetUtil.IsValidPort(port))
+            return false;
+        var host = t[..colon];
+        if (host.StartsWith('[') && host.EndsWith(']')) host = host[1..^1];
+        else if (host.Contains(':')) return false;
+        return NetUtil.IsValidHost(host);
     }
 }

@@ -72,7 +72,7 @@ internal static class AccessListEndpoints
                     ConfigTransaction.Audit(http, "created", "accessList", list.Id, list.Name);
                     return Results.Ok(new { item = ToDto(list, store.Col<SiteHost>().FindAll().ToList()), apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapPut("/{id}", async (string id, AccessListInput? body, IStore store, HttpContext http) =>
         {
@@ -90,7 +90,7 @@ internal static class AccessListEndpoints
                     ConfigTransaction.Audit(http, "updated", "accessList", id, list.Name);
                     return Results.Ok(new { item = ToDto(list, store.Col<SiteHost>().FindAll().ToList()), apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
 
         g.MapDelete("/{id}", async (string id, IStore store, HttpContext http) =>
         {
@@ -108,7 +108,7 @@ internal static class AccessListEndpoints
                     ConfigTransaction.Audit(http, "deleted", "accessList", id, existing.Name);
                     return Results.Ok(new { apply });
                 });
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Operator).RejectOnManagedNode();
     }
 
     internal static AccessListDto ToDto(AccessList a, List<SiteHost> hosts) => new()

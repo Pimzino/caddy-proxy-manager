@@ -71,6 +71,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./.github/scripts/get-caddy.ps1 -Which tested
 
+      # Pebble (test ACME CA, digest-verified) and Caddy CaddyVersion.Tested built with caddy-dns/rfc2136 + cloudflare for
+      # the DNS-01 issuance and secret-scrubbing E2E tests (Config). The tests never download on CI (CPM_E2E_NO_DOWNLOAD).
+      - name: Download E2E tools (Pebble, Caddy with caddy-dns)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/get-e2e-tools.ps1
+
       - name: .NET tests
         shell: pwsh
         # -m:1 runs the test projects one after another: several suites start real Caddy processes on dynamic ports.
@@ -81,6 +89,8 @@ jobs:
           # Runs the HTTP/3 0-RTT test (allow_0rtt=false and the QUIC listener release before loading). The HTTP/3 tests
           # use the msquic that .NET ships on Windows (QuicConnection.IsSupported: Windows 11 / Server 2022 or later).
           CPM_AIOQUIC_PYTHON: ${{ steps.py.outputs.python-path }}
+          # The E2E tools come from the step above; a missing tool makes its test skip, which the gate below fails.
+          CPM_E2E_NO_DOWNLOAD: '1'
         run: dotnet test CaddyManager.sln -c Release -m:1 --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
 
       # The E2E tests skip themselves when a prerequisite is missing (aioquic, msquic, Windows, elevation). On this runner
@@ -94,6 +104,10 @@ jobs:
             'CaddyManager.Config.Tests.TlsE2ETests.Http3_resumed_requests_on_ip_restricted_hosts_never_get_425'
             'CaddyManager.Config.Tests.Http3UpstreamE2ETests.*'
             'CaddyManager.Config.Tests.WindowsCertificateStoreE2ETests.*'
+            'CaddyManager.Config.Tests.Dns01IssuanceE2ETests.*'
+            'CaddyManager.Config.Tests.TrafficStatsLogE2ETests.*'
+            'CaddyManager.Config.Tests.SharedStorageE2ETests.*'
+            'CaddyManager.Config.Tests.SecretScrubE2ETests.*'
             'CaddyManager.Platform.Tests.CaddyServiceStartPendingE2ETests.*'
             'CaddyManager.Platform.Tests.WindowsPlatformE2ETests.*'
             'CaddyManager.Platform.Tests.WindowsServiceManagerTests.*'
@@ -106,6 +120,10 @@ jobs:
             'http3-0rtt-ip-access-list.json'
             'http3-upstream-framing.json'
             'windows-certificate-store-export.json'
+            'dns01-issuance.json'
+            'stats-log.json'
+            'shared-storage.json'
+            'secret-scrub.json'
             'caddy-service-start-pending.json'
             'caddy-service-real-cycles.json'
             'caddy-pin.json'

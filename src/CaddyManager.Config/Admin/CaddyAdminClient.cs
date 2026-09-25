@@ -144,7 +144,9 @@ public sealed partial class CaddyAdminClient : ICaddyAdminClient
             if (resp.IsSuccessStatusCode) return;
             var body = await resp.Content.ReadAsStringAsync(CancellationToken.None);
             var msg = ExtractError(body);
-            _logger.LogWarning("Caddy rejected the configuration ({Status}): {Error}", (int)resp.StatusCode, msg);
+            // The message is not logged here: it can contain credentials (e.g. a DNS provider token) and is logged
+            // by CaddyConfigService after secrets were scrubbed.
+            _logger.LogWarning("Caddy rejected the configuration (HTTP {Status})", (int)resp.StatusCode);
             throw new CaddyAdminException(msg);
         }
     }

@@ -77,15 +77,16 @@ public static class E2EArtifacts
 /// </summary>
 public sealed class LiveCaddy : IDisposable
 {
-    public ConfigServices S { get; } = new(installBinary: true);
+    public ConfigServices S { get; }
     public int HttpPort { get; }
     public int HttpsPort { get; }
     public int AdminPort { get; }
     public CaddyAdminClient Admin => S.Provider.GetRequiredService<CaddyAdminClient>();
     public CaddyProcess? Process { get; private set; }
 
-    public LiveCaddy(Action<CaddySettings>? configure = null)
+    public LiveCaddy(Action<CaddySettings>? configure = null, string? caddyBinary = null)
     {
+        S = new ConfigServices(installBinary: true, caddyBinary);
         HttpPort = Net.FreeTcpPort();
         HttpsPort = Net.FreeTcpPort();
         AdminPort = Net.FreeTcpPort();

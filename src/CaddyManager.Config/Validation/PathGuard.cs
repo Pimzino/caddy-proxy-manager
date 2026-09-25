@@ -33,7 +33,7 @@ public static partial class PathGuard
     /// %ProgramFiles% (or a folder inside or above any of them) nor a drive root — 400 for everyone. UNC paths are
     /// reserved for administrators (403 for operators); administrative shares (C$) are refused for everyone.
     /// </summary>
-    public static PathProblem? CheckStaticRoot(string? root, AppPaths paths, string certificateStore, bool isAdmin)
+    public static PathProblem? CheckStaticRoot(string? root, AppPaths paths, string certificateStore, bool isAdmin, string? sharedStorage = null)
     {
         if (string.IsNullOrWhiteSpace(root)) return null;
         if (!TryCanonical(root, out var canon, out var error)) return new PathProblem(400, $"Root folder: {error}");
@@ -48,7 +48,7 @@ public static partial class PathGuard
             return null;
         }
 
-        foreach (var (dir, label) in ProtectedFolders(paths, certificateStore))
+        foreach (var (dir, label) in ProtectedFolders(paths, certificateStore, sharedStorage))
         {
             var relation = Relation(root, dir);
             if (relation is null) continue;
@@ -58,11 +58,12 @@ public static partial class PathGuard
         return null;
     }
 
-    private static IEnumerable<(string Dir, string Label)> ProtectedFolders(AppPaths paths, string certificateStore)
+    private static IEnumerable<(string Dir, string Label)> ProtectedFolders(AppPaths paths, string certificateStore, string? sharedStorage = null)
     {
         yield return (paths.DataDir, "the Caddy Proxy Manager data folder");
         yield return (paths.CaddyStorageDir, "Caddy's storage folder (certificates and keys)");
         if (!string.IsNullOrWhiteSpace(certificateStore)) yield return (certificateStore, "the certificate store");
+        if (!string.IsNullOrWhiteSpace(sharedStorage)) yield return (sharedStorage, "the shared Caddy storage folder (certificates and keys)");
         if (!string.IsNullOrWhiteSpace(paths.InstallDir)) yield return (paths.InstallDir, "the Caddy Proxy Manager program folder");
 
         var windows = new List<string?>
