@@ -20,8 +20,77 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
 
 jobs:
+  test:
+    name: Tests (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web UI — install, typecheck, lint, build
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run lint
+          npm run build
+
+      # The Config/Platform suites run real-Caddy integration tests when .dev/bin/caddy.exe exists.
+      - name: Download Caddy for integration tests
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/caddyserver/caddy/releases/latest' -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $ver = $rel.tag_name.TrimStart('v')
+          $asset = $rel.assets | Where-Object name -eq "caddy_${ver}_windows_amd64.zip"
+          New-Item -ItemType Directory -Force -Path .dev/bin | Out-Null
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP/caddy.zip"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/caddy.zip" -DestinationPath "$env:RUNNER_TEMP/caddy" -Force
+          Copy-Item "$env:RUNNER_TEMP/caddy/caddy.exe" .dev/bin/caddy.exe
+          & .dev/bin/caddy.exe version
+
+      - name: .NET tests
+        shell: pwsh
+        run: dotnet test CaddyManager.sln -c Release --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
+
+      - name: Test summary
+        if: always()
+        shell: pwsh
+        run: |
+          $total = 0; $passed = 0; $failed = 0; $skipped = 0
+          $lines = @('| Suite | Passed | Failed | Skipped |', '|---|---:|---:|---:|')
+          foreach ($trx in Get-ChildItem -LiteralPath TestResults -Filter *.trx -ErrorAction SilentlyContinue) {
+            [xml]$x = Get-Content -LiteralPath $trx.FullName -Raw
+            $c = $x.TestRun.ResultSummary.Counters
+            $suite = ($x.TestRun.TestDefinitions.UnitTest | Select-Object -First 1).TestMethod.className -replace '^(CaddyManager\.[A-Za-z]+\.Tests).*$', '$1'
+            $skip = [int]$c.total - [int]$c.executed
+            $lines += "| $suite | $($c.passed) | $($c.failed) | $skip |"
+            $passed += [int]$c.passed; $failed += [int]$c.failed; $skipped += $skip
+          }
+          $lines += "| **Total** | **$passed** | **$failed** | **$skipped** |"
+          ("## Test results`n`n" + ($lines -join "`n")) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          retention-days: 14
+
   build:
-    name: Build, test, package (windows)
+    name: Build and package (windows)
+    needs: test
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -71,11 +140,12 @@ jobs:
           "CPM_SIGNING_CERT=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host 'Code signing enabled: CaddyManager.exe is signed before packaging, the MSI after it is built.'
 
-      - name: Build (web, tests, publish, sign, MSI, zip)
+      - name: Build (web, publish, sign, MSI, zip)
         shell: pwsh
         env:
           CPM_SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
-        run: ./build.ps1 -Version '${{ steps.version.outputs.version }}'
+        # Tests already ran in the "test" job.
+        run: ./build.ps1 -Version '${{ steps.version.outputs.version }}' -SkipTests
 
       - name: Remove code-signing certificate
         if: always()
@@ -122,16 +192,61 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags for the changelog
+
       - uses: actions/download-artifact@v4
         with:
+          name: caddy-proxy-manager-${{ needs.build.outputs.version }}
           path: dist
-          merge-multiple: true
+
+      - name: Release notes from commits
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)
+          range="${prev:+$prev..}$TAG"
+          {
+            echo "## What's changed"
+            echo
+            git log --no-merges --reverse --format="- [\`%h\`](https://github.com/${REPO}/commit/%H) %s" "$range"
+            echo
+            echo "## Downloads"
+            echo
+            echo "| File | Use |"
+            echo "|---|---|"
+            for f in dist/*.msi; do [ -e "$f" ] && echo "| \`$(basename "$f")\` | Windows installer (double-click, or \`msiexec /i $(basename "$f") /qn\`) |"; done
+            for f in dist/*.zip; do [ -e "$f" ] && echo "| \`$(basename "$f")\` | Zip install: extract, then \`.\\install.ps1\` in an elevated PowerShell |"; done
+            echo
+            echo "After installing, open \`http://<server>:81/\` and paste the setup token from \`C:\\ProgramData\\CaddyProxyManager\\setup-token.txt\`."
+            echo
+            echo "<details><summary>SHA-256 checksums</summary>"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+            echo "</details>"
+            echo
+            if [ -n "$prev" ]; then
+              echo "**Full changelog**: https://github.com/${REPO}/compare/${prev}...${TAG}"
+            else
+              echo "**Full changelog**: https://github.com/${REPO}/commits/${TAG}"
+            fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: Caddy Proxy Manager ${{ needs.build.outputs.version }}
-          files: dist/*
-          generate_release_notes: true
+          name: Caddy Proxy Manager v${{ needs.build.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/*.msi
+            dist/*.zip
+            dist/SHA256SUMS.txt
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
