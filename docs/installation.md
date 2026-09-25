@@ -6,7 +6,7 @@
   / Windows 11. Nothing runs on the server's desktop: the UI is used from a browser on any machine, so Server Core
   works exactly like a full install (install with `msiexec … /qn` or `install.ps1`).
 - Local administrator rights to install.
-- Inbound TCP 80 and 443 (and UDP 443 for HTTP/3) reachable from clients; TCP 81 (UI) from admin networks.
+- Inbound TCP 80 and 443 reachable from clients (plus UDP 443 only if you turn on HTTP/3); TCP 81 (UI) from admin networks.
 - Outbound HTTPS to `api.github.com`, `github.com`, `objects.githubusercontent.com` (Caddy downloads),
   `caddyserver.com` (plugin builds), and your ACME CA (e.g. `acme-v02.api.letsencrypt.org`). All optional: see
   *Offline servers* below.
@@ -83,7 +83,7 @@ Caddy itself is updated from the UI (**Caddy › Service & Updates**); the previ
 |---|---|---|
 | TCP 80 | Caddy | HTTP, ACME HTTP-01 challenge, redirects to HTTPS |
 | TCP 443 | Caddy | HTTPS, ACME TLS-ALPN-01 challenge |
-| UDP 443 | Caddy | HTTP/3 (can be disabled in Settings › Caddy) |
+| UDP 443 | Caddy | HTTP/3 — optional, off by default (Settings › Caddy) |
 | TCP 81 | Manager UI | configurable; optional HTTPS listener (default 8443) |
 | 127.0.0.1:2019 | Caddy admin API | loopback only — see [security.md](security.md) |
 | stream ports | Caddy (caddy-l4) | one per TCP/UDP stream |

@@ -12,7 +12,7 @@ public class WindowsFactsTests
     private static FirewallFacts Firewall() => WindowsFactsParser.ParseFirewall(JsonDocument.Parse(Fixture.Read("ps-firewall-facts.json")).RootElement);
 
     private static List<RequiredFirewallRule> Rules() =>
-        ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()), new CaddySettings(), new UiSettings(), 81);
+        ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()), new CaddySettings { EnableHttp3 = true }, new UiSettings(), 81);
 
     [Fact]
     public void ParsesSystemFacts()
@@ -55,6 +55,10 @@ public class WindowsFactsTests
         Assert.Equal("Caddy Proxy Manager - HTTP/3 (UDP-In)", rules[2].DisplayName);
         Assert.Equal("Caddy Proxy Manager - Management UI (TCP-In)", rules[3].DisplayName);
 
+        // HTTP/3 is off by default, so no UDP rule is required unless it is turned on.
+        Assert.Equal(["firewall.tcp80", "firewall.tcp443", "firewall.tcp81"],
+            ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()), new CaddySettings(), new UiSettings(), 81).Select(r => r.CheckId));
+
         var loopbackUi = ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()),
             new CaddySettings { EnableHttp3 = false }, new UiSettings { BindAddress = "127.0.0.1" }, 81);
         Assert.Equal(["firewall.tcp80", "firewall.tcp443"], loopbackUi.Select(r => r.CheckId));
@@ -92,7 +96,9 @@ public class WindowsFactsTests
     public void BlockRuleWins()
     {
         var check = FirewallEvaluator.Evaluate(Rules().Single(r => r.CheckId == "firewall.udp443"), Firewall(), ["Domain", "Public"]);
-        Assert.Equal(CheckStatus.Fail, check.Status);
+        // HTTP/3 is optional: a blocked UDP 443 is a warning that explains the effect, not a failure.
+        Assert.Equal(CheckStatus.Warn, check.Status);
+        Assert.Contains("HTTP/3 is optional", check.Summary);
         Assert.Contains("BLOCKED", check.Details);
         Assert.False(check.Fixable);
     }
@@ -185,7 +191,7 @@ public class GpoScriptTests
         Domain = "corp.example.com",
         ComputerName = "WEB01",
         ComputerDn = dn,
-        Rules = ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()), new CaddySettings(), new UiSettings(), 81),
+        Rules = ReadinessService.RequiredRules(new AppPaths(Path.GetTempPath()), new CaddySettings { EnableHttp3 = true }, new UiSettings(), 81),
         InternalCaUsed = internalCa,
         InternalRootPath = @"C:\ProgramData\CaddyProxyManager\caddy\data\pki\authorities\local\root.crt",
         ProductVersion = "1.0.0",
@@ -276,7 +282,7 @@ public class ReadinessNonWindowsTests
         Assert.Contains(report.Checks, c => c.Id == "system.clock");
         Assert.Contains(report.Checks, c => c.Id == "ports.tcp80");
         Assert.Contains(report.Checks, c => c.Id == "ports.tcp443");
-        Assert.Contains(report.Checks, c => c.Id == "ports.udp443");
+        Assert.DoesNotContain(report.Checks, c => c.Id == "ports.udp443"); // HTTP/3 is off by default
         Assert.Contains(report.Checks, c => c.Id == "connectivity.letsencrypt");
         var dns = report.Checks.Single(c => c.Id == "dns.cpm-readiness-test.invalid");
         Assert.Equal(CheckStatus.Fail, dns.Status);

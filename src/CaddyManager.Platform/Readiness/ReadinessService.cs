@@ -285,6 +285,8 @@ public sealed partial class ReadinessService(
             {
                 CheckId = $"firewall.udp{caddy.HttpsPort}", DisplayName = "Caddy Proxy Manager - HTTP/3 (UDP-In)", Protocol = "UDP",
                 Port = caddy.HttpsPort, Purpose = "Caddy HTTP/3 (QUIC)", Program = paths.CaddyExe, Service = AppPaths.CaddyServiceName,
+                OptionalNote = "HTTP/3 is optional: remote clients that cannot reach UDP " + caddy.HttpsPort.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                               " use HTTP/2 instead. Browsers on this server itself are not filtered by its firewall and can still use HTTP/3.",
             });
         var uiLoopback = IPAddress.TryParse(ui.BindAddress, out var bind) && IPAddress.IsLoopback(bind);
         if (!uiLoopback)

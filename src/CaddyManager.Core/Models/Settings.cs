@@ -35,7 +35,11 @@ public sealed class CaddySettings : ISettingsDocument
     // Listeners
     public int HttpPort { get; set; } = 80;
     public int HttpsPort { get; set; } = 443;
-    public bool EnableHttp3 { get; set; } = true;
+    /// <summary>
+    /// HTTP/3 (QUIC on UDP HttpsPort). Off by default: optional (browsers fall back to HTTP/2), needs a UDP firewall
+    /// rule, and gains little for internal sites.
+    /// </summary>
+    public bool EnableHttp3 { get; set; }
     /// <summary>Bind to specific addresses (empty = all interfaces).</summary>
     public List<string> BindAddresses { get; set; } = new();
 

@@ -16,6 +16,11 @@ public sealed record RequiredFirewallRule
     public string? Program { get; init; }
     /// <summary>Windows service that will listen on the port (rules restricted to other services do not count).</summary>
     public string? Service { get; init; }
+    /// <summary>
+    /// Set for rules that are nice to have (HTTP/3): when the rule is missing the check is a warning, not a failure,
+    /// and this note explains the practical effect.
+    /// </summary>
+    public string? OptionalNote { get; init; }
 
     public string Description => $"Allows inbound {Protocol} {Port} for {Purpose}. Created by Caddy Proxy Manager.";
 }

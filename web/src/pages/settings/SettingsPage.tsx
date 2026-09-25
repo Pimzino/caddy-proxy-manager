@@ -237,7 +237,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 <NumberInput min={1} max={65535} value={form.httpsPort} onValueChange={(v) => set('httpsPort', v)} />
               </Field>
             </div>
-            <SwitchField label="HTTP/3 (QUIC)" description={`Also listen on UDP ${form.httpsPort || 443}. Requires an inbound UDP firewall rule.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
+            <SwitchField label="HTTP/3 (QUIC)" description={`Optional. Also listen on UDP ${form.httpsPort || 443} for HTTP/3; browsers use HTTP/2 when it is off. Needs an inbound UDP firewall rule. Off by default.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
             <Field label="Bind addresses" error={fieldError(errors, 'bindAddresses')} hint="Leave empty to listen on all interfaces.">
               <ChipInput
                 value={form.bindAddresses}

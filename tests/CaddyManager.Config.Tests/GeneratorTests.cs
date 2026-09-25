@@ -305,7 +305,8 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(65536, srv0["max_header_bytes"]!.GetValue<int>());
         Assert.Contains(r.Warnings, w => w.Contains("routes"));
 
-        var h3 = Gen(new CaddySettings(), [Build.Proxy("a.example.com", tls: TlsMode.Acme)]).Config;
+        Assert.Equal(["h1", "h2"], Strings(Srv(Gen(new CaddySettings(), [Build.Proxy("a.example.com", tls: TlsMode.Acme)]).Config, "srv0")["protocols"])); // off by default
+        var h3 = Gen(new CaddySettings { EnableHttp3 = true }, [Build.Proxy("a.example.com", tls: TlsMode.Acme)]).Config;
         Assert.Equal(["h1", "h2", "h3"], Strings(Srv(h3, "srv0")["protocols"]));
     }
 

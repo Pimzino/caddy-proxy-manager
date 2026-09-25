@@ -582,7 +582,7 @@ export function createState(): MockState {
       disableTlsAlpnChallenge: false,
       httpPort: 80,
       httpsPort: 443,
-      enableHttp3: true,
+      enableHttp3: false,
       bindAddresses: [],
       defaultSite: 'notFound',
       trustedProxies: [],
