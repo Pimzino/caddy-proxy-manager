@@ -703,6 +703,12 @@ public static class CaddyConfigGenerator
             var v = h.UpstreamHostHeader.Trim();
             request.Set["Host"] = [v == "{upstream}" ? "{http.reverse_proxy.upstream.hostport}" : v];
         }
+        else if (upstreams.Any(u => u.Scheme == UpstreamScheme.Https))
+        {
+            // Caddy sends the upstream's address as Host to HTTPS upstreams unless told otherwise, so "keep the
+            // client's Host" has to be explicit there (appliances such as Nutanix Prism build redirects from Host).
+            request.Set["Host"] = ["{http.request.hostport}"];
+        }
         if (stripAuthorization) request.Delete.Add("Authorization");
         var reqJson = request.ToJson();
         if (reqJson is not null) rp["headers"] = new JsonObject { ["request"] = reqJson };

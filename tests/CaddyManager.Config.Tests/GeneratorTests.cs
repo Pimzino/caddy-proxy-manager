@@ -380,6 +380,21 @@ public sealed class GeneratorTests : IDisposable
     }
 
     [Fact]
+    public void Keep_client_host_is_explicit_for_https_upstreams_only()
+    {
+        // Caddy sends the upstream address as Host to HTTPS upstreams by default; "keep client Host" must override it.
+        var https = Build.Proxy("pc.example.com", 9440);
+        https.Upstreams[0].Scheme = UpstreamScheme.Https;
+        https.UpstreamTlsInsecure = true;
+        var rp = Handler(HostRoute(Gen(hosts: [https]).Config, "srv1", "pc.example.com"), "reverse_proxy");
+        Assert.Equal(["{http.request.hostport}"], Strings(rp["headers"]!["request"]!["set"]!["Host"]));
+
+        var plain = Build.Proxy("plain.example.com", 8080);
+        var rp2 = Handler(HostRoute(Gen(hosts: [plain]).Config, "srv1", "plain.example.com"), "reverse_proxy");
+        Assert.Null(rp2["headers"]);
+    }
+
+    [Fact]
     public void Locations_come_first_longest_path_first_with_strip_prefix()
     {
         var h = Build.Proxy("loc.example.com", 9000);

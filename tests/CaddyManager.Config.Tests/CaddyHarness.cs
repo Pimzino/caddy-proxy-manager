@@ -140,12 +140,22 @@ public sealed class EchoUpstream : IAsyncDisposable
         Port = port;
     }
 
-    public static async Task<EchoUpstream> StartAsync()
+    public static async Task<EchoUpstream> StartAsync(bool https = false)
     {
         var port = Net.FreeTcpPort();
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+        if (https)
+        {
+            // Self-signed backend, like an appliance's management interface.
+            using var key = System.Security.Cryptography.RSA.Create(2048);
+            var req = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=backend", key,
+                System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            var cert = req.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddDays(1));
+            var pfx = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(cert.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Pfx), null);
+            builder.WebHost.ConfigureKestrel(k => k.Listen(System.Net.IPAddress.Loopback, port, o => o.UseHttps(pfx)));
+        }
+        else builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
         var app = builder.Build();
         app.Run(async ctx =>
         {

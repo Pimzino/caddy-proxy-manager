@@ -223,6 +223,45 @@ public sealed class CaddyIntegrationTests
     // ------------------------------------------------------------------ live
 
     [CaddyFact]
+    public async Task Live_https_upstream_receives_the_client_host_when_keeping_it()
+    {
+        // Regression: Caddy sends the upstream address as Host to HTTPS upstreams by default, which made appliances
+        // (Nutanix Prism) build redirects to their own IP although the host was set to "keep client Host".
+        using var s = new ConfigServices(installBinary: true);
+        await using var backend = await EchoUpstream.StartAsync(https: true);
+        var adminPort = Net.FreeTcpPort();
+        var httpPort = Net.FreeTcpPort();
+        s.Store.SaveSettings(new CaddySettings { AdminListen = $"127.0.0.1:{adminPort}", HttpPort = httpPort, HttpsPort = Net.FreeTcpPort() });
+        var keep = Build.Proxy("keep.test", backend.Port);
+        keep.Upstreams[0].Scheme = UpstreamScheme.Https;
+        keep.UpstreamTlsInsecure = true;
+        var upstream = Build.Proxy("upstream.test", backend.Port);
+        upstream.Upstreams[0].Scheme = UpstreamScheme.Https;
+        upstream.UpstreamTlsInsecure = true;
+        upstream.UpstreamHostHeader = "{upstream}";
+        s.Store.Col<SiteHost>().Insert(keep);
+        s.Store.Col<SiteHost>().Insert(upstream);
+
+        s.Config.EnsureBootConfig();
+        using var caddy = new CaddyProcess(s.Paths);
+        var admin = s.Provider.GetRequiredService<CaddyAdminClient>();
+        await WaitUntil(() => admin.IsReachableAsync(), TimeSpan.FromSeconds(20), () => "Caddy did not start:\n" + caddy.Output);
+        var apply = await s.Config.ApplyAsync("host header test");
+        Assert.True(apply.Success, apply.Error + "\n" + caddy.Output);
+
+        using var http = new HttpClient();
+        async Task<string> Get(string host)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{httpPort}/");
+            req.Headers.Host = host;
+            using var res = await http.SendAsync(req);
+            return await res.Content.ReadAsStringAsync();
+        }
+        Assert.Contains("host=keep.test\n", await Get("keep.test"));
+        Assert.Contains($"host=127.0.0.1:{backend.Port}\n", await Get("upstream.test"));
+    }
+
+    [CaddyFact]
     public async Task Live_caddy_keeps_admin_api_polling_out_of_the_process_log()
     {
         using var s = new ConfigServices(installBinary: true);
