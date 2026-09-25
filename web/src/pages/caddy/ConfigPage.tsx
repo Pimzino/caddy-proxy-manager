@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react';
-import { CheckCircle2, FileCheck2, Play, Save, XCircle } from 'lucide-react';
+import { CheckCircle2, FileCheck2, Import, Play, Save, XCircle } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
 import {
   useAdaptCaddyfile,
@@ -41,6 +41,7 @@ import {
 } from '@/components/ui';
 import { formatDateTime, formatRelative } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
+import { ImportCaddyfileDialog } from './ImportCaddyfileDialog';
 
 type Tab = 'generated' | 'running' | 'revisions' | 'caddyfile';
 
@@ -75,8 +76,9 @@ function prettyJson(s: string): string {
 
 export default function ConfigPage() {
   const idBase = useId();
-  const { canOperate } = useAuth();
+  const { canOperate, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('generated');
+  const [importing, setImporting] = useState(false);
   const settings = useCaddySettings();
   const apply = useApplyConfig();
   const feedback = useFeedback();
@@ -91,6 +93,11 @@ export default function ConfigPage() {
           <>
             {mode && (
               <Badge tone={mode === 'managed' ? 'accent' : 'warning'}>{mode === 'managed' ? 'Managed mode' : 'Caddyfile mode'}</Badge>
+            )}
+            {isAdmin && (
+              <Button icon={<Import size={14} />} onClick={() => setImporting(true)} title="Convert an existing Caddyfile into managed hosts">
+                Import Caddyfile
+              </Button>
             )}
             {canOperate && (
               <Button
@@ -140,9 +147,14 @@ export default function ConfigPage() {
             {errorMessage(settings.error)}
           </Callout>
         ) : (
-          <CaddyfileView key={`${settings.data.mode}:${settings.data.rawCaddyfile}`} settings={settings.data} />
+          <CaddyfileView key={`${settings.data.mode}:${settings.data.rawCaddyfile ?? ''}`} settings={settings.data} onImport={() => setImporting(true)} />
         )}
       </TabPanel>
+      <ImportCaddyfileDialog
+        open={importing}
+        onClose={() => setImporting(false)}
+        initialText={settings.data?.mode === 'caddyfile' ? settings.data.rawCaddyfile : undefined}
+      />
     </>
   );
 }
@@ -300,9 +312,10 @@ function RevisionDrawer({ id, onClose }: { id: string | null; onClose: () => voi
   );
 }
 
-function CaddyfileView({ settings }: { settings: CaddySettings }) {
+function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImport: () => void }) {
   const { isAdmin } = useAuth();
-  const [text, setText] = useState(settings.rawCaddyfile);
+  const stored = settings.rawCaddyfile ?? '';
+  const [text, setText] = useState(stored);
   const [mode, setMode] = useState<ConfigMode>(settings.mode);
   const [result, setResult] = useState<AdaptResult | null>(null);
   const [adaptError, setAdaptError] = useState<string | null>(null);
@@ -310,7 +323,7 @@ function CaddyfileView({ settings }: { settings: CaddySettings }) {
   const save = useSaveCaddySettings();
   const feedback = useFeedback();
   const confirm = useConfirm();
-  const dirty = text !== settings.rawCaddyfile || mode !== settings.mode;
+  const dirty = text !== stored || mode !== settings.mode;
   const lineCount = useMemo(() => text.split('\n').length, [text]);
 
   const runAdapt = () => {
@@ -364,10 +377,13 @@ function CaddyfileView({ settings }: { settings: CaddySettings }) {
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <span className="text-sm font-medium text-fg">Caddyfile</span>
-          <span className="text-xs text-fg-subtle">{lineCount} lines</span>
+          {isAdmin && <span className="text-xs text-fg-subtle">{lineCount} lines</span>}
           <div className="flex-1" />
           {isAdmin && (
             <>
+              <Button size="sm" variant="ghost" icon={<Import size={13} />} onClick={onImport} title="Convert site blocks into managed hosts">
+                Import as hosts…
+              </Button>
               <Button size="sm" icon={<FileCheck2 size={13} />} onClick={runAdapt} loading={adapt.isPending} disabled={!text.trim()}>
                 Adapt &amp; validate
               </Button>
@@ -377,33 +393,39 @@ function CaddyfileView({ settings }: { settings: CaddySettings }) {
             </>
           )}
         </div>
-        <Textarea
-          aria-label="Caddyfile"
-          mono
-          spellCheck={false}
-          readOnly={!isAdmin}
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            setResult(null);
-            setAdaptError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Tab' && !e.shiftKey && isAdmin) {
-              e.preventDefault();
-              const el = e.currentTarget;
-              const { selectionStart, selectionEnd } = el;
-              const next = text.slice(0, selectionStart) + '\t' + text.slice(selectionEnd);
-              setText(next);
-              requestAnimationFrame(() => el.setSelectionRange(selectionStart + 1, selectionStart + 1));
-            }
-          }}
-          placeholder={'example.com {\n\treverse_proxy 10.0.0.20:8080\n}'}
-          className="min-h-[420px] rounded-none border-0 shadow-none focus:ring-0"
-          style={{ tabSize: 4 }}
-        />
+        {!isAdmin ? (
+          <EmptyState
+            title="Only administrators can view the Caddyfile"
+            description="A Caddyfile can contain credentials and raw directives, so its content is hidden for your role."
+          />
+        ) : (
+          <Textarea
+            aria-label="Caddyfile"
+            mono
+            spellCheck={false}
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              setResult(null);
+              setAdaptError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Tab' && !e.shiftKey && isAdmin) {
+                e.preventDefault();
+                const el = e.currentTarget;
+                const { selectionStart, selectionEnd } = el;
+                const next = text.slice(0, selectionStart) + '\t' + text.slice(selectionEnd);
+                setText(next);
+                requestAnimationFrame(() => el.setSelectionRange(selectionStart + 1, selectionStart + 1));
+              }
+            }}
+            placeholder={'example.com {\n\treverse_proxy 10.0.0.20:8080\n}'}
+            className="min-h-[420px] rounded-none border-0 shadow-none focus:ring-0"
+            style={{ tabSize: 4 }}
+          />
+        )}
       </Card>
-      {mode === 'managed' && settings.mode === 'managed' && (
+      {isAdmin && mode === 'managed' && settings.mode === 'managed' && (
         <p className="text-xs text-fg-subtle">The Caddyfile is stored but not used while Managed mode is active. Tab inserts a tab; Shift+Tab leaves the editor.</p>
       )}
       {adaptError && (

@@ -129,9 +129,10 @@ public sealed class FakeNotifier : INotifier
 }
 
 /// <summary>Controllable clock for cooldown tests (timers are not used by the code under test here).</summary>
-public sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
+public sealed class ManualTimeProvider(DateTimeOffset start, TimeZoneInfo? zone = null) : TimeProvider
 {
     private DateTimeOffset _now = start;
     public override DateTimeOffset GetUtcNow() => _now;
+    public override TimeZoneInfo LocalTimeZone => zone ?? base.LocalTimeZone;
     public void Advance(TimeSpan by) => _now = _now.Add(by);
 }

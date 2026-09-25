@@ -78,3 +78,16 @@ export function upstreamUrl(u: { scheme: string; host: string; port: number }): 
   const host = u.host.includes(':') && !u.host.startsWith('[') ? `[${u.host}]` : u.host;
   return `${u.scheme}://${host}:${u.port}`;
 }
+
+/** 1536 → "1.5 KB" (binary units, as Windows Explorer shows them). */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return i === 0 ? `${v} bytes` : `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}

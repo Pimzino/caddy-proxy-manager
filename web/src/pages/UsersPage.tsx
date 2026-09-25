@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { MoreHorizontal, Pencil, Trash2, UserPlus, Users } from 'lucide-react';
+import { BookUser, MoreHorizontal, Pencil, Trash2, UserPlus, Users } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
 import { useDeleteUser, useSaveUser, useUsers } from '@/api/hooks';
 import type { UserDto, UserRole } from '@/api/types';
@@ -39,6 +39,8 @@ const roleOptions: { value: UserRole; label: string; description: string }[] = [
   { value: 'admin', label: 'Admin', description: 'Everything, including users, settings, updates and readiness fixes.' },
 ];
 
+const isDirectory = (u?: UserDto) => u?.externalSource === 'ldap';
+
 export default function UsersPage() {
   const { user: me } = useAuth();
   const users = useUsers();
@@ -68,7 +70,7 @@ export default function UsersPage() {
     <>
       <PageHeader
         title="Users"
-        description="People who can sign in to this console. Use a password manager; the minimum length is 12 characters."
+        description="People who can sign in to this console. Local accounts use a password (at least 12 characters); directory accounts are created at their first sign-in when Settings › Directory is enabled."
         actions={
           <Button variant="primary" icon={<UserPlus size={14} />} onClick={() => setEditor({})}>
             Add user
@@ -110,8 +112,15 @@ export default function UsersPage() {
                   return (
                     <TR key={u.id} interactive onClick={() => setEditor({ user: u })}>
                       <TD className="font-medium text-fg">
-                        {u.name}
-                        {self && <span className="ml-1.5 text-xs font-normal text-fg-subtle">(you)</span>}
+                        <span className="inline-flex flex-wrap items-center gap-1.5">
+                          {u.name}
+                          {self && <span className="text-xs font-normal text-fg-subtle">(you)</span>}
+                          {isDirectory(u) && (
+                            <Badge tone="info" icon={<BookUser size={11} aria-hidden />} title="Signs in with the directory (LDAP); role from group membership">
+                              Directory
+                            </Badge>
+                          )}
+                        </span>
                       </TD>
                       <TD className="text-fg-muted">{u.email}</TD>
                       <TD>
@@ -171,6 +180,7 @@ function UserEditor({ user, isSelf, isLastAdmin, onClose }: { user?: UserDto; is
   const save = useSaveUser();
   const toast = useToast();
   const feedback = useFeedback();
+  const directory = isDirectory(user);
   const locked = isSelf || isLastAdmin;
 
   const validate = (): FieldErrors => {
@@ -228,6 +238,12 @@ function UserEditor({ user, isSelf, isLastAdmin, onClose }: { user?: UserDto; is
     >
       <form id="user-form" onSubmit={submit} noValidate className="flex flex-col gap-4">
         {serverMessage && <Callout tone="danger">{serverMessage}</Callout>}
+        {directory && (
+          <Callout tone="info" title="Directory account">
+            This user signs in with their directory (LDAP) password and has no local password. The role follows directory group membership
+            and is updated at every sign-in. Disable the account to block access to this console.
+          </Callout>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name" required error={errors.name}>
             <Input value={name} onChange={(e) => { setName(e.target.value); setServerErrors({}); }} autoComplete="off" />
@@ -236,17 +252,19 @@ function UserEditor({ user, isSelf, isLastAdmin, onClose }: { user?: UserDto; is
             <Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setServerErrors({}); }} autoComplete="off" />
           </Field>
         </div>
-        <Field label="Role" hint={locked ? (isSelf ? 'You cannot change your own role.' : 'This is the last active admin.') : undefined}>
-          <RadioCards aria-label="Role" columns={3} value={role} onChange={setRole} options={roleOptions} disabled={locked} />
+        <Field label="Role" hint={locked ? (isSelf ? 'You cannot change your own role.' : 'This is the last active admin.') : directory ? 'Assigned from directory groups at each sign-in (Settings › Directory).' : undefined}>
+          <RadioCards aria-label="Role" columns={3} value={role} onChange={setRole} options={roleOptions} disabled={locked || directory} />
         </Field>
-        <Field
-          label={user ? 'New password' : 'Password'}
-          required={!user}
-          error={errors.password}
-          hint={user ? 'Leave empty to keep the current password. Changing it signs the user out everywhere.' : `At least ${MIN_PASSWORD_LENGTH} characters.`}
-        >
-          <Input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        </Field>
+        {!directory && (
+          <Field
+            label={user ? 'New password' : 'Password'}
+            required={!user}
+            error={errors.password}
+            hint={user ? 'Leave empty to keep the current password. Changing it signs the user out everywhere.' : `At least ${MIN_PASSWORD_LENGTH} characters.`}
+          >
+            <Input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+        )}
         {user && (
           <SwitchField
             label="Disabled"

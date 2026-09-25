@@ -5,6 +5,10 @@
   <ItemGroup>
     <!-- SMTP e-mail notifications. (System.Diagnostics.EventLog comes with the ASP.NET Core shared framework.) -->
     <PackageReference Include="MailKit" Version="4.18.0" />
+    <!-- LDAP / Active Directory sign-in (wldap32 on Windows, OpenLDAP elsewhere). -->
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.0" />
+    <!-- AES-256 (WinZip AE-2) encryption of scheduled backups. -->
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CaddyManager.Core\CaddyManager.Core.csproj" />

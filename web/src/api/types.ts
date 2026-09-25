@@ -13,11 +13,14 @@ export type UpstreamScheme = 'http' | 'https';
 export type HeaderAction = 'set' | 'add' | 'delete';
 export type StreamProtocol = 'tcp' | 'udp';
 export type IpRuleAction = 'allow' | 'deny';
-export type CertificateSource = 'uploaded' | 'filePath';
+export type CertificateSource = 'uploaded' | 'filePath' | 'pfxFile' | 'windowsStore';
 export type AcmeCa = 'letsEncrypt' | 'letsEncryptStaging' | 'zeroSsl' | 'custom';
 export type DefaultSiteBehavior = 'notFound' | 'closeConnection' | 'redirect' | 'caddyWelcome';
 export type ConfigMode = 'managed' | 'caddyfile';
 export type SmtpSecurity = 'none' | 'startTls' | 'sslOnConnect' | 'auto';
+export type SmtpAuthMode = 'none' | 'password' | 'oAuth2ClientCredentials';
+export type WebhookFormat = 'generic' | 'slack' | 'teamsWorkflow';
+export type LdapSecurity = 'none' | 'startTls' | 'ldaps';
 export type UserRole = 'viewer' | 'operator' | 'admin';
 export type EventSeverity = 'info' | 'warning' | 'error' | 'recovered';
 export type CaddyRunState = 'notInstalled' | 'stopped' | 'starting' | 'running' | 'stopping' | 'unknown';
@@ -83,6 +86,8 @@ export interface SiteHostFields {
   loadBalancing: LoadBalancingPolicy;
   healthCheck: HealthCheck;
   upstreamTlsInsecure: boolean;
+  /** Upstream uses Windows Integrated Authentication (NTLM/Negotiate); needs plugin github.com/caddyserver/ntlm-transport. */
+  upstreamNtlm: boolean;
   /** null/"" = keep client Host; "{upstream}" = upstream host:port; otherwise literal. */
   upstreamHostHeader?: string | null;
   requestHeaders: HeaderOp[];
@@ -153,6 +158,18 @@ export interface Certificate extends Entity {
   notAfter: IsoDate;
   thumbprint: string;
   notes?: string;
+  /** PfxFile source: the referenced .pfx/.p12 (certPath/keyPath point at the converted PEMs in the store). */
+  sourcePath?: string;
+  /** WindowsStore source: "LocalMachine" or "CurrentUser". */
+  storeLocation?: string;
+  /** WindowsStore source: store name, e.g. "My". */
+  storeName?: string;
+  /** WindowsStore source pinned to one certificate. */
+  storeThumbprint?: string;
+  /** WindowsStore source following renewals by subject/SAN. */
+  storeSubject?: string;
+  lastSyncedAt?: IsoDate;
+  lastSyncError?: string;
 }
 
 // ---------------------------------------------------------------- Ops models (Models/Ops.cs)
@@ -165,6 +182,8 @@ export interface UserDto {
   disabled: boolean;
   lastLoginAt?: IsoDate;
   createdAt: IsoDate;
+  /** Absent = local account; "ldap" = directory account (no local password, role from group mapping). */
+  externalSource?: string;
 }
 
 export interface AuditEntry extends Entity {
@@ -212,7 +231,8 @@ export interface ConfigRevisionSummary {
 
 export interface CaddySettings {
   mode: ConfigMode;
-  rawCaddyfile: string;
+  /** Hidden (absent) for non-admins. */
+  rawCaddyfile?: string;
   acmeEmail: string;
   acmeCa: AcmeCa;
   customAcmeDirectory?: string | null;
@@ -231,10 +251,21 @@ export interface CaddySettings {
   logLevel: string;
   adminListen: string;
   certificateStorePath?: string | null;
+  /** Hidden (absent) for non-admins. */
   serverOptionsJson?: string | null;
+  /** JSON object of extra top-level Caddy apps for plugins (hidden for non-admins). */
+  extraAppsJson?: string | null;
+  /** A secret ACME issuer JSON object is stored (e.g. DNS challenge provider credentials). */
+  hasAcmeIssuerJson: boolean;
+  /** JSON object merged into every TLS connection policy. */
+  tlsConnectionPolicyJson?: string | null;
 }
 
-export type CaddySettingsInput = Omit<CaddySettings, 'hasEabMacKey'> & { eabMacKey?: string | null };
+export type CaddySettingsInput = Omit<CaddySettings, 'hasEabMacKey' | 'hasAcmeIssuerJson'> & {
+  eabMacKey?: string | null;
+  /** Write-only: absent/null = unchanged, "" = clear, other = set. */
+  acmeIssuerJson?: string | null;
+};
 
 export interface BinarySettings {
   plugins: string[];
@@ -244,6 +275,12 @@ export interface BinarySettings {
   lastCheckedAt?: IsoDate | null;
   latestKnownVersion?: string | null;
   outboundProxy?: string | null;
+  /** Also give Caddy the proxy (HTTPS_PROXY/HTTP_PROXY) so ACME works behind a corporate proxy. */
+  proxyCaddyTraffic: boolean;
+  /** NO_PROXY for Caddy when proxyCaddyTraffic is on. */
+  noProxy: string;
+  /** GitHub "owner/repo" checked for new manager versions; empty = disabled. */
+  managerReleaseRepo?: string | null;
 }
 
 export interface NotificationSettings {
@@ -251,13 +288,18 @@ export interface NotificationSettings {
   smtpHost: string;
   smtpPort: number;
   smtpSecurity: SmtpSecurity;
+  smtpAuth: SmtpAuthMode;
   smtpUsername?: string | null;
   hasSmtpPassword: boolean;
+  oAuthTenantId?: string | null;
+  oAuthClientId?: string | null;
+  hasOAuthClientSecret: boolean;
   smtpFrom: string;
   recipients: string[];
   allowInvalidCertificate: boolean;
   webhookEnabled: boolean;
   webhookUrl?: string | null;
+  webhookFormat: WebhookFormat;
   writeWindowsEventLog: boolean;
   alertCaddyDown: boolean;
   alertConfigFailure: boolean;
@@ -271,12 +313,17 @@ export interface NotificationSettings {
   sendRecoveryNotices: boolean;
 }
 
-export type NotificationSettingsInput = Omit<NotificationSettings, 'hasSmtpPassword'> & { smtpPassword?: string | null };
+export type NotificationSettingsInput = Omit<NotificationSettings, 'hasSmtpPassword' | 'hasOAuthClientSecret'> & {
+  smtpPassword?: string | null;
+  oAuthClientSecret?: string | null;
+};
 
 export interface UiSettings {
   port: number;
   bindAddress: string;
   httpsEnabled: boolean;
+  /** When HTTPS is enabled, redirect plain-HTTP UI requests to HTTPS. */
+  redirectHttpToHttps: boolean;
   httpsPort: number;
   httpsPfxPath?: string | null;
   hasHttpsPfxPassword: boolean;
@@ -285,6 +332,56 @@ export interface UiSettings {
 }
 
 export type UiSettingsInput = Omit<UiSettings, 'hasHttpsPfxPassword'> & { httpsPfxPassword?: string | null };
+
+/** Directory sign-in (GET/PUT /api/settings/ldap, Ops-owned document). */
+export interface LdapSettings {
+  enabled: boolean;
+  server: string;
+  port: number;
+  security: LdapSecurity;
+  allowInvalidCertificate: boolean;
+  bindDn?: string | null;
+  hasBindPassword: boolean;
+  baseDn: string;
+  /** "{0}" is replaced with the escaped user name. */
+  userFilter: string;
+  adminGroupDn?: string | null;
+  operatorGroupDn?: string | null;
+  viewerGroupDn?: string | null;
+  nestedGroups: boolean;
+}
+
+export type LdapSettingsInput = Omit<LdapSettings, 'hasBindPassword'> & { bindPassword?: string | null };
+
+export interface LdapTestResult {
+  ok: boolean;
+  role?: UserRole;
+  displayName?: string;
+  email?: string;
+  groups?: string[];
+  error?: string;
+}
+
+/** Scheduled backups (GET/PUT /api/settings/backup, Ops-owned document). */
+export interface BackupSettings {
+  enabled: boolean;
+  /** Local hour of day 0–23. */
+  hourLocal: number;
+  /** Local path or UNC share; empty = DataDir\backups. */
+  directory?: string | null;
+  /** Number of backups kept, 1–365. */
+  keep: number;
+  /** An AES-256 zip password is stored. */
+  hasPassword: boolean;
+}
+
+export type BackupSettingsInput = Omit<BackupSettings, 'hasPassword'> & { password?: string | null };
+
+export interface BackupFile {
+  name: string;
+  size: number;
+  createdAt: IsoDate;
+}
 
 // ---------------------------------------------------------------- Contracts/Dtos.cs
 
@@ -327,6 +424,14 @@ export interface BinaryOverview {
   desiredPlugins: string[];
   pluginsOutOfSync: boolean;
   platform: string;
+  /** A previous binary exists and POST /api/caddy/binary/rollback is possible. */
+  canRollback: boolean;
+  previousVersion?: string;
+  /** Version of Caddy Proxy Manager itself. */
+  managerVersion?: string;
+  managerLatestVersion?: string;
+  managerLatestUrl?: string;
+  managerUpdateAvailable: boolean;
 }
 
 export interface PluginPackage {
@@ -362,7 +467,7 @@ export interface CertificateInfo {
   daysRemaining: number;
   certPath?: string;
   keyPath?: string;
-  /** "uploaded" | "filePath" | issuer directory name */
+  /** "uploaded" | "filePath" | "pfxFile" | "windowsStore" for custom certificates; issuer directory name otherwise. */
   source?: string;
   usedByHostIds: string[];
   error?: string;
@@ -518,6 +623,34 @@ export interface AccessLogResult extends LogResult {
 
 export interface RestoreResult {
   restartRequired: boolean;
+  message?: string;
+}
+
+/** GET /api/certificates/windows-store item. */
+export interface WindowsStoreCertificate {
+  thumbprint: string;
+  subject: string;
+  dnsNames: string[];
+  issuer: string;
+  notBefore: IsoDate;
+  notAfter: IsoDate;
+  hasPrivateKey: boolean;
+  exportable: boolean;
+  /** Certificate template (AD CS), when present. */
+  template?: string;
+}
+
+/** POST /api/config/caddyfile/import (nothing is saved). */
+export interface CaddyfileImportResult {
+  drafts: SiteHostFields[];
+  unmapped: string[];
+  warnings: string[];
+}
+
+/** POST /api/config/caddyfile/import/commit. */
+export interface CaddyfileImportCommitResult {
+  created: number;
+  apply: ApplyResult;
 }
 
 export interface Health {

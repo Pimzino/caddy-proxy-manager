@@ -10,14 +10,26 @@ import {
   RotateCw,
   Server,
   Square,
+  Undo2,
+  Upload,
   Wrench,
 } from 'lucide-react';
-import { errorMessage } from '@/api/client';
-import { useBinaryOverview, useCaddyAction, useCaddyStatus, useCheckForUpdates, useInstallBinary, useUpstreams } from '@/api/hooks';
+import { ApiError, errorMessage } from '@/api/client';
+import {
+  useBinaryOverview,
+  useCaddyAction,
+  useCaddyStatus,
+  useCheckForUpdates,
+  useInstallBinary,
+  useRollbackBinary,
+  useUploadBinary,
+  useUpstreams,
+} from '@/api/hooks';
 import type { CaddyStatus } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
 import { JobDialog } from '@/components/JobDialog';
+import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
 import { Markdown } from '@/components/Markdown';
 import {
@@ -33,6 +45,7 @@ import {
   DropdownMenu,
   EmptyState,
   Field,
+  FileInput,
   Input,
   LoadingBlock,
   PageHeader,
@@ -42,6 +55,7 @@ import {
   TD,
   TH,
   THead,
+  Textarea,
   TR,
   useConfirm,
   useToast,
@@ -54,13 +68,15 @@ export default function ServicePage() {
   const binary = useBinaryOverview();
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionDialog, setVersionDialog] = useState(false);
+  const [uploadDialog, setUploadDialog] = useState(false);
 
   return (
     <>
       <PageHeader title="Service & Updates" description="Control the Caddy service and keep the Caddy binary up to date." />
+      {binary.data && <ManagerUpdateCallout o={binary.data} className="mb-4" />}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ServiceCard status={status.data} error={status.error} loading={status.isPending} />
-        <BinaryCard onJob={setJobId} onPickVersion={() => setVersionDialog(true)} />
+        <BinaryCard onJob={setJobId} onPickVersion={() => setVersionDialog(true)} onUpload={() => setUploadDialog(true)} />
       </div>
       {binary.data?.latest?.notes && (
         <Card className="mt-4">
@@ -88,6 +104,7 @@ export default function ServicePage() {
       <UpstreamsCard />
       <JobDialog jobId={jobId} onClose={() => setJobId(null)} />
       {versionDialog && <InstallVersionDialog onClose={() => setVersionDialog(false)} onJob={setJobId} />}
+      {uploadDialog && <UploadBinaryDialog onClose={() => setUploadDialog(false)} onJob={setJobId} />}
     </>
   );
 }
@@ -249,11 +266,12 @@ function ServiceCard({ status, error, loading }: { status?: CaddyStatus; error: 
   );
 }
 
-function BinaryCard({ onJob, onPickVersion }: { onJob: (id: string) => void; onPickVersion: () => void }) {
+function BinaryCard({ onJob, onPickVersion, onUpload }: { onJob: (id: string) => void; onPickVersion: () => void; onUpload: () => void }) {
   const { canOperate, isAdmin } = useAuth();
   const binary = useBinaryOverview();
   const check = useCheckForUpdates();
   const install = useInstallBinary();
+  const rollback = useRollbackBinary();
   const feedback = useFeedback();
   const confirm = useConfirm();
   const toast = useToast();
@@ -279,6 +297,28 @@ function BinaryCard({ onJob, onPickVersion }: { onJob: (id: string) => void; onP
     install.mutate(undefined, {
       onSuccess: (job) => onJob(job.id),
       onError: (err) => feedback.failed(err, { title: `${verb} failed to start` }),
+    });
+  };
+
+  const startRollback = async () => {
+    if (!o?.canRollback) return;
+    const target = o.previousVersion ?? 'the previous version';
+    const ok = await confirm({
+      title: `Roll back Caddy to ${target}?`,
+      message: (
+        <>
+          The previous binary is validated against the current configuration and swapped in; Caddy is restarted (a few seconds of downtime).
+          The current version{o.installed ? ` (${o.installed.version})` : ''} becomes the new rollback target. Plugins in the previous binary
+          may differ from your desired plugin list.
+        </>
+      ),
+      confirmLabel: 'Roll back',
+      danger: true,
+    });
+    if (!ok) return;
+    rollback.mutate(undefined, {
+      onSuccess: (job) => onJob(job.id),
+      onError: (err) => feedback.failed(err, { title: 'Rollback failed to start' }),
     });
   };
 
@@ -310,8 +350,17 @@ function BinaryCard({ onJob, onPickVersion }: { onJob: (id: string) => void; onP
             )}
             {isAdmin && o && (
               <DropdownMenu
-                width={230}
-                items={[{ label: 'Install specific version…', icon: <Download size={14} />, onSelect: onPickVersion }]}
+                width={250}
+                items={[
+                  { label: 'Install specific version…', icon: <Download size={14} />, onSelect: onPickVersion },
+                  { label: 'Upload binary (offline)…', icon: <Upload size={14} />, onSelect: onUpload },
+                  {
+                    label: `Roll back to ${o.previousVersion ?? 'previous version'}`,
+                    icon: <Undo2 size={14} />,
+                    onSelect: () => void startRollback(),
+                    hidden: !o.canRollback,
+                  },
+                ]}
                 trigger={(p) => <Button {...p} size="sm" variant="ghost" iconOnly aria-label="More binary actions" icon={<MoreHorizontal size={16} />} />}
               />
             )}
@@ -410,6 +459,38 @@ function BinaryCard({ onJob, onPickVersion }: { onJob: (id: string) => void; onP
                     ),
                 },
                 { label: 'Binary path', value: o.installed?.path ?? '—', mono: true, hidden: !o.installed },
+                {
+                  label: 'Previous version',
+                  value: (
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="mono">{o.previousVersion ?? 'unknown'}</span>
+                      {isAdmin && (
+                        <Button size="xs" icon={<Undo2 size={12} />} onClick={() => void startRollback()} loading={rollback.isPending}>
+                          Roll back
+                        </Button>
+                      )}
+                    </span>
+                  ),
+                  hidden: !o.canRollback,
+                },
+                {
+                  label: 'Manager version',
+                  value: (
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="mono">v{(o.managerVersion ?? '').replace(/^v/, '')}</span>
+                      {o.managerUpdateAvailable && o.managerLatestVersion && (
+                        o.managerLatestUrl ? (
+                          <a href={o.managerLatestUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-accent-text hover:underline">
+                            Manager v{o.managerLatestVersion.replace(/^v/, '')} available <ExternalLink size={11} aria-hidden />
+                          </a>
+                        ) : (
+                          <Badge tone="info">Manager v{o.managerLatestVersion.replace(/^v/, '')} available</Badge>
+                        )
+                      )}
+                    </span>
+                  ),
+                  hidden: !o.managerVersion,
+                },
               ]}
             />
             {isAdmin && o.installed && !o.updateAvailable && (
@@ -465,6 +546,111 @@ function InstallVersionDialog({ onClose, onJob }: { onClose: () => void; onJob: 
       <form id="install-version" onSubmit={submit} noValidate>
         <Field label="Version" error={error} hint="GitHub release tag of caddyserver/caddy.">
           <Input mono placeholder="v2.11.4" value={version} onChange={(e) => { setVersion(e.target.value); setError(null); }} />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
+const SHA512_RE = /^[0-9a-f]{128}$/i;
+const BINARY_NAME_RE = /\.(exe|zip|tar\.gz)$/i;
+
+/** Offline / air-gapped install: upload caddy.exe or an official release archive; runs the same verified swap as an update. */
+function UploadBinaryDialog({ onClose, onJob }: { onClose: () => void; onJob: (id: string) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [sha512, setSha512] = useState('');
+  const [errors, setErrors] = useState<{ file?: string; sha512?: string; general?: string }>({});
+  const upload = useUploadBinary();
+  const feedback = useFeedback();
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const hash = sha512.replace(/\s+/g, '').toLowerCase();
+    const next: typeof errors = {};
+    if (!file) next.file = 'Choose caddy.exe or a release archive.';
+    else if (!BINARY_NAME_RE.test(file.name)) next.file = 'Upload caddy.exe, a .zip or a .tar.gz release archive.';
+    if (hash && !SHA512_RE.test(hash)) next.sha512 = 'A SHA-512 checksum is 128 hexadecimal characters.';
+    setErrors(next);
+    if (Object.keys(next).length || !file) return;
+    upload.mutate(
+      { file, sha512: hash || undefined },
+      {
+        onSuccess: (job) => {
+          onClose();
+          onJob(job.id);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && (err.status === 400 || err.status === 409 || err.status === 413)) {
+            const fe = err.errors ?? {};
+            setErrors({
+              file: fe.file?.join(' ') ?? fe.File?.join(' '),
+              sha512: fe.sha512?.join(' ') ?? fe.Sha512?.join(' '),
+              general: fe.file || fe.File || fe.sha512 || fe.Sha512 ? undefined : err.status === 413 ? 'The file is larger than the server accepts.' : err.display,
+            });
+            return;
+          }
+          feedback.failed(err, { title: 'Upload failed' });
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      dismissible={!upload.isPending}
+      title="Upload a Caddy binary"
+      description="For servers without Internet access. The file goes through the same checks as an online update: version check, validation of the current configuration, swap with automatic rollback."
+      footer={
+        <>
+          <Button onClick={onClose} disabled={upload.isPending}>
+            Cancel
+          </Button>
+          <Button type="submit" form="upload-binary" variant="primary" icon={<Upload size={14} />} loading={upload.isPending}>
+            {upload.isPending ? 'Uploading…' : 'Upload and install'}
+          </Button>
+        </>
+      }
+    >
+      <form id="upload-binary" onSubmit={submit} noValidate className="flex flex-col gap-4">
+        {errors.general && <Callout tone="danger">{errors.general}</Callout>}
+        <Field
+          label="Binary or release archive"
+          required
+          error={errors.file}
+          hint={
+            <>
+              <span className="mono">caddy.exe</span> (for example a custom build from caddyserver.com/download with your plugins), or the official
+              archive <span className="mono">caddy_&lt;version&gt;_windows_amd64.zip</span> from GitHub.
+            </>
+          }
+        >
+          <FileInput
+            accept=".exe,.zip,.gz,application/zip,application/x-msdownload,application/gzip"
+            onFile={(f) => {
+              setFile(f);
+              setErrors((x) => ({ ...x, file: undefined, general: undefined }));
+            }}
+          />
+        </Field>
+        <Field
+          label="SHA-512 checksum"
+          error={errors.sha512}
+          hint="Optional but recommended: the value for your file from caddy_<version>_checksums.txt, or Get-FileHash -Algorithm SHA512. The upload is rejected if it does not match."
+        >
+          <Textarea
+            mono
+            rows={3}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="e.g. 3f1a9c0d…"
+            value={sha512}
+            onChange={(e) => {
+              setSha512(e.target.value);
+              setErrors((x) => ({ ...x, sha512: undefined }));
+            }}
+          />
         </Field>
       </form>
     </Dialog>

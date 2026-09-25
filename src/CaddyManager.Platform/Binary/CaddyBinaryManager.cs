@@ -2,11 +2,14 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Models;
+using CaddyManager.Platform.Background;
 using CaddyManager.Platform.Hosting;
 using CaddyManager.Platform.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,7 +22,7 @@ public sealed record InstallMetadata
 {
     public string Version { get; init; } = "";
     public DateTime InstalledAt { get; init; }
-    /// <summary>"github-release" | "caddyserver-build" | "dev-copy"</summary>
+    /// <summary>"github-release" | "caddyserver-build" | "upload" | "dev-copy" ("rollback" when the origin of a restored binary is unknown)</summary>
     public string Source { get; init; } = "";
     public string? Url { get; init; }
     public string? Sha512 { get; init; }
@@ -29,10 +32,10 @@ public sealed record InstallMetadata
 }
 
 /// <summary>
-/// Manages the Caddy binary: inspection (version / modules), GitHub release checks, the caddyserver.com
-/// plugin registry, and the verified install/update job with rollback.
+/// Manages the Caddy binary: inspection (version / modules), GitHub release checks (Caddy and the manager itself), the
+/// caddyserver.com plugin registry, and the verified install/update/upload/rollback job.
 /// </summary>
-public sealed class CaddyBinaryManager(
+public sealed partial class CaddyBinaryManager(
     AppPaths paths,
     IStore store,
     IJobRunner jobs,
@@ -42,6 +45,8 @@ public sealed class CaddyBinaryManager(
 {
     public const string JobKind = "caddy-install";
     public const string MetadataFileName = "caddy-install.json";
+    /// <summary>Metadata of caddy(.exe).previous (moved there together with the binary on every swap).</summary>
+    public const string PreviousMetadataFileName = "caddy-install.previous.json";
     public const string GitHubLatestUrl = "https://api.github.com/repos/caddyserver/caddy/releases/latest";
     public const string PackagesUrl = "https://caddyserver.com/api/packages";
 
@@ -65,9 +70,31 @@ public sealed class CaddyBinaryManager(
     private List<PluginPackage>? _catalog;
     private DateTime _catalogFetchedAt;
 
+    private readonly SemaphoreSlim _previousGate = new(1, 1);
+    private (DateTime WriteTime, long Size)? _previousKey;
+    private string? _previousVersion;
+
+    private readonly SemaphoreSlim _managerGate = new(1, 1);
+    private string? _managerRepo;
+    private ReleaseInfo? _managerLatest;
+    private DateTime _managerFetchedAt;
+    private DateTime _managerFailedAt;
+
     private readonly Lock _jobLock = new();
 
     private string MetadataFile => Path.Combine(paths.CaddyBinDir, MetadataFileName);
+    private string PreviousMetadataFile => Path.Combine(paths.CaddyBinDir, PreviousMetadataFileName);
+
+    /// <summary>Version of Caddy Proxy Manager itself (informational version of the host exe, without build metadata).</summary>
+    public static string ManagerVersion { get; } = ReadManagerVersion();
+
+    private static string ReadManagerVersion()
+    {
+        var asm = Assembly.GetEntryAssembly() ?? typeof(CaddyBinaryManager).Assembly;
+        var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info)) return info.Split('+')[0].Trim();
+        return asm.GetName().Version?.ToString(3) ?? "0.0.0";
+    }
 
     // ------------------------------------------------------------------ installed binary
 
@@ -161,11 +188,81 @@ public sealed class CaddyBinaryManager(
         }
     }
 
-    private void WriteMetadata(InstallMetadata meta)
+    private void WriteMetadata(InstallMetadata meta) => WriteMetadataFile(MetadataFile, meta);
+
+    public InstallMetadata? ReadPreviousMetadata()
     {
-        var tmp = MetadataFile + ".tmp";
+        try
+        {
+            return File.Exists(PreviousMetadataFile)
+                ? JsonSerializer.Deserialize<InstallMetadata>(File.ReadAllText(PreviousMetadataFile), MetadataJson)
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(ex, "Could not read {File}", PreviousMetadataFile);
+            return null;
+        }
+    }
+
+    /// <summary>Writes (or, for null, deletes) the metadata of caddy(.exe).previous.</summary>
+    private void WritePreviousMetadata(InstallMetadata? meta)
+    {
+        if (meta is not null) WriteMetadataFile(PreviousMetadataFile, meta);
+        else if (File.Exists(PreviousMetadataFile)) File.Delete(PreviousMetadataFile);
+    }
+
+    private static void WriteMetadataFile(string file, InstallMetadata meta)
+    {
+        var tmp = file + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(meta, MetadataJson));
-        File.Move(tmp, MetadataFile, overwrite: true);
+        File.Move(tmp, file, overwrite: true);
+    }
+
+    // ------------------------------------------------------------------ previous binary (rollback)
+
+    /// <summary>
+    /// Version of caddy(.exe).previous, read by running "&lt;previous&gt; version" (cached by file time and size).
+    /// Falls back to the stored metadata when it cannot be run. Null when there is no previous binary.
+    /// </summary>
+    public async Task<string?> GetPreviousVersionAsync(CancellationToken ct = default)
+    {
+        var fi = new FileInfo(paths.CaddyExeBackup);
+        if (!fi.Exists) return null;
+        var key = (fi.LastWriteTimeUtc, fi.Length);
+        if (_previousKey == key && _previousVersion is not null) return _previousVersion;
+        await _previousGate.WaitAsync(ct);
+        try
+        {
+            fi.Refresh();
+            if (!fi.Exists) return null;
+            key = (fi.LastWriteTimeUtc, fi.Length);
+            if (_previousKey == key && _previousVersion is not null) return _previousVersion;
+            string? version = null;
+            try
+            {
+                var r = await RunBinaryAsync(paths.CaddyExeBackup, ["version"], null, TimeSpan.FromSeconds(30), ct);
+                if (r.ExitCode == 0) version = CaddyOutputParser.ParseVersion(r.StdOut) ?? CaddyOutputParser.ParseVersion(r.Combined);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or TimeoutException)
+            {
+                logger.LogDebug(ex, "Could not run {File} version", paths.CaddyExeBackup);
+            }
+            version ??= ReadPreviousMetadata()?.Version is { Length: > 0 } v ? v : null;
+            _previousVersion = version;
+            _previousKey = version is null ? null : key;
+            return version;
+        }
+        finally
+        {
+            _previousGate.Release();
+        }
+    }
+
+    private void InvalidatePrevious()
+    {
+        _previousVersion = null;
+        _previousKey = null;
     }
 
     // ------------------------------------------------------------------ latest release
@@ -185,7 +282,7 @@ public sealed class CaddyBinaryManager(
             }
             try
             {
-                var latest = await FetchLatestAsync(ct);
+                var latest = await FetchGitHubReleaseAsync(GitHubLatestUrl, "the latest Caddy release", "caddyserver/caddy", ct);
                 _latest = latest;
                 _latestFetchedAt = DateTime.UtcNow;
                 _rateLimitResetAt = null;
@@ -221,9 +318,10 @@ public sealed class CaddyBinaryManager(
             : new ReleaseInfo { Version = known, Url = $"https://github.com/caddyserver/caddy/releases/tag/{known}" };
     }
 
-    private async Task<ReleaseInfo> FetchLatestAsync(CancellationToken ct)
+    /// <summary>GET api.github.com/repos/{owner}/{repo}/releases/latest with rate-limit handling (shared by all GitHub checks).</summary>
+    private async Task<ReleaseInfo> FetchGitHubReleaseAsync(string url, string what, string repo, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, GitHubLatestUrl);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Accept.ParseAdd("application/vnd.github+json");
         req.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
         var token = Environment.GetEnvironmentVariable("CM_GITHUB_TOKEN");
@@ -262,8 +360,12 @@ public sealed class CaddyBinaryManager(
                         ". Try again later, or set the CM_GITHUB_TOKEN environment variable for the manager service.");
                 }
             }
+            if (resp.StatusCode == HttpStatusCode.NotFound)
+                throw new InvalidOperationException(
+                    $"The GitHub repository {repo} has no published release (HTTP 404 from api.github.com{new Uri(url).AbsolutePath}). " +
+                    "Check the repository name (Settings → Updates); drafts, pre-releases and private repositories are not visible.");
             if (!resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"GitHub returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} for the latest Caddy release: {Trim(body, 300)}");
+                throw new HttpRequestException($"GitHub returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} for {what}: {Trim(body, 300)}");
             try
             {
                 return CaddyOutputParser.ParseGitHubRelease(body);
@@ -277,6 +379,87 @@ public sealed class CaddyBinaryManager(
 
     private static string? Header(HttpResponseMessage resp, string name) =>
         resp.Headers.TryGetValues(name, out var v) ? v.FirstOrDefault() : null;
+
+    // ------------------------------------------------------------------ manager self-update check
+
+    [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9\-]{0,38})/[A-Za-z0-9._\-]{1,100}$")]
+    private static partial Regex GitHubRepo();
+
+    /// <summary>
+    /// Normalises BinarySettings.ManagerReleaseRepo ("owner/repo", also accepts https://github.com/owner/repo[.git]).
+    /// Returns null for empty input; throws ArgumentException when it is not a GitHub repository.
+    /// </summary>
+    public static string? NormalizeReleaseRepo(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var s = input.Trim();
+        if (Uri.TryCreate(s, UriKind.Absolute, out var uri))
+        {
+            if (!uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) && !uri.Host.Equals("www.github.com", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException($"'{s}' is not a github.com repository. Enter it as owner/repo (e.g. my-org/caddy-proxy-manager).");
+            s = uri.AbsolutePath.Trim('/');
+            var parts = s.Split('/');
+            if (parts.Length >= 2) s = parts[0] + "/" + parts[1];
+        }
+        if (s.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) s = s[..^4];
+        if (!GitHubRepo().IsMatch(s))
+            throw new ArgumentException($"'{input.Trim()}' is not a GitHub repository name. Enter it as owner/repo (e.g. my-org/caddy-proxy-manager).");
+        return s;
+    }
+
+    /// <summary>
+    /// Latest release of the manager itself from BinarySettings.ManagerReleaseRepo (null when not configured).
+    /// Cached like the Caddy check; without <paramref name="force"/> failures are logged and the cached value returned.
+    /// </summary>
+    public async Task<ReleaseInfo?> GetManagerLatestAsync(bool force = false, CancellationToken ct = default)
+    {
+        string? repo;
+        try { repo = NormalizeReleaseRepo(store.GetSettings<BinarySettings>().ManagerReleaseRepo); }
+        catch (ArgumentException ex)
+        {
+            logger.LogWarning("Manager update check skipped: {Error}", ex.Message);
+            return null;
+        }
+        if (repo is null) return null;
+        if (!force && _managerRepo == repo && _managerLatest is not null && DateTime.UtcNow - _managerFetchedAt < LatestCacheTtl) return _managerLatest;
+        await _managerGate.WaitAsync(ct);
+        try
+        {
+            if (_managerRepo != repo)
+            {
+                _managerRepo = repo;
+                _managerLatest = null;
+                _managerFetchedAt = _managerFailedAt = default;
+            }
+            if (!force)
+            {
+                if (_managerLatest is not null && DateTime.UtcNow - _managerFetchedAt < LatestCacheTtl) return _managerLatest;
+                if (DateTime.UtcNow - _managerFailedAt < LatestFailureBackoff || _rateLimitResetAt > DateTime.UtcNow) return _managerLatest;
+            }
+            try
+            {
+                var latest = await FetchGitHubReleaseAsync($"https://api.github.com/repos/{repo}/releases/latest", $"the latest release of {repo}", repo, ct);
+                _managerLatest = latest with { Version = latest.Version.TrimStart('v', 'V') };
+                _managerFetchedAt = DateTime.UtcNow;
+                return _managerLatest;
+            }
+            catch (Exception ex) when (!force && !ct.IsCancellationRequested)
+            {
+                _managerFailedAt = DateTime.UtcNow;
+                logger.LogWarning("Checking GitHub ({Repo}) for a new Caddy Proxy Manager release failed: {Error}", repo, ex.Message);
+                return _managerLatest;
+            }
+            catch (Exception) when (force && !ct.IsCancellationRequested)
+            {
+                _managerFailedAt = DateTime.UtcNow;
+                throw;
+            }
+        }
+        finally
+        {
+            _managerGate.Release();
+        }
+    }
 
     // ------------------------------------------------------------------ overview
 
@@ -293,6 +476,8 @@ public sealed class CaddyBinaryManager(
             logger.LogWarning("Could not inspect the installed Caddy binary: {Error}", ex.Message);
         }
         var latest = await GetLatestAsync(false, ct);
+        var previousVersion = await GetPreviousVersionAsync(ct);
+        var managerLatest = await GetManagerLatestAsync(false, ct);
         settings = store.GetSettings<BinarySettings>(); // LastCheckedAt may have been updated
         var desired = settings.Plugins.Select(CaddyOutputParser.PackageWithoutVersion)
             .Where(p => p.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -307,6 +492,12 @@ public sealed class CaddyBinaryManager(
             DesiredPlugins = settings.Plugins.ToList(),
             PluginsOutOfSync = outOfSync,
             Platform = CaddyPlatform.Current.ToString(),
+            CanRollback = CanRollback,
+            PreviousVersion = previousVersion,
+            ManagerVersion = ManagerVersion,
+            ManagerLatestVersion = managerLatest?.Version,
+            ManagerLatestUrl = managerLatest?.Url,
+            ManagerUpdateAvailable = managerLatest is not null && CaddyVersion.IsNewer(managerLatest.Version, ManagerVersion),
         };
     }
 
@@ -377,11 +568,11 @@ public sealed class CaddyBinaryManager(
         {
             StdIn = stdin,
             Timeout = timeout,
-            Environment = CaddyHostSupport.CaddyEnvironment(paths),
+            Environment = CaddyHostSupport.CaddyEnvironment(paths, store.GetSettings<BinarySettings>()),
             WorkingDirectory = paths.CaddyBinDir,
         }, ct);
 
-    // ------------------------------------------------------------------ install / update
+    // ------------------------------------------------------------------ install / update / upload / rollback
 
     public JobInfo StartInstallOrUpdate(string? version = null) =>
         StartInstall(version, pluginsOverride: null, "requested");
@@ -403,17 +594,220 @@ public sealed class CaddyBinaryManager(
         var title = plugins.Count > 0
             ? $"Build Caddy with {plugins.Count} plugin(s)"
             : requested is not null ? $"Install Caddy {requested}" : "Install latest Caddy";
+        // The bootstrapper registers the service and applies the configuration itself once its install job is done.
+        var postInstall = reason != "bootstrap";
+        return StartJob(title, reason, (log, _) => InstallAsync(requested, plugins, log, postInstall));
+    }
 
+    /// <summary>
+    /// Offline / air-gapped install of a file that was uploaded to (or placed in) <see cref="AppPaths.CaddyStagingDir"/>:
+    /// caddy(.exe) itself or an official release archive (.zip / .tar.gz) for this platform. The job owns the file and
+    /// deletes it (and its upload directory) when it finishes, successfully or not.
+    /// Throws FileNotFoundException, ArgumentException (malformed SHA-512) or InvalidOperationException (job running).
+    /// </summary>
+    public JobInfo StartInstallFromFile(string stagedFile, string? expectedSha512 = null) =>
+        StartInstallFromFile(stagedFile, expectedSha512, displayName: null);
+
+    public JobInfo StartInstallFromFile(string stagedFile, string? expectedSha512, string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(stagedFile) || !File.Exists(stagedFile))
+            throw new FileNotFoundException($"The uploaded Caddy file was not found ({stagedFile}).", stagedFile);
+        try
+        {
+            var sha = ExecutableFormat.NormalizeSha512(expectedSha512);
+            var name = string.IsNullOrWhiteSpace(displayName) ? Path.GetFileName(stagedFile) : displayName.Trim();
+            return StartJob($"Install Caddy from uploaded file {name}", "upload",
+                (log, _) => InstallFromFileAsync(stagedFile, sha, name, log));
+        }
+        catch
+        {
+            DeleteUpload(stagedFile);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Swaps the previous binary (caddy.exe.previous) back in through the verified pipeline. The binary that was active
+    /// becomes the new "previous", so a rollback can itself be undone.
+    /// </summary>
+    public JobInfo StartRollback()
+    {
+        if (!CanRollback)
+            throw new InvalidOperationException(
+                $"There is no previous Caddy binary to roll back to ({Path.GetFileName(paths.CaddyExeBackup)} does not exist). " +
+                "A previous binary is kept after every update.");
+        return StartJob("Roll back to the previous Caddy binary", "rollback", (log, _) => RollbackToPreviousAsync(log));
+    }
+
+    public bool CanRollback => File.Exists(paths.CaddyExeBackup);
+
+    /// <summary>False while an install/update/upload/rollback job runs (only one at a time).</summary>
+    public bool CanStartJob => !jobs.IsRunning(JobKind);
+
+    private JobInfo StartJob(string title, string reason, Func<Action<string>, CancellationToken, Task> work)
+    {
         lock (_jobLock)
         {
             if (jobs.IsRunning(JobKind))
                 throw new InvalidOperationException("A Caddy install/update job is already running. Wait for it to finish.");
-            logger.LogInformation("Starting Caddy install job ({Reason}): {Title}", reason, title);
-            return jobs.Start(JobKind, title, (log, _) => InstallAsync(requested, plugins, log));
+            logger.LogInformation("Starting Caddy binary job ({Reason}): {Title}", reason, title);
+            return jobs.Start(JobKind, title, work);
         }
     }
 
-    internal async Task InstallAsync(CaddyVersion? requested, IReadOnlyList<string> plugins, Action<string> log)
+    private enum InstallMode { Download, Upload, Rollback }
+
+    /// <summary>A binary in the job's staging directory, ready for the verified swap.</summary>
+    private sealed record StagedBinary
+    {
+        public required string Path { get; init; }
+        public required string Source { get; init; }
+        public string? Url { get; init; }
+        public string? Sha512 { get; init; }
+        /// <summary>Fail when the binary reports another version (downloads of a pinned release).</summary>
+        public string? ExpectedVersion { get; init; }
+        /// <summary>Fail when one of these packages is missing (custom builds).</summary>
+        public IReadOnlyList<string> RequiredPlugins { get; init; } = [];
+        /// <summary>Human readable origin for events ("uploaded file caddy_2.11.4_windows_amd64.zip").</summary>
+        public string? Origin { get; init; }
+    }
+
+    internal Task InstallAsync(CaddyVersion? requested, IReadOnlyList<string> plugins, Action<string> log, bool postInstall = true) =>
+        RunPipelineAsync(InstallMode.Download, log, postInstall, ownedUpload: null,
+            (stagingDir, ct) => DownloadAsync(requested, plugins, stagingDir, log, ct));
+
+    internal Task InstallFromFileAsync(string upload, string? expectedSha512, string displayName, Action<string> log) =>
+        RunPipelineAsync(InstallMode.Upload, log, postInstall: true, ownedUpload: upload,
+            (stagingDir, ct) => StageUploadAsync(upload, expectedSha512, displayName, stagingDir, log, ct));
+
+    internal Task RollbackToPreviousAsync(Action<string> log) =>
+        RunPipelineAsync(InstallMode.Rollback, log, postInstall: true, ownedUpload: null,
+            (stagingDir, ct) => StagePreviousAsync(stagingDir, log, ct));
+
+    private async Task<StagedBinary> DownloadAsync(CaddyVersion? requested, IReadOnlyList<string> plugins, string stagingDir,
+        Action<string> log, CancellationToken ct)
+    {
+        var platform = CaddyPlatform.Current;
+        var staged = Path.Combine(stagingDir, platform.BinaryName);
+        if (plugins.Count == 0)
+        {
+            var version = requested;
+            if (version is null)
+            {
+                log("Looking up the latest Caddy release on GitHub");
+                var latest = await GetLatestAsync(force: true, ct)
+                             ?? throw new InvalidOperationException("GitHub did not return a latest Caddy release.");
+                version = CaddyVersion.Parse(latest.Version);
+            }
+            var asset = platform.ReleaseAssetName(version);
+            log($"Installing Caddy {version} for {platform} from the official GitHub release ({asset})");
+
+            var checksumsUrl = CaddyPlatform.ReleaseDownloadUrl(version, CaddyPlatform.ChecksumsAssetName(version));
+            log("Downloading " + checksumsUrl);
+            var checksumsText = await GetStringAsync(checksumsUrl, $"Caddy release {version} (checksums file)", ct);
+            var sums = CaddyOutputParser.ParseChecksums(checksumsText);
+            if (!sums.TryGetValue(asset, out var expectedSha))
+                throw new InvalidOperationException($"Caddy release {version} has no build for {platform} ({asset} is not listed in the checksums file).");
+
+            var url = CaddyPlatform.ReleaseDownloadUrl(version, asset);
+            var archive = Path.Combine(stagingDir, asset);
+            await DownloadFileAsync(url, archive, log, TimeSpan.FromMinutes(15), ct);
+            var sha = await Sha512Async(archive, ct);
+            if (!string.Equals(sha, expectedSha, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"SHA-512 checksum mismatch for {asset} (expected {expectedSha[..16]}…, got {sha[..16]}…). The download was corrupted or tampered with; nothing was changed.");
+            log("SHA-512 checksum verified");
+            ExtractBinary(archive, platform, staged);
+            return new StagedBinary { Path = staged, Source = "github-release", Url = url, Sha512 = sha, ExpectedVersion = version.ToString() };
+        }
+
+        if (requested is not null)
+            log($"Note: builds with plugins always use the latest Caddy release; the requested version {requested} is ignored.");
+        var buildUrl = platform.BuildServerUrl(plugins);
+        log($"Requesting a custom build for {platform} with: {string.Join(", ", plugins)}");
+        log("The caddyserver.com build server compiles the binary on demand; this can take a few minutes.");
+        await DownloadFileAsync(buildUrl, staged, log, TimeSpan.FromMinutes(20), ct);
+        return new StagedBinary
+        {
+            Path = staged, Source = "caddyserver-build", Url = buildUrl, Sha512 = await Sha512Async(staged, ct), RequiredPlugins = plugins,
+        };
+    }
+
+    /// <summary>Checks an uploaded caddy(.exe) / release archive and puts the binary into the job's staging directory.</summary>
+    private async Task<StagedBinary> StageUploadAsync(string upload, string? expectedSha512, string displayName, string stagingDir,
+        Action<string> log, CancellationToken ct)
+    {
+        var platform = CaddyPlatform.Current;
+        var size = new FileInfo(upload).Length;
+        log($"Checking the uploaded file {displayName} ({size / 1048576.0:0.0} MB)");
+        var sha = await Sha512Async(upload, ct);
+        log($"SHA-512: {sha}");
+        if (expectedSha512 is not null)
+        {
+            if (!string.Equals(sha, expectedSha512, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"SHA-512 checksum mismatch for {displayName}: expected {expectedSha512[..16]}…, the uploaded file has {sha[..16]}…. " +
+                    "The file is not the one you expected (corrupted or tampered with); nothing was changed.");
+            log("SHA-512 checksum verified");
+        }
+        else
+        {
+            log("No expected SHA-512 was given; compare the value above with caddy_<version>_checksums.txt from the release page.");
+        }
+
+        var staged = Path.Combine(stagingDir, platform.BinaryName);
+        switch (ExecutableFormat.DetectKind(upload))
+        {
+            case UploadKind.Zip:
+            case UploadKind.TarGz:
+                log($"Extracting {platform.BinaryName} from the release archive");
+                ExtractBinary(upload, platform, staged, byContent: true);
+                break;
+            case UploadKind.Executable:
+                File.Copy(upload, staged, overwrite: true);
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"{displayName} is neither a Caddy executable nor a release archive (.zip / .tar.gz). " +
+                    $"Upload {platform.BinaryName} or caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} " +
+                    "from https://github.com/caddyserver/caddy/releases.");
+        }
+
+        var target = ExecutableFormat.Detect(staged)
+                     ?? throw new InvalidOperationException($"The {platform.BinaryName} in {displayName} is not a recognised executable.");
+        if (!target.Matches(platform))
+            throw new InvalidOperationException(
+                $"{displayName} contains a Caddy binary for {target}, but this server needs {platform}. " +
+                $"Download caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} instead.");
+        log($"Binary format: {target} (matches this server)");
+        return new StagedBinary { Path = staged, Source = "upload", Url = displayName, Sha512 = sha, Origin = $"uploaded file {displayName}" };
+    }
+
+    /// <summary>Copies caddy(.exe).previous into the job's staging directory (the original stays until the swap).</summary>
+    private Task<StagedBinary> StagePreviousAsync(string stagingDir, Action<string> log, CancellationToken ct)
+    {
+        if (!File.Exists(paths.CaddyExeBackup))
+            throw new InvalidOperationException($"There is no previous Caddy binary to roll back to ({paths.CaddyExeBackup} does not exist).");
+        var staged = Path.Combine(stagingDir, CaddyPlatform.Current.BinaryName);
+        log($"Staging the previous binary {paths.CaddyExeBackup}");
+        File.Copy(paths.CaddyExeBackup, staged, overwrite: true);
+        var meta = ReadPreviousMetadata();
+        return Task.FromResult(new StagedBinary
+        {
+            Path = staged,
+            Source = meta?.Source is { Length: > 0 } s ? s : "rollback",
+            Url = meta?.Url,
+            Sha512 = meta?.Sha512,
+            Origin = "the previous binary",
+        });
+    }
+
+    /// <summary>
+    /// The verified swap shared by every install path: acquire → version / list-modules → validate the current config →
+    /// stop Caddy → current becomes .previous → staged moves in → start → wait for the admin API → roll back on failure →
+    /// post-install bootstrap (service registration/repair + apply).
+    /// </summary>
+    private async Task RunPipelineAsync(InstallMode mode, Action<string> log, bool postInstall, string? ownedUpload,
+        Func<string, CancellationToken, Task<StagedBinary>> acquire)
     {
         using var overall = new CancellationTokenSource(TimeSpan.FromMinutes(30));
         var ct = overall.Token;
@@ -422,76 +816,50 @@ public sealed class CaddyBinaryManager(
         Directory.CreateDirectory(paths.CaddyBinDir);
         var stagingDir = Path.Combine(paths.CaddyStagingDir, Entity.NewId());
         Directory.CreateDirectory(stagingDir);
-        var staged = Path.Combine(stagingDir, platform.BinaryName);
         var sink = services.GetService<IEventSink>();
         var swapped = false;
         try
         {
-            string source, url;
-            string? sha = null;
-            string? expectedVersion = null;
-            if (plugins.Count == 0)
-            {
-                var version = requested;
-                if (version is null)
-                {
-                    log("Looking up the latest Caddy release on GitHub");
-                    var latest = await GetLatestAsync(force: true, ct)
-                                 ?? throw new InvalidOperationException("GitHub did not return a latest Caddy release.");
-                    version = CaddyVersion.Parse(latest.Version);
-                }
-                expectedVersion = version.ToString();
-                var asset = platform.ReleaseAssetName(version);
-                log($"Installing Caddy {version} for {platform} from the official GitHub release ({asset})");
-
-                var checksumsUrl = CaddyPlatform.ReleaseDownloadUrl(version, CaddyPlatform.ChecksumsAssetName(version));
-                log("Downloading " + checksumsUrl);
-                var checksumsText = await GetStringAsync(checksumsUrl, $"Caddy release {version} (checksums file)", ct);
-                var sums = CaddyOutputParser.ParseChecksums(checksumsText);
-                if (!sums.TryGetValue(asset, out var expectedSha))
-                    throw new InvalidOperationException($"Caddy release {version} has no build for {platform} ({asset} is not listed in the checksums file).");
-
-                url = CaddyPlatform.ReleaseDownloadUrl(version, asset);
-                var archive = Path.Combine(stagingDir, asset);
-                await DownloadAsync(url, archive, log, TimeSpan.FromMinutes(15), ct);
-                sha = await Sha512Async(archive, ct);
-                if (!string.Equals(sha, expectedSha, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"SHA-512 checksum mismatch for {asset} (expected {expectedSha[..16]}…, got {sha[..16]}…). The download was corrupted or tampered with; nothing was changed.");
-                log("SHA-512 checksum verified");
-                ExtractBinary(archive, platform, staged);
-                source = "github-release";
-            }
-            else
-            {
-                if (requested is not null)
-                    log($"Note: builds with plugins always use the latest Caddy release; the requested version {requested} is ignored.");
-                url = platform.BuildServerUrl(plugins);
-                log($"Requesting a custom build for {platform} with: {string.Join(", ", plugins)}");
-                log("The caddyserver.com build server compiles the binary on demand; this can take a few minutes.");
-                await DownloadAsync(url, staged, log, TimeSpan.FromMinutes(20), ct);
-                source = "caddyserver-build";
-                sha = await Sha512Async(staged, ct);
-            }
+            var staged = await acquire(stagingDir, ct);
 
             if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(staged, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                                             UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                                             UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                File.SetUnixFileMode(staged.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                                                  UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                                                  UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
-            log("Checking the downloaded binary");
-            var (stagedVersion, modules) = await InspectAsync(staged, ct);
-            log($"Downloaded binary reports {stagedVersion} with {modules.Count} modules");
-            if (expectedVersion is not null && CaddyVersion.Compare(stagedVersion, expectedVersion) != 0)
-                throw new InvalidOperationException($"The downloaded binary reports version {stagedVersion}, expected {expectedVersion}.");
-            var stagedPlugins = new HashSet<string>(CaddyOutputParser.PluginPackages(modules), StringComparer.OrdinalIgnoreCase);
-            var missing = plugins.Select(CaddyOutputParser.PackageWithoutVersion).Where(p => !stagedPlugins.Contains(p)).ToList();
+            log("Checking the new binary (caddy version, caddy list-modules)");
+            string stagedVersion;
+            List<CaddyModuleInfo> modules;
+            try
+            {
+                (stagedVersion, modules) = await InspectAsync(staged.Path, ct);
+            }
+            catch (InvalidOperationException ex) when (mode == InstallMode.Upload)
+            {
+                throw new InvalidOperationException($"The uploaded binary does not run on this server: {ex.Message}", ex);
+            }
+            var stagedPluginList = CaddyOutputParser.PluginPackages(modules);
+            log($"New binary reports {stagedVersion} with {modules.Count} modules" +
+                (stagedPluginList.Count > 0 ? $"; plugins: {string.Join(", ", stagedPluginList)}" : "; no plugins"));
+            if (staged.ExpectedVersion is not null && CaddyVersion.Compare(stagedVersion, staged.ExpectedVersion) != 0)
+                throw new InvalidOperationException($"The downloaded binary reports version {stagedVersion}, expected {staged.ExpectedVersion}.");
+            var stagedPlugins = new HashSet<string>(stagedPluginList, StringComparer.OrdinalIgnoreCase);
+            var missing = staged.RequiredPlugins.Select(CaddyOutputParser.PackageWithoutVersion).Where(p => !stagedPlugins.Contains(p)).ToList();
             if (missing.Count > 0)
                 throw new InvalidOperationException($"The custom build does not contain the requested plugin(s): {string.Join(", ", missing)}.");
+            if (mode != InstallMode.Download)
+            {
+                var desired = store.GetSettings<BinarySettings>().Plugins.Select(CaddyOutputParser.PackageWithoutVersion)
+                    .Where(p => p.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (!desired.SetEquals(stagedPlugins))
+                    log($"Note: this binary's plugins ({(stagedPlugins.Count == 0 ? "none" : string.Join(", ", stagedPlugins))}) differ from the desired " +
+                        $"plugin list ({(desired.Count == 0 ? "none" : string.Join(", ", desired))}); the Plugins page will show them as out of sync.");
+            }
 
             if (File.Exists(paths.CaddyConfigFile))
             {
                 log("Validating the current configuration with the new binary");
-                var val = await RunBinaryAsync(staged, ["validate", "--config", paths.CaddyConfigFile], null, TimeSpan.FromSeconds(90), ct);
+                var val = await RunBinaryAsync(staged.Path, ["validate", "--config", paths.CaddyConfigFile], null, TimeSpan.FromSeconds(90), ct);
                 if (val.ExitCode != 0)
                     throw new InvalidOperationException(
                         $"The new Caddy binary rejected the current configuration, so nothing was changed:\n{Trim(val.Combined, 2000)}");
@@ -508,6 +876,8 @@ public sealed class CaddyBinaryManager(
             {
                 try { oldVersion = (await GetInstalledAsync(ct))?.Version; }
                 catch (Exception ex) when (ex is not OperationCanceledException) { log($"Warning: could not read the current version: {ex.Message}"); }
+                if (oldVersion is not null && mode == InstallMode.Upload && CaddyVersion.Compare(stagedVersion, oldVersion) < 0)
+                    log($"Note: this downgrades Caddy from {oldVersion} to {stagedVersion}.");
                 if (host is not null)
                 {
                     var st = await host.GetStatusAsync(ct);
@@ -520,23 +890,25 @@ public sealed class CaddyBinaryManager(
                 }
             }
 
-            var previousMeta = ReadMetadata();
+            var currentMeta = ReadMetadata();
             if (hadBinary)
             {
                 log($"Keeping the current binary ({oldVersion ?? "unknown version"}) as {Path.GetFileName(paths.CaddyExeBackup)} for rollback");
                 await MoveWithRetryAsync(paths.CaddyExe, paths.CaddyExeBackup, ct);
+                WritePreviousMetadata(currentMeta is null ? null : currentMeta with { Version = oldVersion ?? currentMeta.Version });
             }
-            await MoveWithRetryAsync(staged, paths.CaddyExe, ct);
+            await MoveWithRetryAsync(staged.Path, paths.CaddyExe, ct);
             swapped = true;
             InvalidateInstalled();
+            InvalidatePrevious();
             WriteMetadata(new InstallMetadata
             {
                 Version = stagedVersion,
                 InstalledAt = DateTime.UtcNow,
-                Source = source,
-                Url = url,
-                Sha512 = sha,
-                Plugins = CaddyOutputParser.PluginPackages(modules),
+                Source = staged.Source,
+                Url = staged.Url,
+                Sha512 = staged.Sha512,
+                Plugins = stagedPluginList,
                 Platform = platform.ToString(),
                 FileSize = new FileInfo(paths.CaddyExe).Length,
             });
@@ -556,34 +928,38 @@ public sealed class CaddyBinaryManager(
                 {
                     log("ERROR: " + ex.Message);
                     log("Rolling back to the previous binary");
-                    await RollbackAsync(host, previousMeta, log, ct);
+                    await RestorePreviousAsync(host, currentMeta, log, ct);
                     sink?.Raise(EventSeverity.Error, "update",
-                        $"Caddy update to {stagedVersion} failed and was rolled back to {oldVersion ?? "the previous version"}",
+                        mode == InstallMode.Rollback
+                            ? $"Rolling Caddy back to {stagedVersion} failed; {oldVersion ?? "the version that was running"} was restored"
+                            : $"Caddy update to {stagedVersion} failed and was rolled back to {oldVersion ?? "the previous version"}",
                         ex.Message, key: "caddy-update-failed", alertRule: "updateAvailable");
                     throw new InvalidOperationException($"Caddy {stagedVersion} failed to start; the previous version was restored. {ex.Message}", ex);
-                }
-
-                if (!hadBinary && services.GetService<ICaddyConfigService>() is { } config)
-                {
-                    log("Applying the managed configuration");
-                    var r = await config.ApplyAsync("caddy installed", ct);
-                    log(r.Success ? "Configuration applied" : $"Warning: applying the configuration failed: {r.Error}");
                 }
             }
             else if (hadBinary && !wasRunning)
             {
-                log("Caddy was not running before the update, so it was left stopped.");
+                log("Caddy was not running before, so it was left stopped.");
             }
 
+            if (postInstall) await PostInstallAsync(log, ct);
+
+            var origin = staged.Origin is null ? null : $" ({staged.Origin})";
             sink?.Raise(EventSeverity.Info, "update",
-                hadBinary ? $"Caddy updated from {oldVersion ?? "unknown"} to {stagedVersion}" : $"Caddy {stagedVersion} installed",
-                plugins.Count > 0 ? "Plugins: " + string.Join(", ", plugins) : null);
+                mode == InstallMode.Rollback ? $"Caddy rolled back from {oldVersion ?? "unknown"} to {stagedVersion}"
+                : hadBinary ? $"Caddy updated from {oldVersion ?? "unknown"} to {stagedVersion}{origin}"
+                : $"Caddy {stagedVersion} installed{origin}",
+                stagedPluginList.Count > 0 ? "Plugins: " + string.Join(", ", stagedPluginList) : null);
             log("Done");
         }
         catch (Exception ex) when (!swapped)
         {
-            sink?.Raise(EventSeverity.Error, "update", "Installing Caddy failed; the current installation was not changed", ex.Message,
-                key: "caddy-update-failed", alertRule: "updateAvailable");
+            sink?.Raise(EventSeverity.Error, "update", mode switch
+                {
+                    InstallMode.Upload => "Installing the uploaded Caddy binary failed; the current installation was not changed",
+                    InstallMode.Rollback => "Rolling back the Caddy binary failed; the current installation was not changed",
+                    _ => "Installing Caddy failed; the current installation was not changed",
+                }, ex.Message, key: "caddy-update-failed", alertRule: "updateAvailable");
             throw;
         }
         finally
@@ -596,10 +972,38 @@ public sealed class CaddyBinaryManager(
             {
                 logger.LogWarning("Could not clean up staging directory {Dir}: {Error}", stagingDir, ex.Message);
             }
+            if (ownedUpload is not null) DeleteUpload(ownedUpload);
         }
     }
 
-    private async Task RollbackAsync(ICaddyHost host, InstallMetadata? previousMeta, Action<string> log, CancellationToken ct)
+    /// <summary>
+    /// After a successful install from any source: boot config, Windows service registration/repair (binary path,
+    /// recovery, environment) and apply the current configuration. Problems are logged, never fatal: the binary is in place.
+    /// </summary>
+    private async Task PostInstallAsync(Action<string> log, CancellationToken ct)
+    {
+        try
+        {
+            if (services.GetService<CaddyBootstrapper>() is { } bootstrapper)
+            {
+                await bootstrapper.AfterInstallAsync(log, ct);
+            }
+            else if (services.GetService<ICaddyConfigService>() is { } config)
+            {
+                log("Applying the managed configuration");
+                var r = await config.ApplyAsync("caddy installed", ct);
+                log(r.Success ? "Configuration applied" : $"Warning: applying the configuration failed: {r.Error}");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log("Warning: post-install steps failed: " + ex.Message);
+            logger.LogWarning(ex, "Post-install steps after a Caddy binary change failed");
+        }
+    }
+
+    /// <summary>Puts caddy(.exe).previous back after the new binary failed to start.</summary>
+    private async Task RestorePreviousAsync(ICaddyHost host, InstallMetadata? previousMeta, Action<string> log, CancellationToken ct)
     {
         try
         {
@@ -616,8 +1020,10 @@ public sealed class CaddyBinaryManager(
         }
         await MoveWithRetryAsync(paths.CaddyExeBackup, paths.CaddyExe, ct);
         InvalidateInstalled();
+        InvalidatePrevious();
         if (previousMeta is not null) WriteMetadata(previousMeta);
         else if (File.Exists(MetadataFile)) File.Delete(MetadataFile);
+        WritePreviousMetadata(null); // the failed binary is discarded; there is no older binary any more
         log("Previous binary restored; starting Caddy");
         try
         {
@@ -629,6 +1035,27 @@ public sealed class CaddyBinaryManager(
             log("ERROR: the previous binary did not start either: " + ex.Message);
             services.GetService<IEventSink>()?.Raise(EventSeverity.Error, "caddy",
                 "Caddy is down after a failed update and rollback", ex.Message, key: "caddy-down", alertRule: "caddyDown");
+        }
+    }
+
+    /// <summary>Deletes an uploaded file the job owns, and its per-upload directory, when they are inside the staging directory.</summary>
+    internal void DeleteUpload(string file)
+    {
+        try
+        {
+            var staging = Path.GetFullPath(paths.CaddyStagingDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var full = Path.GetFullPath(file);
+            if (!full.StartsWith(staging, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                return; // never delete files the manager did not stage itself
+            if (File.Exists(full)) File.Delete(full);
+            var dir = Path.GetDirectoryName(full);
+            if (dir is not null && !string.Equals(dir + Path.DirectorySeparatorChar, staging, StringComparison.OrdinalIgnoreCase)
+                && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                Directory.Delete(dir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning("Could not delete the uploaded file {File}: {Error}", file, ex.Message);
         }
     }
 
@@ -699,7 +1126,7 @@ public sealed class CaddyBinaryManager(
         return await resp.Content.ReadAsStringAsync(cts.Token);
     }
 
-    private async Task DownloadAsync(string url, string destination, Action<string> log, TimeSpan timeout, CancellationToken ct)
+    private async Task DownloadFileAsync(string url, string destination, Action<string> log, TimeSpan timeout, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
@@ -758,14 +1185,22 @@ public sealed class CaddyBinaryManager(
         return Convert.ToHexStringLower(hash);
     }
 
-    /// <summary>Extracts caddy(.exe) from a release archive (.zip on Windows, .tar.gz elsewhere).</summary>
-    internal static void ExtractBinary(string archive, CaddyPlatform platform, string destination)
+    /// <summary>
+    /// Extracts caddy(.exe) from a release archive (.zip on Windows, .tar.gz elsewhere). The format is taken from the file
+    /// name, or from the file content when <paramref name="byContent"/> is set (uploads keep no trustworthy name).
+    /// </summary>
+    internal static void ExtractBinary(string archive, CaddyPlatform platform, string destination, bool byContent = false)
     {
-        if (archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        var isZip = byContent
+            ? ExecutableFormat.DetectKind(archive) == UploadKind.Zip
+            : archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+        if (isZip)
         {
             using var zip = ZipFile.OpenRead(archive);
             var entry = zip.Entries.FirstOrDefault(e => e.Name.Equals(platform.BinaryName, StringComparison.OrdinalIgnoreCase))
-                        ?? throw new InvalidOperationException($"{Path.GetFileName(archive)} does not contain {platform.BinaryName}.");
+                        ?? throw new InvalidOperationException(
+                            $"{Path.GetFileName(archive)} does not contain {platform.BinaryName}. Use the release archive for {platform} " +
+                            $"(caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension}).");
             entry.ExtractToFile(destination, overwrite: true);
             return;
         }
@@ -782,7 +1217,9 @@ public sealed class CaddyBinaryManager(
                 return;
             }
         }
-        throw new InvalidOperationException($"{Path.GetFileName(archive)} does not contain {platform.BinaryName}.");
+        throw new InvalidOperationException(
+            $"{Path.GetFileName(archive)} does not contain {platform.BinaryName}. Use the release archive for {platform} " +
+            $"(caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension}).");
     }
 
     /// <summary>File.Move with retries: antivirus scanners briefly lock freshly written executables on Windows.</summary>

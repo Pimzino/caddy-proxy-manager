@@ -1,5 +1,9 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CaddyManager.Config.Certificates;
+using CaddyManager.Config.Validation;
 using CaddyManager.Core;
+using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -10,7 +14,11 @@ namespace CaddyManager.Config.Endpoints;
 
 public sealed record CertificatePemInput(string? Name, string? CertPem, string? KeyPem);
 public sealed record CertificatePathInput(string? Name, string? CertPath, string? KeyPath);
+public sealed record CertificatePfxPathInput(string? Name, string? PfxPath, string? PfxPassword);
+public sealed record CertificateWindowsStoreInput(string? Name, string? StoreLocation, string? StoreName, string? Thumbprint, string? Subject);
 public sealed record CertificateUpdateInput(string? Name, string? Notes);
+/// <summary>JSON body of POST /api/certificates/{id}/replace: re-point to PEM files (certPath + keyPath) or to a PFX (pfxPath).</summary>
+public sealed record CertificateRepointInput(string? Name, string? CertPath, string? KeyPath, string? PfxPath, string? PfxPassword);
 
 internal static class CertificateEndpoints
 {
@@ -31,7 +39,7 @@ internal static class CertificateEndpoints
         {
             var (parsed, name, problem) = await ReadUploadAsync(http);
             if (problem is not null) return problem;
-            return await CreateAsync(http, store, files, parsed!, name, CertificateSource.Uploaded, null, null);
+            return await CreateAsync(http, store, files, parsed!, name, CertificateSource.Uploaded);
         }).RequireAuthorization(Policies.Operator);
 
         g.MapPost("/pem", async (CertificatePemInput? body, HttpContext http, IStore store, CertificateFileStore files) =>
@@ -46,14 +54,17 @@ internal static class CertificateEndpoints
             {
                 return ApiResults.BadRequest(ex.Message);
             }
-            return await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.Uploaded, null, null);
+            return await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.Uploaded);
         }).RequireAuthorization(Policies.Operator);
 
-        g.MapPost("/path", async (CertificatePathInput? body, HttpContext http, IStore store, CertificateFileStore files) =>
+        // ---- path-based sources: administrators only (Caddy runs as LocalSystem and can read almost any file)
+
+        g.MapPost("/path", async (CertificatePathInput? body, HttpContext http, IStore store, CertificateFileStore files, AppPaths paths) =>
         {
             if (body is null) return ApiResults.BadRequest("certPath and keyPath are required.");
             var certPath = body.CertPath?.Trim() ?? "";
             var keyPath = body.KeyPath?.Trim() ?? "";
+            if (CheckPemPaths(certPath, keyPath, paths, files.StoreRoot) is { } bad) return bad;
             ParsedCertificate parsed;
             try
             {
@@ -63,10 +74,96 @@ internal static class CertificateEndpoints
             {
                 return ApiResults.BadRequest(ex.Message);
             }
-            var result = await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.FilePath, certPath, keyPath);
+            var result = await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.FilePath, c =>
+            {
+                c.CertPath = certPath;
+                c.KeyPath = keyPath;
+                c.LastSyncedAt = DateTime.UtcNow;
+            });
             http.RequestServices.GetService<CertificateWatcher>()?.Poke();
             return result;
-        }).RequireAuthorization(Policies.Operator);
+        }).RequireAuthorization(Policies.Admin);
+
+        g.MapPost("/pfx-path", async (CertificatePfxPathInput? body, HttpContext http, IStore store, CertificateFileStore files, AppPaths paths, ISecretProtector secrets) =>
+        {
+            if (body is null) return ApiResults.BadRequest("pfxPath is required.");
+            var pfxPath = body.PfxPath?.Trim() ?? "";
+            if (PathGuard.CheckCertificateFile(pfxPath, "PFX", PathGuard.PfxFileExtensions, paths, files.StoreRoot) is { } err)
+                return Field("pfxPath", err);
+            ParsedCertificate parsed;
+            try
+            {
+                parsed = CertificateParser.FromPfxFile(pfxPath, body.PfxPassword);
+            }
+            catch (CertificateImportException ex)
+            {
+                return ApiResults.BadRequest(ex.Message);
+            }
+            var result = await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.PfxFile, c =>
+            {
+                c.SourcePath = pfxPath;
+                c.PfxPasswordProtected = string.IsNullOrEmpty(body.PfxPassword) ? null : secrets.Protect(body.PfxPassword);
+                c.LastSyncedAt = DateTime.UtcNow;
+            });
+            http.RequestServices.GetService<CertificateWatcher>()?.Poke();
+            return result;
+        }).RequireAuthorization(Policies.Admin);
+
+        g.MapGet("/windows-store", (string? location, string? store, IWindowsCertificateSource windows) =>
+        {
+            var loc = WindowsStoreNames.NormalizeLocation(location);
+            var name = WindowsStoreNames.NormalizeStoreName(store);
+            if (loc is null) return Field("location", "Store location must be LocalMachine or CurrentUser.");
+            if (name is null) return Field("store", "Store name may contain letters, digits, spaces, '.', '_' and '-' (e.g. My or WebHosting).");
+            try
+            {
+                return Results.Ok(windows.List(loc, name));
+            }
+            catch (CertificateImportException ex)
+            {
+                return ApiResults.BadRequest(ex.Message);
+            }
+        }).RequireAuthorization(Policies.Admin);
+
+        g.MapPost("/windows-store", async (CertificateWindowsStoreInput? body, HttpContext http, IStore store, CertificateFileStore files, IWindowsCertificateSource windows) =>
+        {
+            if (body is null) return ApiResults.BadRequest("A thumbprint or a subject is required.");
+            var loc = WindowsStoreNames.NormalizeLocation(body.StoreLocation);
+            var storeName = WindowsStoreNames.NormalizeStoreName(body.StoreName);
+            var hasThumb = !string.IsNullOrWhiteSpace(body.Thumbprint);
+            var hasSubject = !string.IsNullOrWhiteSpace(body.Subject);
+            var v = new Validator();
+            if (loc is null) v.Add("storeLocation", "Store location must be LocalMachine or CurrentUser.");
+            if (storeName is null) v.Add("storeName", "Store name may contain letters, digits, spaces, '.', '_' and '-' (e.g. My or WebHosting).");
+            if (hasThumb == hasSubject) v.Add("thumbprint", "Specify exactly one of thumbprint (pin one certificate) or subject (follow renewals).");
+            if (hasThumb && WindowsStoreNames.NormalizeThumbprint(body.Thumbprint).Length != 40)
+                v.Add("thumbprint", "A thumbprint is 40 hexadecimal characters (SHA-1).");
+            if (!v.IsValid) return v.ToResult();
+            if (!windows.IsSupported)
+                return ApiResults.BadRequest("The Windows certificate store is only available when Caddy Proxy Manager runs on Windows.");
+
+            ParsedCertificate parsed;
+            var where = $"{loc}\\{storeName}";
+            try
+            {
+                var chosen = WindowsStoreSelector.Select(windows.List(loc!, storeName!), body.Thumbprint, body.Subject, DateTime.UtcNow, where);
+                parsed = windows.Export(loc!, storeName!, chosen.Thumbprint);
+            }
+            catch (CertificateImportException ex)
+            {
+                return ApiResults.BadRequest(ex.Message);
+            }
+            return await CreateAsync(http, store, files, parsed, body.Name, CertificateSource.WindowsStore, c =>
+            {
+                c.StoreLocation = loc!;
+                c.StoreName = storeName!;
+                c.StoreThumbprint = hasThumb ? WindowsStoreNames.NormalizeThumbprint(body.Thumbprint) : null;
+                c.StoreSubject = hasSubject ? body.Subject!.Trim() : null;
+                c.LastSyncedAt = DateTime.UtcNow;
+            });
+        }).RequireAuthorization(Policies.Admin);
+
+        // ---- maintenance
 
         g.MapPut("/{id}", async (string id, CertificateUpdateInput? body, HttpContext http, IStore store) =>
         {
@@ -87,45 +184,40 @@ internal static class CertificateEndpoints
                 onSuccess: apply =>
                 {
                     ConfigTransaction.Audit(http, "updated", "certificate", id, name);
-                    return Results.Ok(new { item = updated, apply });
+                    return Results.Ok(new { item = ToWire(updated), apply });
                 });
         }).RequireAuthorization(Policies.Operator);
 
-        g.MapPost("/{id}/replace", async (string id, HttpContext http, IStore store, CertificateFileStore files) =>
+        g.MapPost("/{id}/replace", async (string id, HttpContext http, IStore store, CertificateFileStore files, AppPaths paths, ISecretProtector secrets, CertificateSyncService sync) =>
         {
+            using var exclusive = await sync.AcquireAsync(http.RequestAborted);
             var col = store.Col<Certificate>();
             var existing = col.FindById(id);
             if (existing is null) return ApiResults.NotFound("Certificate");
 
-            // A file-path certificate may be re-pointed with JSON { certPath, keyPath }.
+            // Re-point to files on disk / a share with JSON — administrators only.
             if (http.Request.HasJsonContentType())
             {
-                var input = await http.Request.ReadFromJsonAsync<CertificatePathInput>(http.RequestAborted);
-                if (input is null) return ApiResults.BadRequest("certPath and keyPath are required.");
-                ParsedCertificate p;
+                if (!await EndpointSecurity.IsAdminAsync(http))
+                    return EndpointSecurity.Forbidden("Only administrators can point a certificate at files on the server or a share. Upload the certificate instead.");
+                CertificateRepointInput? input;
                 try
                 {
-                    p = CertificateParser.FromFiles(input.CertPath?.Trim() ?? "", input.KeyPath?.Trim() ?? "");
+                    input = await http.Request.ReadFromJsonAsync<CertificateRepointInput>(http.RequestAborted);
                 }
-                catch (CertificateImportException ex)
+                catch (JsonException ex)
                 {
-                    return ApiResults.BadRequest(ex.Message);
+                    return ApiResults.BadRequest("The request body could not be read: " + ex.Message);
                 }
-                var repointed = col.FindById(id);
-                repointed.Source = CertificateSource.FilePath;
-                repointed.CertPath = input.CertPath!.Trim();
-                repointed.KeyPath = input.KeyPath!.Trim();
-                if (!string.IsNullOrWhiteSpace(input.Name)) repointed.Name = input.Name.Trim();
-                SetMetadata(repointed, p.Metadata);
-                var r = await CommitReplaceAsync(http, col, existing, repointed, p.Metadata, restoreFiles: null,
-                    afterCommit: existing.Source == CertificateSource.Uploaded ? () => files.DeleteFiles(existing) : null);
-                http.RequestServices.GetService<CertificateWatcher>()?.Poke();
-                return r;
+                if (input is null) return ApiResults.BadRequest("certPath and keyPath (or pfxPath) are required.");
+                return string.IsNullOrWhiteSpace(input.PfxPath)
+                    ? await RepointToFilesAsync(http, col, files, paths, existing, input)
+                    : await RepointToPfxAsync(http, col, files, paths, secrets, existing, input);
             }
 
             var (parsed, name, problem) = await ReadUploadAsync(http);
             if (problem is not null) return problem;
-            var backup = existing.Source == CertificateSource.Uploaded ? CertificateFileStore.Backup(existing) : null;
+            var backup = CertificateFileStore.IsStoreManaged(existing.Source) ? CertificateFileStore.Backup(existing) : null;
             (string CertPath, string KeyPath) written;
             try
             {
@@ -136,6 +228,7 @@ internal static class CertificateEndpoints
                 return ApiResults.Failed("Certificate store not writable", ex.Message);
             }
             var updated = col.FindById(id);
+            ClearSource(updated);
             updated.Source = CertificateSource.Uploaded;
             updated.CertPath = written.CertPath;
             updated.KeyPath = written.KeyPath;
@@ -148,8 +241,42 @@ internal static class CertificateEndpoints
             }, afterCommit: null);
         }).RequireAuthorization(Policies.Operator);
 
-        g.MapDelete("/{id}", async (string id, HttpContext http, IStore store, CertificateFileStore files) =>
+        g.MapPost("/{id}/sync", async (string id, HttpContext http, IStore store, CertificateSyncService sync, ICaddyConfigService config) =>
         {
+            var existing = store.Col<Certificate>().FindById(id);
+            if (existing is null) return ApiResults.NotFound("Certificate");
+            if (existing.Source == CertificateSource.Uploaded)
+                return ApiResults.BadRequest("Uploaded certificates have no external source to synchronise. Use Replace to upload a renewed certificate.");
+
+            var r = await sync.SyncAsync(id, http.RequestAborted);
+            if (r is null) return ApiResults.NotFound("Certificate");
+            if (!r.Success)
+            {
+                ConfigTransaction.Audit(http, "synced", "certificate", id, existing.Name, "failed: " + r.Error);
+                return ApiResults.Failed("Certificate synchronisation failed", r.Error!);
+            }
+
+            var reload = existing.Source == CertificateSource.FilePath ? r.ThumbprintChanged : r.FilesWritten;
+            var used = store.Col<SiteHost>().FindAll().Any(h => h.Enabled && h.Tls == TlsMode.Custom && h.CertificateId == id);
+            var details = r.ThumbprintChanged ? $"thumbprint {existing.Thumbprint} → {r.Certificate.Thumbprint}" : "unchanged";
+            if (!reload || !used)
+            {
+                ConfigTransaction.Audit(http, "synced", "certificate", id, r.Certificate.Name, details);
+                return Results.Ok(new { item = ToWire(r.Certificate), apply = new ApplyResult { Success = true }, changed = r.ThumbprintChanged });
+            }
+            return await ConfigTransaction.RunAsync(http, $"Certificate synchronised: {r.Certificate.Name}",
+                persist: () => { },
+                rollback: () => { },
+                onSuccess: apply =>
+                {
+                    ConfigTransaction.Audit(http, "synced", "certificate", id, r.Certificate.Name, details);
+                    return Results.Ok(new { item = ToWire(r.Certificate), apply, changed = r.ThumbprintChanged });
+                });
+        }).RequireAuthorization(Policies.Operator);
+
+        g.MapDelete("/{id}", async (string id, HttpContext http, IStore store, CertificateFileStore files, CertificateSyncService sync) =>
+        {
+            using var exclusive = await sync.AcquireAsync(http.RequestAborted);
             var col = store.Col<Certificate>();
             var existing = col.FindById(id);
             if (existing is null) return ApiResults.NotFound("Certificate");
@@ -168,14 +295,50 @@ internal static class CertificateEndpoints
         }).RequireAuthorization(Policies.Operator);
     }
 
+    // ------------------------------------------------------------------ wire shape
+
+    /// <summary>The certificate as returned by the API: the protected PFX password is replaced by hasPfxPassword.</summary>
+    internal static JsonObject ToWire(Certificate c)
+    {
+        var node = (JsonObject)JsonSerializer.SerializeToNode(c, JsonDefaults.Api)!;
+        node.Remove("pfxPasswordProtected");
+        node["hasPfxPassword"] = !string.IsNullOrEmpty(c.PfxPasswordProtected);
+        if (c.Source != CertificateSource.WindowsStore)
+        {
+            node.Remove("storeLocation");
+            node.Remove("storeName");
+        }
+        return node;
+    }
+
+    private static IResult Field(string field, string message) =>
+        new Validator().Require(false, field, message).ToResult(message);
+
+    private static IResult? CheckPemPaths(string certPath, string keyPath, AppPaths paths, string storeRoot)
+    {
+        var v = new Validator();
+        if (PathGuard.CheckCertificateFile(certPath, "certificate", PathGuard.CertificateFileExtensions, paths, storeRoot) is { } c) v.Add("certPath", c);
+        if (PathGuard.CheckCertificateFile(keyPath, "private key", PathGuard.CertificateFileExtensions, paths, storeRoot) is { } k) v.Add("keyPath", k);
+        return v.IsValid ? null : v.ToResult();
+    }
+
     private static void SetMetadata(Certificate c, CertificateMetadata m)
     {
-        c.Subjects = m.Subjects;
-        c.Issuer = m.Issuer;
-        c.NotBefore = m.NotBefore;
-        c.NotAfter = m.NotAfter;
-        c.Thumbprint = m.Thumbprint;
+        CertificateSyncService.SetMetadata(c, m);
         c.UpdatedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>Forget everything about the previous external source.</summary>
+    private static void ClearSource(Certificate c)
+    {
+        c.SourcePath = null;
+        c.PfxPasswordProtected = null;
+        c.StoreLocation = WindowsStoreNames.LocalMachine;
+        c.StoreName = WindowsStoreNames.DefaultStore;
+        c.StoreThumbprint = null;
+        c.StoreSubject = null;
+        c.LastSyncError = null;
+        c.LastSyncedAt = null;
     }
 
     private static List<string> ExpiryWarnings(CertificateMetadata m)
@@ -184,6 +347,111 @@ internal static class CertificateEndpoints
         if (m.NotAfter < DateTime.UtcNow) list.Add($"The certificate expired on {m.NotAfter:yyyy-MM-dd}. Browsers will reject it.");
         else if (m.NotBefore > DateTime.UtcNow) list.Add($"The certificate is not valid before {m.NotBefore:yyyy-MM-dd HH:mm} UTC.");
         return list;
+    }
+
+    private static async Task<IResult> RepointToFilesAsync(HttpContext http, LiteDB.ILiteCollection<Certificate> col, CertificateFileStore files,
+        AppPaths paths, Certificate existing, CertificateRepointInput input)
+    {
+        var certPath = input.CertPath?.Trim() ?? "";
+        var keyPath = input.KeyPath?.Trim() ?? "";
+        if (CheckPemPaths(certPath, keyPath, paths, files.StoreRoot) is { } bad) return bad;
+        ParsedCertificate p;
+        try
+        {
+            p = CertificateParser.FromFiles(certPath, keyPath);
+        }
+        catch (CertificateImportException ex)
+        {
+            return ApiResults.BadRequest(ex.Message);
+        }
+        var repointed = col.FindById(existing.Id);
+        ClearSource(repointed);
+        repointed.Source = CertificateSource.FilePath;
+        repointed.CertPath = certPath;
+        repointed.KeyPath = keyPath;
+        repointed.LastSyncedAt = DateTime.UtcNow;
+        if (!string.IsNullOrWhiteSpace(input.Name)) repointed.Name = input.Name.Trim();
+        SetMetadata(repointed, p.Metadata);
+
+        // The old store folder is no longer needed — unless the new files live in it.
+        var oldDir = CertificateFileStore.IsStoreManaged(existing.Source) ? Path.GetDirectoryName(existing.CertPath) : null;
+        var keepOld = oldDir is null || IsInside(certPath, oldDir) || IsInside(keyPath, oldDir);
+        var r = await CommitReplaceAsync(http, col, existing, repointed, p.Metadata, restoreFiles: null,
+            afterCommit: keepOld ? null : () => files.DeleteFiles(existing));
+        http.RequestServices.GetService<CertificateWatcher>()?.Poke();
+        return r;
+    }
+
+    private static async Task<IResult> RepointToPfxAsync(HttpContext http, LiteDB.ILiteCollection<Certificate> col, CertificateFileStore files,
+        AppPaths paths, ISecretProtector secrets, Certificate existing, CertificateRepointInput input)
+    {
+        var pfxPath = input.PfxPath!.Trim();
+        if (PathGuard.CheckCertificateFile(pfxPath, "PFX", PathGuard.PfxFileExtensions, paths, files.StoreRoot) is { } err)
+            return Field("pfxPath", err);
+        // pfxPassword: absent/null keeps the stored password (PFX sources), "" = none, other = set.
+        string? password;
+        string? protectedPassword;
+        if (input.PfxPassword is null && existing.Source == CertificateSource.PfxFile && !string.IsNullOrEmpty(existing.PfxPasswordProtected))
+        {
+            try
+            {
+                password = secrets.Unprotect(existing.PfxPasswordProtected);
+            }
+            catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException or ArgumentException or IOException)
+            {
+                return ApiResults.BadRequest("The stored PFX password could not be decrypted; send pfxPassword again.");
+            }
+            protectedPassword = existing.PfxPasswordProtected;
+        }
+        else
+        {
+            password = input.PfxPassword ?? "";
+            protectedPassword = string.IsNullOrEmpty(password) ? null : secrets.Protect(password);
+        }
+
+        ParsedCertificate parsed;
+        try
+        {
+            parsed = CertificateParser.FromPfxFile(pfxPath, password);
+        }
+        catch (CertificateImportException ex)
+        {
+            return ApiResults.BadRequest(ex.Message);
+        }
+        var backup = CertificateFileStore.IsStoreManaged(existing.Source) ? CertificateFileStore.Backup(existing) : null;
+        (string CertPath, string KeyPath) written;
+        try
+        {
+            written = files.Write(existing.Id, parsed);
+        }
+        catch (CertificateImportException ex)
+        {
+            return ApiResults.Failed("Certificate store not writable", ex.Message);
+        }
+        var repointed = col.FindById(existing.Id);
+        ClearSource(repointed);
+        repointed.Source = CertificateSource.PfxFile;
+        repointed.SourcePath = pfxPath;
+        repointed.PfxPasswordProtected = protectedPassword;
+        repointed.CertPath = written.CertPath;
+        repointed.KeyPath = written.KeyPath;
+        repointed.LastSyncedAt = DateTime.UtcNow;
+        if (!string.IsNullOrWhiteSpace(input.Name)) repointed.Name = input.Name.Trim();
+        SetMetadata(repointed, parsed.Metadata);
+        var r = await CommitReplaceAsync(http, col, existing, repointed, parsed.Metadata, restoreFiles: () =>
+        {
+            if (backup is not null) files.Restore(backup);
+            else files.DeleteFolder(existing.Id);
+        }, afterCommit: null);
+        http.RequestServices.GetService<CertificateWatcher>()?.Poke();
+        return r;
+    }
+
+    private static bool IsInside(string file, string dir)
+    {
+        var d = dir.TrimEnd('\\', '/');
+        return file.StartsWith(d + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+               file.StartsWith(d + '/', StringComparison.OrdinalIgnoreCase) || file.StartsWith(d + '\\', StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IResult> CommitReplaceAsync(HttpContext http, LiteDB.ILiteCollection<Certificate> col,
@@ -199,13 +467,15 @@ internal static class CertificateEndpoints
             onSuccess: apply =>
             {
                 afterCommit?.Invoke();
-                ConfigTransaction.Audit(http, "replaced", "certificate", updated.Id, updated.Name, $"thumbprint {existing.Thumbprint} → {updated.Thumbprint}");
-                return Results.Ok(new { item = updated, apply = apply.WithWarnings(ExpiryWarnings(meta)) });
+                ConfigTransaction.Audit(http, "replaced", "certificate", updated.Id, updated.Name,
+                    $"{CertificateInventory.SourceName(updated.Source)}; thumbprint {existing.Thumbprint} → {updated.Thumbprint}");
+                return Results.Ok(new { item = ToWire(updated), apply = apply.WithWarnings(ExpiryWarnings(meta)) });
             });
     }
 
+    /// <summary>Creates a certificate. Store-managed sources (uploaded, PFX file, Windows store) get their PEM files written to the store.</summary>
     private static async Task<IResult> CreateAsync(HttpContext http, IStore store, CertificateFileStore files,
-        ParsedCertificate parsed, string? name, CertificateSource source, string? certPath, string? keyPath)
+        ParsedCertificate parsed, string? name, CertificateSource source, Action<Certificate>? configure = null)
     {
         var cert = new Certificate
         {
@@ -215,8 +485,10 @@ internal static class CertificateEndpoints
         };
         if (cert.Name.Length > 200) cert.Name = cert.Name[..200];
         SetMetadata(cert, parsed.Metadata);
+        configure?.Invoke(cert);
 
-        if (source == CertificateSource.Uploaded)
+        var storeManaged = CertificateFileStore.IsStoreManaged(source);
+        if (storeManaged)
         {
             try
             {
@@ -227,11 +499,6 @@ internal static class CertificateEndpoints
                 return ApiResults.Failed("Certificate store not writable", ex.Message);
             }
         }
-        else
-        {
-            cert.CertPath = certPath!;
-            cert.KeyPath = keyPath!;
-        }
 
         var col = store.Col<Certificate>();
         return await ConfigTransaction.RunAsync(http, $"Certificate added: {cert.Name}",
@@ -239,13 +506,13 @@ internal static class CertificateEndpoints
             rollback: () =>
             {
                 col.Delete(cert.Id);
-                if (source == CertificateSource.Uploaded) files.DeleteFolder(cert.Id);
+                if (storeManaged) files.DeleteFolder(cert.Id);
             },
             onSuccess: apply =>
             {
                 ConfigTransaction.Audit(http, "created", "certificate", cert.Id, cert.Name,
-                    $"{(source == CertificateSource.Uploaded ? "uploaded" : "file path")}; subjects: {string.Join(", ", cert.Subjects)}; expires {cert.NotAfter:yyyy-MM-dd}");
-                return Results.Ok(new { item = cert, apply = apply.WithWarnings(ExpiryWarnings(parsed.Metadata)) });
+                    $"{CertificateInventory.SourceName(source)}; {CertificateSyncService.Describe(cert)}; subjects: {string.Join(", ", cert.Subjects)}; expires {cert.NotAfter:yyyy-MM-dd}");
+                return Results.Ok(new { item = ToWire(cert), apply = apply.WithWarnings(ExpiryWarnings(parsed.Metadata)) });
             });
     }
 

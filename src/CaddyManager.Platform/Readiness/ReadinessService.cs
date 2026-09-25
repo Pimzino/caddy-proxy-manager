@@ -51,7 +51,20 @@ public sealed partial class ReadinessService(
         int UiPort,
         List<RequiredFirewallRule> Rules,
         List<SiteHost> EnabledHosts,
-        List<string> AcmeDomains);
+        List<string> AcmeDomains,
+        List<StreamHost> EnabledStreams,
+        BinarySettings Binary)
+    {
+        /// <summary>Ports Caddy should listen on: HTTP/HTTPS (+ UDP for HTTP/3) and every enabled stream.</summary>
+        public List<(string Proto, int Port, bool Stream)> CaddyPorts()
+        {
+            var list = new List<(string, int, bool)> { ("TCP", Caddy.HttpPort, false), ("TCP", Caddy.HttpsPort, false) };
+            if (Caddy.EnableHttp3) list.Add(("UDP", Caddy.HttpsPort, false));
+            foreach (var s in EnabledStreams)
+                list.Add((s.Protocol == StreamProtocol.Udp ? "UDP" : "TCP", s.ListenPort, true));
+            return list.DistinctBy(p => (p.Item1, p.Item2)).ToList();
+        }
+    }
 
     // ------------------------------------------------------------------ report persistence
 
@@ -105,8 +118,9 @@ public sealed partial class ReadinessService(
             var ctx = BuildContext();
             var windows = OperatingSystem.IsWindows();
 
-            var tcpPorts = new[] { ctx.Caddy.HttpPort, ctx.Caddy.HttpsPort };
-            var udpPorts = ctx.Caddy.EnableHttp3 ? new[] { ctx.Caddy.HttpsPort } : [];
+            var caddyPorts = ctx.CaddyPorts();
+            var tcpPorts = caddyPorts.Where(p => p.Proto == "TCP").Select(p => p.Port).ToArray();
+            var udpPorts = caddyPorts.Where(p => p.Proto == "UDP").Select(p => p.Port).ToArray();
             var sysTask = windows ? Capture(() => RunSystemFactsAsync(tcpPorts, udpPorts, ct)) : Task.FromResult<(SystemFacts?, string?)>((null, null));
             var fwTask = windows ? Capture(() => RunFirewallFactsAsync(ctx.Rules.Select(r => r.Port), ct)) : Task.FromResult<(FirewallFacts?, string?)>((null, null));
             var dnTask = windows ? ComputerDnAsync(ct) : Task.FromResult<(string?, string?)>((null, null));
@@ -227,18 +241,37 @@ public sealed partial class ReadinessService(
             .Select(d => d.Trim().TrimEnd('.').ToLowerInvariant())
             .Where(d => d.Length > 0 && !d.StartsWith("*.", StringComparison.Ordinal))
             .Distinct().Take(50).ToList();
-        return new Context(caddy, ui, uiPort, RequiredRules(paths, caddy, ui, uiPort), hosts, acmeDomains);
+        List<StreamHost> streams;
+        try
+        {
+            streams = store.Col<StreamHost>().Find(s => s.Enabled).Where(s => s.ListenPort is > 0 and < 65536).OrderBy(s => s.ListenPort).ToList();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("Could not read streams for readiness checks: {Error}", ex.Message);
+            streams = new();
+        }
+        var binary = store.GetSettings<BinarySettings>();
+        return new Context(caddy, ui, uiPort, RequiredRules(paths, caddy, ui, uiPort, streams), hosts, acmeDomains, streams, binary);
     }
 
-    /// <summary>Inbound rules the product needs with the current settings.</summary>
-    public static List<RequiredFirewallRule> RequiredRules(AppPaths paths, CaddySettings caddy, UiSettings ui, int uiPort)
+    /// <summary>Display name of the firewall rule for a stream, e.g. "Caddy Proxy Manager - Stream TCP 3389 (TCP-In)".</summary>
+    public static string StreamRuleName(StreamProtocol protocol, int port)
+    {
+        var proto = protocol == StreamProtocol.Udp ? "UDP" : "TCP";
+        return $"Caddy Proxy Manager - Stream {proto} {port} ({proto}-In)";
+    }
+
+    /// <summary>Inbound rules the product needs with the current settings (including one per enabled stream).</summary>
+    public static List<RequiredFirewallRule> RequiredRules(AppPaths paths, CaddySettings caddy, UiSettings ui, int uiPort,
+        IEnumerable<StreamHost>? streams = null)
     {
         var list = new List<RequiredFirewallRule>
         {
             new()
             {
                 CheckId = $"firewall.tcp{caddy.HttpPort}", DisplayName = "Caddy Proxy Manager - HTTP (TCP-In)", Protocol = "TCP",
-                Port = caddy.HttpPort, Purpose = "Caddy HTTP (ACME HTTP-01 challenges, HTTP→HTTPS redirects)",
+                Port = caddy.HttpPort, Purpose = "Caddy HTTP (ACME HTTP-01 challenges, HTTP to HTTPS redirects)",
                 Program = paths.CaddyExe, Service = AppPaths.CaddyServiceName,
             },
             new()
@@ -269,6 +302,18 @@ public sealed partial class ReadinessService(
                     Service = AppPaths.ManagerServiceName,
                 });
         }
+        foreach (var s in streams ?? [])
+        {
+            if (!s.Enabled || s.ListenPort is < 1 or > 65535) continue;
+            var proto = s.Protocol == StreamProtocol.Udp ? "UDP" : "TCP";
+            var upstream = string.IsNullOrWhiteSpace(s.UpstreamHost) ? "" : $" to {s.UpstreamHost}:{s.UpstreamPort}";
+            list.Add(new()
+            {
+                CheckId = $"firewall.stream.{proto.ToLowerInvariant()}{s.ListenPort}", DisplayName = StreamRuleName(s.Protocol, s.ListenPort),
+                Protocol = proto, Port = s.ListenPort, Purpose = $"Caddy stream {proto} {s.ListenPort}{upstream}",
+                Program = paths.CaddyExe, Service = AppPaths.CaddyServiceName,
+            });
+        }
         return list.DistinctBy(r => r.CheckId).ToList();
     }
 
@@ -279,7 +324,28 @@ public sealed partial class ReadinessService(
         yield return OsCheck();
         yield return IdentityCheck();
         yield return DiskCheck();
+        yield return DataDirAclCheck();
         if (OperatingSystem.IsWindows()) yield return PendingRebootCheck();
+    }
+
+    private ReadinessCheck DataDirAclCheck()
+    {
+        if (!OperatingSystem.IsWindows())
+            return Skipped(DataDirAcl.CheckId, "System", "Data directory permissions", "The ACL check of the data directory runs on Windows only.");
+        try
+        {
+            var (isProtected, entries) = DataDirAcl.Read(paths.DataDir);
+            return DataDirAcl.Evaluate(paths.DataDir, isProtected, entries);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException or PlatformNotSupportedException)
+        {
+            return new ReadinessCheck
+            {
+                Id = DataDirAcl.CheckId, Category = "System", Title = "Data directory permissions", Status = CheckStatus.Warn,
+                Summary = $"Could not read the permissions of {paths.DataDir}: {ex.Message}",
+                Script = $"icacls \"{paths.DataDir}\"",
+            };
+        }
     }
 
     private static string OsDescription()
@@ -608,12 +674,10 @@ public sealed partial class ReadinessService(
             };
             yield break;
         }
-        var wanted = new List<(string Proto, int Port)> { ("TCP", ctx.Caddy.HttpPort), ("TCP", ctx.Caddy.HttpsPort) };
-        if (ctx.Caddy.EnableHttp3) wanted.Add(("UDP", ctx.Caddy.HttpsPort));
-        foreach (var (proto, port) in wanted.Distinct())
+        foreach (var (proto, port, stream) in ctx.CaddyPorts())
         {
             var listeners = sys.Listeners.Where(l => l.Protocol.Equals(proto, StringComparison.OrdinalIgnoreCase) && l.Port == port).ToList();
-            yield return PortCheck(proto, port, listeners, sys.HttpSysUrls, status);
+            yield return PortCheck(proto, port, listeners, sys.HttpSysUrls, status, stream);
         }
 
         var w3 = sys.W3svc;
@@ -634,10 +698,10 @@ public sealed partial class ReadinessService(
         };
     }
 
-    private ReadinessCheck PortCheck(string proto, int port, List<PortListener> listeners, List<string> httpSysUrls, CaddyStatus status)
+    private ReadinessCheck PortCheck(string proto, int port, List<PortListener> listeners, List<string> httpSysUrls, CaddyStatus status, bool stream = false)
     {
-        var id = $"ports.{proto.ToLowerInvariant()}{port}";
-        var title = $"{proto} {port} available for Caddy";
+        var id = PortCheckId(proto, port, stream);
+        var title = stream ? $"{proto} {port} available for a Caddy stream" : $"{proto} {port} available for Caddy";
         if (listeners.Count == 0)
             return new ReadinessCheck
             {
@@ -692,6 +756,9 @@ public sealed partial class ReadinessService(
     [GeneratedRegex(@"(?<scheme>https?)://[^/:\s]+(?::(?<port>\d+))?", RegexOptions.IgnoreCase)]
     private static partial Regex UrlPort();
 
+    private static string PortCheckId(string proto, int port, bool stream) =>
+        $"ports.{(stream ? "stream." : "")}{proto.ToLowerInvariant()}{port}";
+
     private IEnumerable<ReadinessCheck> PortChecksPortable(Context ctx, CaddyStatus status)
     {
         IPEndPoint[] tcp = [], udp = [];
@@ -705,15 +772,15 @@ public sealed partial class ReadinessService(
         {
             logger.LogDebug(ex, "Listing listeners failed");
         }
-        var wanted = new List<(string Proto, int Port, IPEndPoint[] Eps)> { ("TCP", ctx.Caddy.HttpPort, tcp), ("TCP", ctx.Caddy.HttpsPort, tcp) };
-        if (ctx.Caddy.EnableHttp3) wanted.Add(("UDP", ctx.Caddy.HttpsPort, udp));
-        foreach (var (proto, port, eps) in wanted.DistinctBy(w => (w.Proto, w.Port)))
+        foreach (var (proto, port, stream) in ctx.CaddyPorts())
         {
+            var eps = proto == "UDP" ? udp : tcp;
             var used = eps.Where(e => e.Port == port).ToList();
             var running = status.State == CaddyRunState.Running;
             yield return new ReadinessCheck
             {
-                Id = $"ports.{proto.ToLowerInvariant()}{port}", Category = "Ports", Title = $"{proto} {port} available for Caddy",
+                Id = PortCheckId(proto, port, stream), Category = "Ports",
+                Title = stream ? $"{proto} {port} available for a Caddy stream" : $"{proto} {port} available for Caddy",
                 Status = used.Count == 0 ? CheckStatus.Pass : running ? CheckStatus.Info : CheckStatus.Warn,
                 Summary = used.Count == 0 ? $"{proto} {port} is free."
                     : running ? $"{proto} {port} is in use (on {string.Join(", ", used)}), probably by Caddy (process ownership is not available on this OS)."
@@ -728,45 +795,111 @@ public sealed partial class ReadinessService(
     private async Task<List<ReadinessCheck>> ConnectivityChecksAsync(Context ctx, CancellationToken ct)
     {
         var acmeNeeded = ctx.EnabledHosts.Any(h => h.Tls == TlsMode.Acme);
-        var proxy = store.GetSettings<BinarySettings>().OutboundProxy;
-        var targets = new (string Id, string Host, string Purpose, bool Required)[]
+        var proxy = string.IsNullOrWhiteSpace(ctx.Binary.OutboundProxy) ? null : ctx.Binary.OutboundProxy.Trim();
+        var caddyProxy = CaddyHostSupport.CaddyProxy(ctx.Binary);
+        // UsedByCaddy: the connection is made by Caddy (ACME), which uses the proxy only when ProxyCaddyTraffic is on;
+        // the others are made by the manager, which always uses the configured outbound proxy.
+        var targets = new (string Id, string Host, string Purpose, bool Required, bool UsedByCaddy)[]
         {
-            ("connectivity.letsencrypt", "acme-v02.api.letsencrypt.org", "ACME certificates (Let's Encrypt)", acmeNeeded),
-            ("connectivity.github", "api.github.com", "Caddy update checks and downloads (GitHub)", false),
-            ("connectivity.caddyserver", "caddyserver.com", "plugin catalog and custom builds", false),
+            ("connectivity.letsencrypt", "acme-v02.api.letsencrypt.org", "ACME certificates (Let's Encrypt)", acmeNeeded, true),
+            ("connectivity.github", "api.github.com", "Caddy update checks and downloads (GitHub)", false, false),
+            ("connectivity.caddyserver", "caddyserver.com", "plugin catalog and custom builds", false, false),
         };
-        var tasks = targets.Select(async t =>
+        var tasks = targets.Select(t => (t.UsedByCaddy ? caddyProxy is not null : proxy is not null)
+            ? ProxiedProbeAsync(t.Id, t.Host, t.Purpose, t.Required, t.UsedByCaddy, proxy!, ct)
+            : DirectProbeAsync(t.Id, t.Host, t.Purpose, t.Required, t.UsedByCaddy && proxy is not null, ct));
+        var list = (await Task.WhenAll(tasks)).ToList();
+        if (proxy is not null) list.Add(CaddyProxyCheck(ctx.Binary));
+        return list;
+    }
+
+    private static async Task<ReadinessCheck> DirectProbeAsync(string id, string host, string purpose, bool required, bool caddyBypassesProxy,
+        CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        try
         {
-            var sw = Stopwatch.StartNew();
-            try
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(6));
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(host, 443, cts.Token);
+            return new ReadinessCheck
             {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(6));
-                using var tcp = new TcpClient();
-                await tcp.ConnectAsync(t.Host, 443, cts.Token);
-                return new ReadinessCheck
-                {
-                    Id = t.Id, Category = "Connectivity", Title = $"Outbound HTTPS to {t.Host}", Status = CheckStatus.Pass,
-                    Summary = $"Connected to {t.Host}:443 in {sw.ElapsedMilliseconds} ms ({t.Purpose}).",
-                };
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                Id = id, Category = "Connectivity", Title = $"Outbound HTTPS to {host}", Status = CheckStatus.Pass,
+                Summary = $"Connected to {host}:443 in {sw.ElapsedMilliseconds} ms ({purpose})" +
+                          (caddyBypassesProxy ? "; Caddy connects directly (it does not use the outbound proxy)." : "."),
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            var reason = ex is OperationCanceledException ? "timed out after 6s" : ex.Message;
+            return new ReadinessCheck
             {
-                var reason = ex is OperationCanceledException ? "timed out after 6s" : ex.Message;
-                return new ReadinessCheck
-                {
-                    Id = t.Id, Category = "Connectivity", Title = $"Outbound HTTPS to {t.Host}",
-                    Status = t.Required ? CheckStatus.Fail : CheckStatus.Warn,
-                    Summary = $"Cannot connect to {t.Host}:443 ({reason}). Needed for {t.Purpose}.",
-                    Details = proxy is { Length: > 0 }
-                        ? $"An outbound proxy is configured for downloads ({OutboundHttp.RedactProxy(proxy)}); direct connections may be blocked by design. Caddy itself needs direct access for ACME unless HTTPS_PROXY is set in the Caddy service environment."
-                        : null,
-                    Remediation = $"Allow outbound TCP 443 from this server to {t.Host} (perimeter firewall / proxy), and check DNS resolution.",
-                    Script = $"Test-NetConnection {t.Host} -Port 443\nResolve-DnsName {t.Host}",
-                };
-            }
-        });
-        return (await Task.WhenAll(tasks)).ToList();
+                Id = id, Category = "Connectivity", Title = $"Outbound HTTPS to {host}",
+                Status = required ? CheckStatus.Fail : CheckStatus.Warn,
+                Summary = $"Cannot connect to {host}:443 ({reason}). Needed for {purpose}.",
+                Details = caddyBypassesProxy
+                    ? "An outbound proxy is configured, but Caddy connects directly: 'Use the proxy for Caddy' is off in Settings → Updates."
+                    : null,
+                Remediation = caddyBypassesProxy
+                    ? $"If outbound traffic must go through the proxy, enable 'Use the proxy for Caddy' in Settings → Updates; otherwise allow outbound TCP 443 from this server to {host}."
+                    : $"Allow outbound TCP 443 from this server to {host} (perimeter firewall / proxy), and check DNS resolution. Behind a proxy, set it in Settings → Updates.",
+                Script = $"Test-NetConnection {host} -Port 443\nResolve-DnsName {host}",
+            };
+        }
+    }
+
+    /// <summary>HTTPS request through the configured outbound proxy (any HTTP answer from the target counts as reachable).</summary>
+    private async Task<ReadinessCheck> ProxiedProbeAsync(string id, string host, string purpose, bool required, bool usedByCaddy, string proxy,
+        CancellationToken ct)
+    {
+        var shown = OutboundHttp.RedactProxy(proxy);
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            using var req = new HttpRequestMessage(HttpMethod.Head, $"https://{host}/");
+            using var resp = await http.Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            return new ReadinessCheck
+            {
+                Id = id, Category = "Connectivity", Title = $"Outbound HTTPS to {host}", Status = CheckStatus.Pass,
+                Summary = $"Reached {host} through the outbound proxy {shown} in {sw.ElapsedMilliseconds} ms (HTTP {(int)resp.StatusCode}; {purpose})" +
+                          (usedByCaddy ? ". Caddy uses the same proxy (HTTPS_PROXY in its environment)." : "."),
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            var reason = ex is OperationCanceledException ? "timed out after 10s" : ex.InnerException?.Message ?? ex.Message;
+            return new ReadinessCheck
+            {
+                Id = id, Category = "Connectivity", Title = $"Outbound HTTPS to {host}",
+                Status = required ? CheckStatus.Fail : CheckStatus.Warn,
+                Summary = $"Cannot reach {host} through the outbound proxy {shown} ({reason}). Needed for {purpose}.",
+                Remediation = $"Check the proxy address and credentials in Settings → Updates, and that the proxy allows CONNECT to {host}:443 from this server.",
+                Script = $"Invoke-WebRequest https://{host}/ -Method Head -Proxy '{new UriBuilder(proxy) { UserName = "", Password = "" }.Uri.ToString().TrimEnd('/')}' -ProxyUseDefaultCredentials -UseBasicParsing",
+            };
+        }
+    }
+
+    /// <summary>How Caddy itself reaches the Internet when an outbound proxy is configured.</summary>
+    private static ReadinessCheck CaddyProxyCheck(BinarySettings binary)
+    {
+        var caddyProxy = CaddyHostSupport.CaddyProxy(binary);
+        var hasCredentials = caddyProxy is not null && Uri.TryCreate(caddyProxy, UriKind.Absolute, out var u) && u.UserInfo.Length > 0;
+        return new ReadinessCheck
+        {
+            Id = "connectivity.caddyproxy", Category = "Connectivity", Title = "Outbound proxy for Caddy", Status = CheckStatus.Info,
+            Summary = Hosting.CaddyEnvironmentSync.Describe(binary) + (caddyProxy is null
+                ? ". The proxy is used by the manager only (update checks, downloads, plugin catalog)."
+                : ". HTTPS_PROXY, HTTP_PROXY and NO_PROXY are set in the Caddy service environment."),
+            Details = caddyProxy is null
+                ? "Enable 'Use the proxy for Caddy' in Settings → Updates when ACME (Let's Encrypt) must go through the proxy."
+                : "Caddy's reverse proxy also honours these variables for upstream requests: keep every internal network and host name in NO_PROXY." +
+                  (hasCredentials
+                      ? " The proxy credentials are stored in the service's Environment registry value (HKLM\\SYSTEM\\CurrentControlSet\\Services\\Caddy), which local users can read; prefer a proxy rule that allows this server by address or computer account."
+                      : ""),
+        };
     }
 
     private static ReadinessCheck WinHttpProxyCheck(SystemFacts? sys)
@@ -779,7 +912,8 @@ public sealed partial class ReadinessService(
         {
             Id = "connectivity.proxy", Category = "Connectivity", Title = "WinHTTP proxy",
             Status = direct ? CheckStatus.Pass : CheckStatus.Info,
-            Summary = direct ? "No WinHTTP proxy configured (direct access)." : "A WinHTTP proxy is configured. Caddy does not use it; set HTTPS_PROXY in the Caddy service environment if ACME must go through a proxy, and configure the outbound proxy for updates in Settings.",
+            Summary = direct ? "No WinHTTP proxy configured (direct access)."
+                : "A WinHTTP proxy is configured. Neither Caddy nor the manager use it: set the outbound proxy in Settings → Updates (and enable 'Use the proxy for Caddy' when ACME must go through it).",
             Details = text,
         };
     }
@@ -888,13 +1022,13 @@ public sealed partial class ReadinessService(
                 Id = "caddy.binary", Category = "Caddy", Title = "Caddy binary",
                 Status = status.BinaryInstalled ? CheckStatus.Pass : CheckStatus.Fail,
                 Summary = status.BinaryInstalled ? $"Installed: {status.Version ?? "unknown version"} at {status.BinaryPath}." : $"Caddy is not installed ({status.BinaryPath}).",
-                Remediation = status.BinaryInstalled ? null : "Install Caddy (click Fix, or Caddy page → Install). Without Internet access, copy caddy.exe to the path above.",
+                Remediation = status.BinaryInstalled ? null : "Install Caddy (click Fix, or Caddy page → Install). Without Internet access, download caddy.exe or the official release zip on another machine and install it with Upload on the Caddy page.",
                 Fixable = !status.BinaryInstalled,
             },
         };
 
         if (host.HostMode == WindowsServiceCaddyHost.Mode && OperatingSystem.IsWindows())
-            list.Add(await CaddyServiceCheckAsync(status, ct));
+            list.Add(await CaddyServiceCheckAsync(ctx, status, ct));
         else
             list.Add(Info("caddy.service", "Caddy", "Caddy service", "Process host mode (development): Caddy runs as a child process of the manager."));
 
@@ -940,11 +1074,12 @@ public sealed partial class ReadinessService(
             Remediation = !loopback ? "Set the admin listen address to 127.0.0.1:2019 in Settings → Caddy." :
                 adminStatus == CheckStatus.Warn ? "Check that nothing else uses the admin port and restart Caddy." : null,
         });
+        list.Add(AdminApiRiskCheck(ctx.Caddy.AdminListen, loopback, listenDesc));
         return list;
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private async Task<ReadinessCheck> CaddyServiceCheckAsync(CaddyStatus status, CancellationToken ct)
+    private async Task<ReadinessCheck> CaddyServiceCheckAsync(Context ctx, CaddyStatus status, CancellationToken ct)
     {
         const string id = "caddy.service", title = "Caddy Windows service";
         var reg = WindowsServiceManager.ReadRegistry(AppPaths.CaddyServiceName);
@@ -957,13 +1092,15 @@ public sealed partial class ReadinessService(
                 Fixable = status.BinaryInstalled,
             };
         var problems = new List<string>();
-        var expected = WindowsServiceCaddyHost.Definition(paths);
+        var expected = WindowsServiceCaddyHost.Definition(paths, ctx.Binary);
         if (reg.Start != 2) problems.Add($"start type is {reg.StartTypeDisplay} (Automatic expected)");
         if (!reg.IsLocalSystem) problems.Add($"runs as '{reg.ObjectName}' (LocalSystem expected)");
         if (!string.Equals(reg.ImagePath?.Trim(), expected.BinaryPathName, StringComparison.OrdinalIgnoreCase))
             problems.Add($"binary path is '{reg.ImagePath}' (expected '{expected.BinaryPathName}')");
-        if (expected.Environment is { } env && !env.All(e => reg.Environment.Contains(e, StringComparer.OrdinalIgnoreCase)))
-            problems.Add("XDG_DATA_HOME/XDG_CONFIG_HOME environment is missing");
+        if (expected.Environment is { } env && !env.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(reg.Environment))
+            problems.Add(CaddyHostSupport.CaddyProxy(ctx.Binary) is null
+                ? "its environment differs from the expected XDG_DATA_HOME/XDG_CONFIG_HOME (without proxy variables)"
+                : "its environment lacks the current XDG_DATA_HOME/XDG_CONFIG_HOME or outbound proxy variables");
         try
         {
             var failure = await WindowsServiceManager.QueryFailureAsync(AppPaths.CaddyServiceName, ct);
@@ -983,6 +1120,25 @@ public sealed partial class ReadinessService(
             Remediation = problems.Count == 0 ? null : "Click Fix to re-apply the service configuration (binary path, Automatic start, recovery actions, environment).",
             Script = problems.Count == 0 ? null : "sc.exe qc Caddy\nsc.exe qfailure Caddy",
             Fixable = problems.Count > 0,
+        };
+    }
+
+    /// <summary>Explains what the unauthenticated (loopback) admin API means for local users of this server.</summary>
+    internal static ReadinessCheck AdminApiRiskCheck(string? listen, bool loopback, string listenDesc)
+    {
+        var unix = (listen ?? "").Trim().StartsWith("unix/", StringComparison.OrdinalIgnoreCase);
+        return new ReadinessCheck
+        {
+            Id = "caddy.admin.access", Category = "Caddy", Title = "Who can reach the Caddy admin API", Status = CheckStatus.Info,
+            Summary = unix
+                ? $"Caddy's admin API ({listenDesc}) has no authentication; access is controlled by the socket file's permissions."
+                : $"Caddy's admin API ({listenDesc}) has no authentication: any process on {(loopback ? "this server" : "the network")} — including programs " +
+                  "started by non-administrator users signed in locally or over Remote Desktop — can read Caddy's configuration (incl. " +
+                  "certificate paths and upstreams) and replace it.",
+            Details = "The manager keeps it on loopback and reloads its own configuration on every change, but it cannot prevent a local " +
+                      "process from calling it in between.",
+            Remediation = "Allow only administrators to sign in to this server (Remote Desktop Users / 'Allow log on locally'), do not run " +
+                          "untrusted software on it, and keep the admin listen address on 127.0.0.1.",
         };
     }
 
@@ -1032,6 +1188,10 @@ public sealed partial class ReadinessService(
 
         switch (checkId)
         {
+            case DataDirAcl.CheckId:
+                RequireWindows();
+                if (OperatingSystem.IsWindows()) DataDirAcl.Harden(paths.DataDir);
+                return $"Access to {paths.DataDir} is now limited to SYSTEM and Administrators (inherited permissions removed).";
             case "caddy.binary":
             {
                 var bin = services.GetRequiredService<ICaddyBinaryManager>();

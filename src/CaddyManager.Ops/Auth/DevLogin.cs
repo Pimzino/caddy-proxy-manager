@@ -21,6 +21,8 @@ internal static class DevLogin
             if (ctx.Connection.RemoteIpAddress is not { } ip || !IPAddress.IsLoopback(ip)) return Results.NotFound();
             var user = UserRules.FindByEmail(store, email);
             if (user is null || user.Disabled) return ApiResults.NotFound("User");
+            user.LastLoginAt = DateTime.UtcNow;
+            store.Col<CaddyManager.Core.Models.User>().Update(user);
             await AuthSetup.SignInAsync(ctx, user);
             return Results.Redirect("/");
         }).AllowAnonymous();

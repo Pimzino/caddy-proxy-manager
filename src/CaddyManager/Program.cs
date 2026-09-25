@@ -5,9 +5,11 @@ using CaddyManager.Core;
 using CaddyManager.Core.Infrastructure;
 using CaddyManager.Core.Models;
 using CaddyManager.Ops;
+using CaddyManager.Ops.Events;
 using CaddyManager.Ops.Settings;
 using CaddyManager.Platform;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.EventLog;
 
 // CLI verbs (install / uninstall / reset-password ...) run and exit before the web host starts.
 if (await PlatformCli.TryRunAsync(args) is int platformExit) return platformExit;
@@ -34,6 +36,13 @@ builder.Host.UseWindowsService(o => o.ServiceName = AppPaths.ManagerServiceName)
 builder.Logging.AddProvider(new FileLoggerProvider(paths.ManagerLogDir));
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
+// Windows Event Log (Application): warnings and errors under the product's source, whose message file is repaired
+// below. Operational events are written by the Ops event sink itself (with stable event IDs), so its own log lines
+// are not duplicated there.
+builder.Services.Configure<EventLogSettings>(o => o.SourceName = EventLogSource.Name);
+builder.Logging.AddFilter<EventLogLoggerProvider>("CaddyManager.Ops.Events.EventSink", LogLevel.None);
+var hostWarnings = new List<string>();
+if (EventLogSource.Ensure() is { } eventLogWarning) hostWarnings.Add(eventLogWarning);
 
 var store = new LiteStore(paths);
 builder.Services
@@ -70,6 +79,9 @@ builder.WebHost.ConfigureKestrel(k =>
 var app = builder.Build();
 
 app.UseExceptionHandler();
+// X-Forwarded-For/Proto are honoured only from loopback peers (the UI published through Caddy on this server). Must run
+// before authentication and the sign-in rate limiter so both see the real client address.
+app.UseLoopbackForwardedHeaders();
 app.Use(async (ctx, next) =>
 {
     var h = ctx.Response.Headers;
@@ -86,6 +98,12 @@ app.Use(async (ctx, next) =>
     if (ctx.Request.Path.StartsWithSegments("/api")) h.CacheControl = "no-store";
     await next();
 });
+
+// Sessions must not travel in clear text once HTTPS is available: redirect plain-HTTP UI/API requests to the HTTPS
+// listener (GET /api/health stays on HTTP). Only when the HTTPS listener is actually up, so a certificate problem
+// can never lock administrators out.
+var redirectToHttps = ui.HttpsEnabled && ui.RedirectHttpToHttps && listener.Https is not null;
+if (redirectToHttps) app.UseUiHttpsRedirect(listener.Https!.Port);
 
 // ---- Web UI: embedded SPA build (web/dist). CM_WEB_DIR serves from disk for development.
 // Static assets are public and served before authentication: the authorization fallback policy
@@ -152,7 +170,11 @@ app.MapFallback(async ctx =>
 }).AllowAnonymous();
 
 var httpsNote = listener.Https is not null ? $" and https://{listener.Https}" : "";
-app.Logger.LogInformation("{Product} starting. Data: {Data}. UI: http://{Http}{Https}", AppPaths.ProductName, paths.DataDir, listener.Http, httpsNote);
+app.Logger.LogInformation("{Product} starting. Data: {Data}. UI: http://{Http}{Https}{Redirect}", AppPaths.ProductName, paths.DataDir,
+    listener.Http, httpsNote, redirectToHttps ? " (HTTP redirects to HTTPS)" : "");
+if (ui.HttpsEnabled && ui.RedirectHttpToHttps && !redirectToHttps)
+    app.Logger.LogWarning("Redirect to HTTPS is enabled but the HTTPS listener is not running; plain HTTP stays available.");
+foreach (var w in hostWarnings) app.Logger.LogWarning("Startup: {Warning}", w);
 if (startupWarnings.Count > 0)
 {
     foreach (var w in startupWarnings) app.Logger.LogError("Startup: {Warning}", w);

@@ -3,8 +3,9 @@
     Removes a zip-based installation of Caddy Proxy Manager.
 
 .DESCRIPTION
-    Wraps "CaddyManager.exe uninstall": stops and deletes the Windows services "CaddyProxyManager" and "Caddy"
-    and removes the firewall rules of the group "Caddy Proxy Manager". Then deletes
+    Wraps "CaddyManager.exe uninstall": stops and deletes the Windows services "CaddyProxyManager" and "Caddy",
+    removes the firewall rules of the group "Caddy Proxy Manager" and the "Caddy Proxy Manager" event log source
+    (past entries stay in the Application log). Then deletes
     "C:\Program Files\Caddy Proxy Manager". With -Purge all data in C:\ProgramData\CaddyProxyManager
     (database, certificates, Caddy storage incl. ACME accounts and the internal CA, logs) is deleted as well.
 

@@ -100,6 +100,7 @@ export function newHost(kind: HostKind): SiteHostFields {
     loadBalancing: 'roundRobin',
     healthCheck: { enabled: false, path: '/', intervalSeconds: 30, timeoutSeconds: 5, expectStatus: 0 },
     upstreamTlsInsecure: false,
+    upstreamNtlm: false,
     upstreamHostHeader: null,
     requestHeaders: [],
     locations: [],
@@ -154,6 +155,7 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     rootPath: trimOrNull(h.rootPath),
     responseBody: h.responseBody ?? null,
     advancedRoutesJson: trimOrNull(h.advancedRoutesJson),
+    upstreamNtlm: h.kind === 'proxy' ? !!h.upstreamNtlm : false,
     forceHttps: h.tls === 'none' ? false : h.forceHttps,
     hsts: h.tls === 'none' ? false : h.hsts,
   };
@@ -242,7 +244,7 @@ const TAB_OF_FIELD: Record<string, HostTab> = {
 };
 
 const DETAIL_FIELDS = new Set([
-  'domains', 'upstreams', 'loadBalancing', 'healthCheck', 'upstreamTlsInsecure', 'upstreamHostHeader',
+  'domains', 'upstreams', 'loadBalancing', 'healthCheck', 'upstreamTlsInsecure', 'upstreamNtlm', 'upstreamHostHeader',
   'redirectTarget', 'redirectCode', 'preservePath', 'rootPath', 'browse', 'spaFallback', 'responseStatus',
   'responseBody', 'responseContentType', 'compression', 'enabled', 'kind',
 ]);
@@ -254,6 +256,10 @@ export function tabOfField(key: string): HostTab | null {
   if (DETAIL_FIELDS.has(root)) return 'details';
   return null;
 }
+
+/** Caddy module provided by github.com/caddyserver/ntlm-transport. */
+export const NTLM_MODULE = 'http.reverse_proxy.transport.http_ntlm';
+export const NTLM_PLUGIN = 'github.com/caddyserver/ntlm-transport';
 
 /** True when the certificate subjects cover the domain (exact or single-label wildcard). */
 export function certCovers(cert: CertificateInfo, domain: string): boolean {

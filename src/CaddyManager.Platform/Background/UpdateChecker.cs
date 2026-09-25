@@ -11,7 +11,8 @@ namespace CaddyManager.Platform.Background;
 /// <summary>
 /// Checks GitHub for a newer Caddy release every BinarySettings.CheckIntervalHours. Raises one
 /// "update-available:&lt;ver&gt;" event per new version (alert rule "updateAvailable") and optionally
-/// installs it (BinarySettings.AutoInstallUpdates).
+/// installs it (BinarySettings.AutoInstallUpdates). On the same cadence it checks BinarySettings.ManagerReleaseRepo for a
+/// newer Caddy Proxy Manager release and raises "manager-update-available:&lt;ver&gt;" once per version (never auto-installed).
 /// </summary>
 public sealed class UpdateChecker(
     AppPaths paths,
@@ -23,7 +24,7 @@ public sealed class UpdateChecker(
     private static readonly TimeSpan InitialDelay = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan Tick = TimeSpan.FromMinutes(15);
 
-    private sealed record State(string? NotifiedVersion, string? AutoInstalledVersion);
+    private sealed record State(string? NotifiedVersion, string? AutoInstalledVersion, string? NotifiedManagerVersion = null);
 
     private string StateFile => Path.Combine(paths.DataDir, "caddy", "update-state.json");
 
@@ -54,7 +55,10 @@ public sealed class UpdateChecker(
         }
     }
 
-    /// <summary>Runs one check if due (or always when <paramref name="force"/>). Returns the newer version found, if any.</summary>
+    /// <summary>
+    /// Runs one check if due (or always when <paramref name="force"/>): Caddy, then the manager itself.
+    /// Returns the newer Caddy version found, if any.
+    /// </summary>
     public async Task<string?> CheckOnceAsync(bool force, CancellationToken ct)
     {
         var settings = store.GetSettings<BinarySettings>();
@@ -62,6 +66,50 @@ public sealed class UpdateChecker(
         var interval = TimeSpan.FromHours(Math.Clamp(settings.CheckIntervalHours, 1, 168));
         if (!force && settings.LastCheckedAt is { } last && DateTime.UtcNow - last < interval) return null;
 
+        string? caddy = null;
+        Exception? caddyError = null;
+        try
+        {
+            caddy = await CheckCaddyAsync(settings, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            caddyError = ex;
+        }
+        try
+        {
+            await CheckManagerAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            logger.LogWarning("Caddy Proxy Manager update check failed: {Error}", ex.Message);
+        }
+        if (caddyError is not null) throw caddyError;
+        return caddy;
+    }
+
+    /// <summary>Checks the manager's own release repository (when configured). Returns the newer version found, if any.</summary>
+    public async Task<string?> CheckManagerAsync(CancellationToken ct)
+    {
+        var latest = await binary.GetManagerLatestAsync(force: true, ct);
+        var current = CaddyBinaryManager.ManagerVersion;
+        if (latest is null || !CaddyVersion.IsNewer(latest.Version, current)) return null;
+        var state = ReadState();
+        if (!string.Equals(state.NotifiedManagerVersion, latest.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogInformation("Caddy Proxy Manager {Latest} is available (installed: {Installed})", latest.Version, current);
+            services.GetService<IEventSink>()?.Raise(EventSeverity.Info, "update",
+                $"Caddy Proxy Manager {latest.Version} is available (installed: {current})",
+                $"Release notes and downloads: {latest.Url}\nUpgrade by running the new MSI on this server (or install.ps1 from the zip); " +
+                "settings, hosts and certificates are kept, and Caddy keeps serving while the manager restarts.",
+                key: $"manager-update-available:{latest.Version}", alertRule: "updateAvailable");
+            WriteState(state with { NotifiedManagerVersion = latest.Version });
+        }
+        return latest.Version;
+    }
+
+    private async Task<string?> CheckCaddyAsync(BinarySettings settings, CancellationToken ct)
+    {
         var latest = await binary.GetLatestAsync(force: true, ct);
         var installed = await binary.GetInstalledAsync(ct);
         if (latest is null || installed is null || !CaddyVersion.IsNewer(latest.Version, installed.Version)) return null;

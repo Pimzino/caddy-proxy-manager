@@ -36,9 +36,9 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
                 DaysRemaining = DaysRemaining(c.NotAfter, now),
                 CertPath = c.CertPath,
                 KeyPath = c.KeyPath,
-                Source = c.Source == CertificateSource.Uploaded ? "uploaded" : "filePath",
+                Source = SourceName(c.Source),
                 UsedByHostIds = hosts.Where(h => h.Tls == TlsMode.Custom && h.CertificateId == c.Id).Select(h => h.Id).OrderBy(x => x, StringComparer.Ordinal).ToList(),
-                Error = FileError(c),
+                Error = CombineErrors(c.LastSyncError is null ? null : "Last synchronisation failed: " + c.LastSyncError, FileError(c)),
                 Notes = c.Notes,
             });
         }
@@ -46,6 +46,18 @@ public sealed class CertificateInventory(IStore store, AppPaths paths, ILogger<C
         result.AddRange(ScanStorage(hosts, now, ct));
         return result;
     }
+
+    /// <summary>CertificateInfo.Source values for custom certificates.</summary>
+    public static string SourceName(CertificateSource source) => source switch
+    {
+        CertificateSource.FilePath => "filePath",
+        CertificateSource.PfxFile => "pfxFile",
+        CertificateSource.WindowsStore => "windowsStore",
+        _ => "uploaded",
+    };
+
+    private static string? CombineErrors(string? a, string? b) =>
+        a is null ? b : b is null ? a : a + " " + b;
 
     private static int DaysRemaining(DateTime notAfter, DateTime now) =>
         notAfter == default ? 0 : (int)Math.Floor((notAfter - now).TotalDays);

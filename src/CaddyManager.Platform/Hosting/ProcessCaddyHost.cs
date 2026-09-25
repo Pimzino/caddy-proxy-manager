@@ -24,6 +24,7 @@ public sealed class ProcessCaddyHost : ICaddyHost, IDisposable
     private Process? _process;
     private DateTime? _startedAt;
     private string? _lastError;
+    private Dictionary<string, string>? _startedEnvironment;
     private bool _stopRequested;
     private bool _disposed;
 
@@ -37,6 +38,14 @@ public sealed class ProcessCaddyHost : ICaddyHost, IDisposable
     }
 
     public string HostMode => Mode;
+
+    /// <summary>
+    /// True when the running child was started with a different environment than the current settings produce
+    /// (e.g. the outbound proxy for Caddy changed), so it must be restarted to pick the change up.
+    /// </summary>
+    public bool EnvironmentOutdated =>
+        ChildRunning && _startedEnvironment is { } started &&
+        !started.OrderBy(kv => kv.Key, StringComparer.Ordinal).SequenceEqual(_support.CaddyEnvironment().OrderBy(kv => kv.Key, StringComparer.Ordinal));
 
     private bool ChildRunning
     {
@@ -124,7 +133,8 @@ public sealed class ProcessCaddyHost : ICaddyHost, IDisposable
             psi.ArgumentList.Add("run");
             psi.ArgumentList.Add("--config");
             psi.ArgumentList.Add(_paths.CaddyConfigFile);
-            foreach (var (k, v) in CaddyHostSupport.CaddyEnvironment(_paths)) psi.Environment[k] = v;
+            var environment = _support.CaddyEnvironment();
+            foreach (var (k, v) in environment) psi.Environment[k] = v;
 
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             p.OutputDataReceived += (_, e) => OnOutput(e.Data);
@@ -148,6 +158,7 @@ public sealed class ProcessCaddyHost : ICaddyHost, IDisposable
             p.BeginErrorReadLine();
             _process = p;
             _startedAt = DateTime.UtcNow;
+            _startedEnvironment = environment;
             _logger.LogInformation("Started Caddy child process (PID {Pid})", p.Id);
 
             var ok = await _support.WaitForAdminAsync(TimeSpan.FromSeconds(20), () => ChildRunning, ct);

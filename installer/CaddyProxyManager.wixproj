@@ -28,5 +28,7 @@
   <ItemGroup>
     <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
     <PackageReference Include="WixToolset.Firewall.wixext" Version="6.0.2" />
+    <!-- WixUI dialog library (WelcomeDlg, VerifyReadyDlg, ExitDialog ...) for the minimal wizard in Package.wxs. -->
+    <PackageReference Include="WixToolset.UI.wixext" Version="6.0.2" />
   </ItemGroup>
 </Project>

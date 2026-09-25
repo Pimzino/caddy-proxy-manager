@@ -20,6 +20,7 @@ import type { Dashboard } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
+import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
 import { Button, Callout, Card, EmptyState, PageHeader, Skeleton, StatusDot, useToast, type Tone } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { formatDateTime, formatDuration, formatNumber, formatRelative, pluralize } from '@/lib/format';
@@ -133,6 +134,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
           {d.caddy.lastError ?? 'Start it from here or from Service & Updates.'}
         </Callout>
       )}
+      <ManagerUpdateCallout o={d.binary} />
       {!d.caddy.binaryInstalled && (
         <Callout
           tone="warning"
@@ -295,7 +297,21 @@ function DashboardBody({ d }: { d: Dashboard }) {
               <dt className="text-fg-subtle">OS</dt>
               <dd className="truncate" title={d.system.os}>{d.system.os}</dd>
               <dt className="text-fg-subtle">Manager</dt>
-              <dd className="mono">v{d.system.managerVersion}</dd>
+              <dd className="min-w-0">
+                <span className="mono">v{d.system.managerVersion.replace(/^v/, '')}</span>
+                {d.binary.managerUpdateAvailable && d.binary.managerLatestVersion && (
+                  <>
+                    {' · '}
+                    {d.binary.managerLatestUrl ? (
+                      <a href={d.binary.managerLatestUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">
+                        Manager v{d.binary.managerLatestVersion.replace(/^v/, '')} available
+                      </a>
+                    ) : (
+                      <span className="text-accent-text">Manager v{d.binary.managerLatestVersion.replace(/^v/, '')} available</span>
+                    )}
+                  </>
+                )}
+              </dd>
               <dt className="text-fg-subtle">Uptime</dt>
               <dd>{formatDuration(d.system.uptimeSeconds)}</dd>
               <dt className="text-fg-subtle">Data folder</dt>

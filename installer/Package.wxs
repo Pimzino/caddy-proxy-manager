@@ -11,14 +11,23 @@
     UI_PORT   TCP port of the management UI (default: keep the configured port; 81 on a new install).
               msiexec /i CaddyProxyManager-1.0.0-x64.msi UI_PORT=8081 /qn
               The port is remembered (HKLM\SOFTWARE\Caddy Proxy Manager\UiPort) so upgrades keep the firewall
-              exception on the same port.
+              exception and the Start-menu shortcut on the same port.
+    BIND      IP address the management UI listens on (default: keep the configured address; 0.0.0.0 = all interfaces
+              on a new install). 127.0.0.1 = this server only. Must be an address of this server, otherwise the
+              installation fails and rolls back (see the MSI log: msiexec /i ... /l*v install.log).
+              msiexec /i CaddyProxyManager-1.0.0-x64.msi BIND=127.0.0.1 /qn
+
+  UI: a short wizard (Welcome → Ready to install → progress → Finish) without a license page. The Finish page explains
+  how to open the UI and where the first-run setup token is. Silent installs (/qn, /quiet) show no UI and are unchanged.
+  A Start-menu shortcut "Caddy Proxy Manager" opens http://localhost:<port>/ (http://<BIND>:<port>/ when the UI is bound to
+  one specific IPv4 address).
 
   Every install/upgrade runs "CaddyManager.exe configure" (deferred, as LocalSystem) before the service starts: it
-  creates C:\ProgramData\CaddyProxyManager, restricts it to SYSTEM + Administrators and stores UI_PORT when given.
+  creates C:\ProgramData\CaddyProxyManager, restricts it to SYSTEM + Administrators and stores UI_PORT / BIND when given.
 
-  Uninstall removes the manager service, the firewall exception, the Caddy service and the firewall rules of the
-  "Caddy Proxy Manager" group (via "CaddyManager.exe uninstall-caddy-service"). Data in
-  C:\ProgramData\CaddyProxyManager is kept.
+  Uninstall removes the manager service, the firewall exception, the Start-menu shortcut, the Caddy service, the
+  firewall rules of the "Caddy Proxy Manager" group and the "Caddy Proxy Manager" event log source (via
+  "CaddyManager.exe uninstall-caddy-service"). Data in C:\ProgramData\CaddyProxyManager is kept.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
@@ -45,8 +54,9 @@
     <Launch Condition="Privileged" Message="[ProductName] must be installed by an administrator." />
 
     <!-- ===================================================================== properties -->
-    <!-- UI_PORT given on the command line reconfigures the UI listener; otherwise the stored setting is kept. -->
+    <!-- UI_PORT / BIND given on the command line reconfigure the UI listener; otherwise the stored settings are kept. -->
     <Property Id="UI_PORT" Secure="yes" />
+    <Property Id="BIND" Secure="yes" />
     <!-- Port of the firewall exception: UI_PORT, else the port remembered by a previous install, else 81. -->
     <Property Id="CPM_SAVED_UI_PORT" Secure="yes">
       <RegistrySearch Id="SavedUiPortSearch" Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiPort" Type="raw" Bitness="always64" />
@@ -57,10 +67,25 @@
     <SetProperty Id="CPM_FIREWALL_PORT" Action="CPM_SetFirewallPortFromUiPort" Value="[UI_PORT]" After="AppSearch" Sequence="both"
                  Condition="UI_PORT" />
 
+    <!-- Host name for the Start-menu shortcut and the Finish page: localhost, unless the UI is bound to one specific IPv4
+         address (BIND, else the address remembered by a previous install); localhost would not reach it then. -->
+    <Property Id="CPM_SAVED_UI_BIND" Secure="yes">
+      <RegistrySearch Id="SavedUiBindSearch" Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiBind" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="CPM_UI_BIND" Action="CPM_SetUiBindFromSaved" Value="[CPM_SAVED_UI_BIND]" After="AppSearch" Sequence="both"
+                 Condition="CPM_SAVED_UI_BIND AND NOT BIND" />
+    <SetProperty Id="CPM_UI_BIND" Action="CPM_SetUiBindFromBind" Value="[BIND]" After="CPM_SetUiBindFromSaved" Sequence="both"
+                 Condition="BIND" />
+    <Property Id="CPM_UI_HOST" Value="localhost" Secure="yes" />
+    <SetProperty Id="CPM_UI_HOST" Action="CPM_SetUiHost" Value="[CPM_UI_BIND]" After="CPM_SetUiBindFromBind" Sequence="both"
+                 Condition="CPM_UI_BIND AND NOT (CPM_UI_BIND &gt;&lt; &quot;:&quot;) AND CPM_UI_BIND &lt;&gt; &quot;0.0.0.0&quot; AND NOT (CPM_UI_BIND &lt;&lt; &quot;127.&quot;)" />
+
     <!-- Add/Remove Programs -->
     <Property Id="ARPCOMMENTS" Value="Web UI to install, configure and monitor the Caddy web server / reverse proxy on Windows Server." />
     <Property Id="ARPCONTACT" Value="Caddy Proxy Manager" />
     <Property Id="ARPHELPTEXT" Value="Open the web UI on the server (http://localhost:81/ unless UI_PORT was changed). First-run setup token: C:\ProgramData\CaddyProxyManager\setup-token.txt" />
+    <Property Id="ARPURLINFOABOUT" Value="http://localhost:81/" />
+    <SetProperty Id="ARPURLINFOABOUT" Action="CPM_SetArpUrl" Value="http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/" After="CostFinalize" Sequence="execute" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="execute" />
 
@@ -68,6 +93,9 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Caddy Proxy Manager" />
     </StandardDirectory>
+    <!-- All-users Start menu (per-machine package). The shortcut's component lives in INSTALLFOLDER (HKLM key path), the
+         .url file itself is created in the Start menu by the util extension and removed on uninstall. -->
+    <StandardDirectory Id="ProgramMenuFolder" />
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="ManagerExecutable">
@@ -107,6 +135,17 @@
       <!-- The publish output is the single CaddyManager.exe (settings live in the database, not in appsettings.json). -->
       <Component Id="RememberUiPort">
         <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiPort" Type="string" Value="[CPM_FIREWALL_PORT]" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiBind" Type="string" Value="[CPM_UI_BIND]" />
+      </Component>
+
+      <!-- Start menu: "Caddy Proxy Manager" opens the web UI on this server. -->
+      <Component Id="StartMenuShortcut">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+        <util:InternetShortcut Id="WebUiShortcut"
+                               Directory="ProgramMenuFolder"
+                               Name="Caddy Proxy Manager"
+                               Target="http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/"
+                               Type="url" />
       </Component>
     </ComponentGroup>
 
@@ -115,21 +154,24 @@
     </Feature>
 
     <!-- ===================================================================== custom actions -->
-    <!-- Before the service starts: create + lock down the data directory, and store UI_PORT when it was given. -->
-    <SetProperty Id="CPM_ConfigureUi" Action="CPM_SetConfigureUiWithPort"
-                 Value="&quot;[#CaddyManagerExe]&quot; configure --ui-port [UI_PORT]"
-                 Before="CPM_ConfigureUi" Sequence="execute"
+    <!-- Before the service starts: create + lock down the data directory, and store UI_PORT / BIND when given.
+         "configure" rejects a BIND that is not an address of this server; Return="check" then rolls the install back. -->
+    <SetProperty Id="CPM_CFG_PORT_ARG" Action="CPM_SetConfigurePortArg" Value="--ui-port [UI_PORT]"
+                 Before="CPM_SetConfigureUiCommand" Sequence="execute"
                  Condition="UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
-    <SetProperty Id="CPM_ConfigureUi" Action="CPM_SetConfigureUiDefault"
-                 Value="&quot;[#CaddyManagerExe]&quot; configure"
+    <SetProperty Id="CPM_CFG_BIND_ARG" Action="CPM_SetConfigureBindArg" Value="--bind [BIND]"
+                 Before="CPM_SetConfigureUiCommand" Sequence="execute"
+                 Condition="BIND AND NOT (REMOVE=&quot;ALL&quot;)" />
+    <SetProperty Id="CPM_ConfigureUi" Action="CPM_SetConfigureUiCommand"
+                 Value="&quot;[#CaddyManagerExe]&quot; configure [CPM_CFG_PORT_ARG] [CPM_CFG_BIND_ARG]"
                  Before="CPM_ConfigureUi" Sequence="execute"
-                 Condition="NOT UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
+                 Condition="NOT (REMOVE=&quot;ALL&quot;)" />
     <CustomAction Id="CPM_ConfigureUi"
                   BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="check" />
 
-    <!-- On a real uninstall (not a major upgrade) also stop and delete the "Caddy" service the manager created and the
-         firewall rules of the "Caddy Proxy Manager" group created by readiness fixes. -->
+    <!-- On a real uninstall (not a major upgrade) also stop and delete the "Caddy" service the manager created, the
+         firewall rules of the "Caddy Proxy Manager" group created by readiness fixes and the event log source. -->
     <SetProperty Id="CPM_RemoveCaddyService"
                  Value="&quot;[#CaddyManagerExe]&quot; uninstall-caddy-service"
                  Before="CPM_RemoveCaddyService" Sequence="execute"
@@ -146,6 +188,49 @@
     <CustomAction Id="CPM_ConfigureService"
                   BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <!-- ===================================================================== wizard UI -->
+    <!-- Finish page text (shown after a successful install, not after repair/uninstall). Formatted here so the port is filled in. -->
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogText"
+                 Value="Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ on this server (Start menu: Caddy Proxy Manager). To create the first administrator, paste the setup token from C:\ProgramData\CaddyProxyManager\setup-token.txt - show it in an elevated PowerShell with: Get-Content C:\ProgramData\CaddyProxyManager\setup-token.txt"
+                 After="CostFinalize" Sequence="ui" />
+
+    <!-- Minimal wizard without a license page, built from the WixUI dialog library (WixToolset.UI.wixext):
+         WelcomeDlg → VerifyReadyDlg → ProgressDlg → ExitDialog; maintenance mode offers Repair / Remove. -->
+    <UI Id="CPM_WixUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="VerifyReadyDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+      <DialogRef Id="MaintenanceTypeDlg" />
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+    </UI>
+    <UIRef Id="WixUI_Common" />
 
     <InstallExecuteSequence>
       <Custom Action="CPM_ConfigureService" After="InstallServices" Condition="NOT (REMOVE=&quot;ALL&quot;)" />

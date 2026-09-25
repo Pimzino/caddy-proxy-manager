@@ -5,6 +5,7 @@ using CaddyManager.Config.Services;
 using CaddyManager.Core;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -33,6 +34,9 @@ public static class ConfigModule
         services.AddSingleton<CertificateInventory>();
         services.AddSingleton<ICertificateInventory>(sp => sp.GetRequiredService<CertificateInventory>());
 
+        // TryAdd: tests (and future platforms) can supply their own certificate store reader.
+        services.TryAddSingleton<IWindowsCertificateSource, WindowsCertificateStoreSource>();
+        services.AddSingleton<CertificateSyncService>();
         services.AddSingleton<CertificateWatcher>();
         services.AddHostedService(sp => sp.GetRequiredService<CertificateWatcher>());
         services.AddHostedService<ConfigStartup>();
@@ -49,6 +53,7 @@ public static class ConfigModule
         CertificateEndpoints.Map(app);
         SettingsEndpoints.Map(app);
         ConfigEndpoints.Map(app);
+        CaddyfileImportEndpoints.Map(app);
         return app;
     }
 }

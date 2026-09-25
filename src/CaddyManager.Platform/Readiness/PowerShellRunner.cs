@@ -60,8 +60,13 @@ public partial class PowerShellRunner(ILogger<PowerShellRunner> logger)
     [System.Text.RegularExpressions.GeneratedRegex(@"\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_=>])")]
     private static partial System.Text.RegularExpressions.Regex AnsiEscape();
 
-    /// <summary>Quotes a value as a PowerShell single-quoted string literal.</summary>
-    public static string Quote(string? value) => "'" + (value ?? "").Replace("'", "''") + "'";
+    /// <summary>
+    /// Quotes a value as a PowerShell single-quoted string literal. PowerShell also treats the typographic quotes
+    /// U+2018..U+201B as single quotes, so they are normalised to ' before doubling.
+    /// </summary>
+    public static string Quote(string? value) =>
+        "'" + (value ?? "").Replace('\u2018', '\'').Replace('\u2019', '\'').Replace('\u201A', '\'').Replace('\u201B', '\'')
+            .Replace("'", "''") + "'";
 
     /// <summary>Runs the script and returns its JSON result. Throws PowerShellException for script errors.</summary>
     public virtual async Task<JsonElement> RunJsonAsync(string script, TimeSpan? timeout = null, CancellationToken ct = default)

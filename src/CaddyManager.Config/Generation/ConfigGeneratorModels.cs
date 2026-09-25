@@ -21,6 +21,13 @@ public sealed record ConfigGeneratorInput
     public string? EabMacKey { get; init; }
     /// <summary>Ids of custom certificates whose files are currently missing or unreadable.</summary>
     public IReadOnlySet<string> UnavailableCertificateIds { get; init; } = new HashSet<string>();
+    /// <summary>Plain-text ACME issuer JSON (CaddySettings.AcmeIssuerJsonProtected, already unprotected), or null.</summary>
+    public string? AcmeIssuerJson { get; init; }
+    /// <summary>
+    /// When set, upstreams / streams / advanced-route dials that target the Caddy admin API or the manager UI on this
+    /// server are dropped with a warning (safety net behind the API validation).
+    /// </summary>
+    public Validation.LocalEndpointGuard? EndpointGuard { get; init; }
 }
 
 public sealed record ConfigGeneratorResult(JsonObject Config, List<string> Warnings)
@@ -57,6 +64,37 @@ public static class CaddyJson
         catch (JsonException)
         {
             return json;
+        }
+    }
+
+    /// <summary>
+    /// Deep-merges <paramref name="source"/> into <paramref name="target"/>: nested objects merge recursively, every other
+    /// value (arrays included) replaces the target's value.
+    /// </summary>
+    public static void DeepMerge(JsonObject target, JsonObject source)
+    {
+        foreach (var (key, value) in source)
+        {
+            if (value is JsonObject so && target[key] is JsonObject to) DeepMerge(to, so);
+            else target[key] = value?.DeepClone();
+        }
+    }
+
+    /// <summary>Parses a JSON object; null (with an error message) when the text is not a JSON object.</summary>
+    public static JsonObject? ParseObject(string? json, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            if (JsonNode.Parse(json) is JsonObject o) return o;
+            error = "must be a JSON object ({ ... })";
+            return null;
+        }
+        catch (JsonException ex)
+        {
+            error = "is not valid JSON (" + ex.Message + ")";
+            return null;
         }
     }
 

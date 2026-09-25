@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using CaddyManager.Core;
 using CaddyManager.Core.Models;
+using CaddyManager.Ops.Auth.Ldap;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -19,6 +20,19 @@ internal static class AuthEndpoints
 {
     // bcrypt hash of a random string: verifying against it makes unknown-user logins cost the same as real ones.
     private static readonly Lazy<string> DummyHash = new(() => Passwords.Hash(Guid.NewGuid().ToString("N")));
+
+    private static async Task<IResult> CompleteSignInAsync(HttpContext ctx, IStore store, IAuditLog audit, User user, string? details)
+    {
+        if (user.ExternalSource is null)
+        {
+            user.LastLoginAt = DateTime.UtcNow;
+            store.Col<User>().Update(user);
+        }
+        await AuthSetup.SignInAsync(ctx, user);
+        ctx.User = CpmClaims.CreatePrincipal(user, AuthSetup.Scheme);
+        audit.Record("login", "user", user.Id, user.Email, details);
+        return Results.Ok(UserDto.From(user));
+    }
 
     public static void Map(IEndpointRouteBuilder app)
     {
@@ -74,31 +88,85 @@ internal static class AuthEndpoints
 
         // ------------------------------------------------------------ auth
         var auth = app.MapGroup("/api/auth");
-        auth.MapPost("/login", async (LoginRequest req, HttpContext ctx, IStore store, IAuditLog audit, ILogger<SetupState> logger) =>
+        auth.MapPost("/login", async (LoginRequest req, HttpContext ctx, IStore store, IAuditLog audit, LdapSignIn ldap,
+            ILogger<SetupState> logger, CancellationToken ct) =>
         {
-            var email = UserRules.NormalizeEmail(req.Email);
-            var user = string.IsNullOrEmpty(email) ? null : UserRules.FindByEmail(store, email);
-            var ok = Passwords.Verify(req.Password ?? "", user?.PasswordHash ?? DummyHash.Value) && user is not null;
+            var login = (req.Email ?? "").Trim();
+            var email = UserRules.NormalizeEmail(login);
             var ip = CurrentUser.FormatIp(ctx.Connection.RemoteIpAddress);
-            if (!ok)
+
+            // 1. Local accounts first (break-glass when the directory is unavailable). Directory accounts have no
+            //    local password hash, so they never verify here.
+            var user = string.IsNullOrEmpty(email) ? null : UserRules.FindByEmail(store, email);
+            var local = user is { ExternalSource: null } ? user : null;
+            var ok = Passwords.Verify(req.Password ?? "", local?.PasswordHash ?? DummyHash.Value) && local is not null;
+            if (ok)
             {
-                logger.LogWarning("Failed sign-in for {Email} from {Ip}", email, ip);
-                audit.Record("loginFailed", "user", user?.Id, email, "Invalid credentials");
-                return Results.Problem(title: "Invalid credentials", detail: "The e-mail address or password is incorrect.",
-                    statusCode: StatusCodes.Status401Unauthorized);
+                if (local!.Disabled)
+                {
+                    audit.Record("loginFailed", "user", local.Id, local.Email, "Account disabled");
+                    return Results.Problem(title: "Invalid credentials", detail: "This account is disabled. Ask an administrator to enable it.",
+                        statusCode: StatusCodes.Status401Unauthorized);
+                }
+                return await CompleteSignInAsync(ctx, store, audit, local, null);
             }
-            if (user!.Disabled)
+
+            // 2. LDAP / Active Directory (e-mail, UPN, DOMAIN\user or user).
+            var ldapSettings = ldap.Settings();
+            if (ldapSettings.Enabled && login.Length > 0 && !string.IsNullOrEmpty(req.Password))
             {
-                audit.Record("loginFailed", "user", user.Id, user.Email, "Account disabled");
-                return Results.Problem(title: "Invalid credentials", detail: "This account is disabled. Ask an administrator to enable it.",
-                    statusCode: StatusCodes.Status401Unauthorized);
+                var r = await ldap.AuthenticateAsync(ldapSettings, login, req.Password, ct);
+                switch (r.Outcome)
+                {
+                    case LdapOutcome.Success:
+                        var p = ldap.Provision(r);
+                        if (p.User is null)
+                        {
+                            logger.LogWarning("Directory sign-in for {Login} from {Ip} refused: {Reason}", login, ip, p.Error);
+                            audit.Record("loginFailed", "user", null, login, $"LDAP: {p.Error}");
+                            return Results.Problem(title: "Not authorised",
+                                detail: "Your directory account cannot be used here because its e-mail address belongs to another account. Ask an administrator.",
+                                statusCode: StatusCodes.Status403Forbidden);
+                        }
+                        if (p.Disabled)
+                        {
+                            audit.Record("loginFailed", "user", p.User.Id, p.User.Email, "LDAP: account disabled in Caddy Proxy Manager");
+                            return Results.Problem(title: "Invalid credentials", detail: "This account is disabled. Ask an administrator to enable it.",
+                                statusCode: StatusCodes.Status401Unauthorized);
+                        }
+                        return await CompleteSignInAsync(ctx, store, audit, p.User, $"LDAP {r.Dn}; role {CpmClaims.RoleValue(p.User.Role)}");
+
+                    case LdapOutcome.NotAuthorized:
+                        var revoked = ldap.RevokeSessions(r);
+                        logger.LogWarning("Directory sign-in for {Login} ({Dn}) from {Ip} refused: no mapped group", login, r.Dn, ip);
+                        audit.Record("loginFailed", "user", revoked?.Id, r.Email ?? login,
+                            $"LDAP: {r.Dn} is not a member of a group mapped to a role" + (revoked is null ? "" : "; existing sessions signed out"));
+                        return Results.Problem(title: "Not authorised",
+                            detail: "Your directory account is valid but is not a member of a group that is allowed to use Caddy Proxy Manager. Ask an administrator.",
+                            statusCode: StatusCodes.Status403Forbidden);
+
+                    case LdapOutcome.Error:
+                        logger.LogError("Directory sign-in for {Login} from {Ip} failed: {Message}", login, ip, r.Message);
+                        audit.Record("loginFailed", "user", null, login, $"LDAP error: {r.Message}");
+                        // A local account's wrong password must not be masked as a directory outage.
+                        if (local is null)
+                            return Results.Problem(title: "Directory unavailable",
+                                detail: "The directory server could not be used to verify your account. Try again later; local accounts can still sign in.",
+                                statusCode: StatusCodes.Status503ServiceUnavailable);
+                        break;
+
+                    default:
+                        logger.LogWarning("Failed directory sign-in for {Login} from {Ip}: {Reason}", login, ip, r.Message);
+                        audit.Record("loginFailed", "user", null, login, $"LDAP: {r.Message}");
+                        return Results.Problem(title: "Invalid credentials", detail: "The user name or password is incorrect.",
+                            statusCode: StatusCodes.Status401Unauthorized);
+                }
             }
-            user.LastLoginAt = DateTime.UtcNow;
-            store.Col<User>().Update(user);
-            await AuthSetup.SignInAsync(ctx, user);
-            ctx.User = CpmClaims.CreatePrincipal(user, AuthSetup.Scheme);
-            audit.Record("login", "user", user.Id, user.Email);
-            return Results.Ok(UserDto.From(user));
+
+            logger.LogWarning("Failed sign-in for {Email} from {Ip}", email, ip);
+            audit.Record("loginFailed", "user", user?.Id, email, "Invalid credentials");
+            return Results.Problem(title: "Invalid credentials", detail: "The e-mail address or password is incorrect.",
+                statusCode: StatusCodes.Status401Unauthorized);
         }).AllowAnonymous().RequireLoginThrottle();
 
         auth.MapPost("/logout", async (HttpContext ctx, IAuditLog audit, ICurrentUser current, SessionRevocations revocations) =>
@@ -128,6 +196,8 @@ internal static class AuthEndpoints
         {
             var user = store.Col<User>().FindById(ctx.User.FindFirstValue(CpmClaims.UserId));
             if (user is null) return ApiResults.NotFound("User");
+            if (user.ExternalSource is not null)
+                return ApiResults.BadRequest("Your account is managed by the directory (Active Directory/LDAP). Change your password there, for example with Ctrl+Alt+Del → Change a password.");
             if (!Passwords.Verify(req.CurrentPassword ?? "", user.PasswordHash))
                 return ApiResults.BadRequest("The current password is incorrect.",
                     new Dictionary<string, string[]> { ["currentPassword"] = ["The current password is incorrect."] });
@@ -197,14 +267,27 @@ internal static class AuthEndpoints
             if (!string.IsNullOrEmpty(req.Password) && PasswordPolicy.Check(req.Password, email) is { } pwErr) v.Add("password", pwErr);
             if (!v.IsValid) return v.ToResult();
 
+            if (user.ExternalSource is not null)
+            {
+                if (!string.IsNullOrEmpty(req.Password))
+                    return ApiResults.BadRequest("Directory (LDAP) accounts have no local password; the password is managed in the directory.",
+                        new Dictionary<string, string[]> { ["password"] = ["Directory accounts have no local password."] });
+                if (role != user.Role)
+                    return ApiResults.BadRequest("The role of a directory account comes from its group membership (Settings → LDAP) and is updated at each sign-in. Disable the account to block it.",
+                        new Dictionary<string, string[]> { ["role"] = ["Managed by directory group membership."] });
+                if (email != user.Email || (req.Name is not null && req.Name.Trim() != user.Name))
+                    return ApiResults.BadRequest("The e-mail address and name of a directory account are synchronised from the directory at each sign-in.",
+                        new Dictionary<string, string[]> { [email != user.Email ? "email" : "name"] = ["Managed by the directory."] });
+            }
+
             var isSelf = user.Id == current.UserId;
             if (isSelf && disabled && !user.Disabled)
                 return ApiResults.Conflict("You cannot disable your own account.");
             if (isSelf && role != UserRole.Admin && user.Role == UserRole.Admin)
                 return ApiResults.Conflict("You cannot remove the admin role from your own account.");
-            var losesAdmin = user.Role == UserRole.Admin && !user.Disabled && (role != UserRole.Admin || disabled);
+            var losesAdmin = user.ExternalSource is null && user.Role == UserRole.Admin && !user.Disabled && (role != UserRole.Admin || disabled);
             if (losesAdmin && UserRules.EnabledAdminCount(store) <= 1)
-                return ApiResults.Conflict("This is the last enabled administrator. Create or enable another administrator first.");
+                return ApiResults.Conflict("This is the last enabled local administrator (the break-glass account when the directory is unavailable). Create or enable another local administrator first.");
             if (email != user.Email && UserRules.FindByEmail(store, email) is { } other && other.Id != user.Id)
                 return ApiResults.Conflict($"A user with the e-mail address '{email}' already exists.");
 
@@ -238,8 +321,8 @@ internal static class AuthEndpoints
             var user = store.Col<User>().FindById(id);
             if (user is null) return ApiResults.NotFound("User");
             if (user.Id == current.UserId) return ApiResults.Conflict("You cannot delete your own account.");
-            if (user.Role == UserRole.Admin && !user.Disabled && UserRules.EnabledAdminCount(store) <= 1)
-                return ApiResults.Conflict("This is the last enabled administrator and cannot be deleted.");
+            if (user.ExternalSource is null && user.Role == UserRole.Admin && !user.Disabled && UserRules.EnabledAdminCount(store) <= 1)
+                return ApiResults.Conflict("This is the last enabled local administrator (the break-glass account when the directory is unavailable) and cannot be deleted.");
             store.Col<User>().Delete(user.Id);
             cache.Invalidate(user.Id);
             audit.Record("deleted", "user", user.Id, user.Email);

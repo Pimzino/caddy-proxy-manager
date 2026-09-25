@@ -62,10 +62,24 @@ public sealed class CertificateFileStore(IStore store, AppPaths paths, ILogger<C
         }
     }
 
-    /// <summary>Deletes the store folder of an uploaded certificate (never touches file-path certificates).</summary>
+    /// <summary>Sources whose PEM files the manager writes into the certificate store (and therefore owns).</summary>
+    public static bool IsStoreManaged(CertificateSource source) =>
+        source is CertificateSource.Uploaded or CertificateSource.PfxFile or CertificateSource.WindowsStore;
+
+    /// <summary>True when the certificate's PEM files exist and hold exactly the given chain and key.</summary>
+    public static bool FilesMatch(Certificate c, ParsedCertificate parsed)
+    {
+        var cert = TryRead(c.CertPath);
+        var key = TryRead(c.KeyPath);
+        return cert is not null && key is not null &&
+               cert.AsSpan().SequenceEqual(System.Text.Encoding.ASCII.GetBytes(parsed.FullChainPem)) &&
+               key.AsSpan().SequenceEqual(System.Text.Encoding.ASCII.GetBytes(parsed.PrivateKeyPem));
+    }
+
+    /// <summary>Deletes the store folder of a store-managed certificate (never touches file-path certificates).</summary>
     public void DeleteFiles(Certificate c)
     {
-        if (c.Source != CertificateSource.Uploaded) return;
+        if (!IsStoreManaged(c.Source)) return;
         var dir = Path.GetDirectoryName(c.CertPath);
         if (string.IsNullOrEmpty(dir) || !string.Equals(Path.GetFileName(dir), c.Id, StringComparison.OrdinalIgnoreCase)) return;
         try

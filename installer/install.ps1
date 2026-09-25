@@ -15,7 +15,15 @@
     TCP port of the web UI (default: keep the configured port; 81 on a new install).
 
 .PARAMETER Bind
-    IP address the web UI listens on (0.0.0.0 = all interfaces, 127.0.0.1 = local only).
+    IP address the web UI listens on (0.0.0.0 = all interfaces, 127.0.0.1 = local only, or one of this server's
+    addresses; other addresses are rejected).
+
+.NOTES
+    Locked out of the UI (wrong port, bind address or HTTPS certificate)? In an elevated PowerShell:
+        Stop-Service CaddyProxyManager
+        & 'C:\Program Files\Caddy Proxy Manager\CaddyManager.exe' configure --reset-ui
+        Start-Service CaddyProxyManager
+    Then open http://localhost:81/.
 
 .PARAMETER NoStart
     Register the service but do not start it.

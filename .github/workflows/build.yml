@@ -50,9 +50,58 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version: $v"
 
-      - name: Build (web, tests, publish, MSI, zip)
+      # Optional Authenticode signing: set the repository secrets SIGNING_CERT_BASE64 (the .pfx, base64 encoded, e.g.
+      # [Convert]::ToBase64String([IO.File]::ReadAllBytes('codesign.pfx'))) and SIGNING_CERT_PASSWORD. Without them
+      # (and on pull requests from forks, which get no secrets) the build is simply not signed.
+      - name: Prepare code-signing certificate
         shell: pwsh
+        env:
+          SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERT_BASE64)) {
+            Write-Host 'SIGNING_CERT_BASE64 is not set: CaddyManager.exe and the MSI are not code-signed.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String(($env:SIGNING_CERT_BASE64 -replace '\s', '')))
+          } catch {
+            throw "SIGNING_CERT_BASE64 is not valid base64: $($_.Exception.Message)"
+          }
+          "CPM_SIGNING_CERT=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'Code signing enabled: CaddyManager.exe is signed before packaging, the MSI after it is built.'
+
+      - name: Build (web, tests, publish, sign, MSI, zip)
+        shell: pwsh
+        env:
+          CPM_SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
         run: ./build.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Remove code-signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CPM_SIGNING_CERT -and (Test-Path -LiteralPath $env:CPM_SIGNING_CERT)) {
+            Remove-Item -LiteralPath $env:CPM_SIGNING_CERT -Force
+          }
+
+      - name: Check the zip distribution
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Get-ChildItem -LiteralPath artifacts -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'No zip in artifacts/.' }
+          $entries = [IO.Compression.ZipFile]::OpenRead($zip.FullName).Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          $entries | ForEach-Object { Write-Host "  $_" }
+          foreach ($required in 'CaddyManager.exe', 'install.ps1', 'uninstall.ps1', 'README.md') {
+            if ($entries -notcontains $required) { throw "$($zip.Name) does not contain $required." }
+          }
+          if (-not ($entries | Where-Object { $_ -like 'docs/*.md' })) { throw "$($zip.Name) does not contain docs/*.md." }
+          if ($env:CPM_SIGNING_CERT) {
+            $sig = Get-AuthenticodeSignature -LiteralPath artifacts/publish/CaddyManager.exe
+            if ($sig.Status -ne 'Valid') { throw "CaddyManager.exe signature status: $($sig.Status) $($sig.StatusMessage)" }
+            Write-Host "Signed by: $($sig.SignerCertificate.Subject)"
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

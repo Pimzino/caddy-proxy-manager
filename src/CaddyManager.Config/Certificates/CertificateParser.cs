@@ -148,7 +148,7 @@ public static class CertificateParser
             var withKey = coll.Where(c => c.HasPrivateKey).ToList();
             if (withKey.Count == 0) throw new CertificateImportException("The PFX file does not contain a private key.");
             var leaf = withKey.FirstOrDefault(c => !IsCa(c)) ?? withKey[0];
-            using var key = ExportableCopyOfKey(leaf);
+            using var key = ExportableCopyOfKey(leaf, PfxNotExportable);
             return Build(leaf, coll.ToList(), key);
         }
         finally
@@ -157,11 +157,34 @@ public static class CertificateParser
         }
     }
 
+    private const string PfxNotExportable = "The private key in the PFX could not be exported. Re-export the PFX with \"Mark this key as exportable\".";
+
+    /// <summary>
+    /// A certificate that already carries its private key (e.g. from the Windows certificate store) plus optional
+    /// chain certificates, normalised to PEM. <paramref name="notExportableMessage"/> is the error shown when the key
+    /// cannot be exported.
+    /// </summary>
+    public static ParsedCertificate FromCertificate(X509Certificate2 leafWithKey, IEnumerable<X509Certificate2> chain, string notExportableMessage)
+    {
+        if (!leafWithKey.HasPrivateKey) throw new CertificateImportException("The certificate has no private key.");
+        using var key = ExportableCopyOfKey(leafWithKey, notExportableMessage);
+        return Build(leafWithKey, [leafWithKey, .. chain], key);
+    }
+
+    /// <summary>Reads and converts a .pfx/.p12 file referenced by path.</summary>
+    public static ParsedCertificate FromPfxFile(string path, string? password)
+    {
+        var bytes = ReadBytes(path, "PFX", MaxPfxBytes);
+        return FromPfx(bytes, password ?? "");
+    }
+
+    private const int MaxPfxBytes = 2 * 1024 * 1024;
+
     /// <summary>
     /// Copies the private key into a software key via an encrypted PKCS#8 round trip: Windows CNG keys imported
-    /// as "Exportable" still refuse plaintext export.
+    /// as "Exportable" (and store keys that allow export but not plaintext export) still refuse plaintext export.
     /// </summary>
-    private static AsymmetricAlgorithm ExportableCopyOfKey(X509Certificate2 cert)
+    private static AsymmetricAlgorithm ExportableCopyOfKey(X509Certificate2 cert, string notExportableMessage)
     {
         var pwd = Convert.ToBase64String(RandomNumberGenerator.GetBytes(24));
         var pbe = new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 10_000);
@@ -190,7 +213,7 @@ public static class CertificateParser
         }
         catch (CryptographicException ex)
         {
-            throw new CertificateImportException("The private key in the PFX could not be exported. Re-export the PFX with \"Mark this key as exportable\". (" + ex.Message + ")");
+            throw new CertificateImportException(notExportableMessage + " (" + ex.Message.Trim() + ")");
         }
         throw new CertificateImportException("Unsupported key type in the PFX. Supported: RSA and ECDSA.");
     }
@@ -276,24 +299,30 @@ public static class CertificateParser
         return FromPem(ReadText(certPath, "certificate"), ReadText(keyPath, "private key"));
     }
 
-    internal static string ReadText(string path, string what)
+    internal static string ReadText(string path, string what) =>
+        System.Text.Encoding.UTF8.GetString(ReadBytes(path, what, MaxPemBytes));
+
+    /// <summary>
+    /// Reads a referenced file. Every failure (missing, no access, a folder, too large) gives the same message so the
+    /// endpoint cannot be used to probe which files exist on the server.
+    /// </summary>
+    internal static byte[] ReadBytes(string path, string what, int maxBytes)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new CertificateImportException($"The {what} path is required.");
         if (!Path.IsPathFullyQualified(path)) throw new CertificateImportException($"The {what} path must be absolute (e.g. C:\\certs\\site.pem or \\\\server\\share\\site.pem).");
         try
         {
             var info = new FileInfo(path);
-            if (!info.Exists) throw new CertificateImportException($"The {what} file was not found: {path}");
-            if (info.Length > MaxPemBytes) throw new CertificateImportException($"The {what} file is too large: {path}");
-            return File.ReadAllText(path);
+            if (info.Exists && info.Length <= maxBytes) return File.ReadAllBytes(path);
         }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException or NotSupportedException or ArgumentException)
         {
-            throw new CertificateImportException($"The {what} file cannot be read by the service account (LocalSystem / computer account on shares): {path}");
+            // fall through to the generic message
         }
-        catch (IOException ex)
-        {
-            throw new CertificateImportException($"The {what} file could not be read ({ex.Message}): {path}");
-        }
+        throw new CertificateImportException(CannotRead(what, path));
     }
+
+    /// <summary>The generic "cannot read" message for referenced files.</summary>
+    public static string CannotRead(string what, string path) =>
+        $"The {what} file cannot be read: {path}. Check that the path is correct, that it is a file of at most a few MB, and that the service account can read it (LocalSystem on this server; the computer account DOMAIN\\SERVER$ on network shares).";
 }

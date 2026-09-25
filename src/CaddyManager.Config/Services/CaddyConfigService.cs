@@ -76,6 +76,20 @@ public sealed partial class CaddyConfigService(
             }
         }
 
+        string? acmeIssuerJson = null;
+        if (!string.IsNullOrEmpty(settings.AcmeIssuerJsonProtected))
+        {
+            try
+            {
+                acmeIssuerJson = secrets.Unprotect(settings.AcmeIssuerJsonProtected);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "ACME issuer JSON could not be decrypted");
+                extraWarnings.Add("The stored ACME issuer JSON (DNS challenge settings) could not be decrypted (was the database restored from another server?). Re-enter it under Settings > Caddy.");
+            }
+        }
+
         var input = new ConfigGeneratorInput
         {
             Settings = settings,
@@ -86,7 +100,9 @@ public sealed partial class CaddyConfigService(
             Certificates = certs,
             InstalledModules = _modules,
             EabMacKey = mac,
+            AcmeIssuerJson = acmeIssuerJson,
             UnavailableCertificateIds = UnavailableCertificates(hosts, certs),
+            EndpointGuard = Validation.LocalEndpointGuard.Create(settings, store.GetSettings<UiSettings>(), includeUi: false),
         };
         var result = CaddyConfigGenerator.Generate(input);
         result.Warnings.InsertRange(0, extraWarnings);
@@ -419,8 +435,9 @@ public sealed partial class CaddyConfigService(
                 var (level, msg) = ParseLogLine(line);
                 if (level is "warn" or "warning") warnings.Add(msg);
             }
-            if (r.ExitCode != 0) throw new CaddyAdminException(ExtractCliError(r.StdErr + "\n" + r.StdOut));
-            return (CaddyJson.Reformat(r.StdOut), warnings);
+            // Show "Caddyfile" instead of the temporary file's path.
+            if (r.ExitCode != 0) throw new CaddyAdminException(ExtractCliError(r.StdErr + "\n" + r.StdOut).Replace(tmp, "Caddyfile", StringComparison.Ordinal));
+            return (CaddyJson.Reformat(r.StdOut), warnings.Select(w => w.Replace(tmp, "Caddyfile", StringComparison.Ordinal)).ToList());
         }
         finally
         {

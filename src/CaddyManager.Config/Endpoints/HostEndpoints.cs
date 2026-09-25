@@ -6,6 +6,7 @@ using CaddyManager.Core.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CaddyManager.Config.Endpoints;
 
@@ -15,8 +16,9 @@ internal static class HostEndpoints
     {
         var g = app.MapGroup("/api/hosts").RequireAuthorization(Policies.Viewer);
 
-        g.MapGet("/", (string? kind, IStore store) =>
+        g.MapGet("/", async (string? kind, IStore store, HttpContext http) =>
         {
+            var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             var hosts = store.Col<SiteHost>().FindAll();
             if (!string.IsNullOrWhiteSpace(kind))
             {
@@ -24,11 +26,15 @@ internal static class HostEndpoints
                     return ApiResults.BadRequest($"Unknown host kind '{kind}'. Use proxy, redirect, static or response.");
                 hosts = hosts.Where(h => h.Kind == k);
             }
-            return Results.Ok(hosts.OrderBy(h => h.Domains.FirstOrDefault() ?? "", StringComparer.OrdinalIgnoreCase).ToList());
+            return Results.Ok(hosts.OrderBy(h => h.Domains.FirstOrDefault() ?? "", StringComparer.OrdinalIgnoreCase)
+                .Select(h => isAdmin ? h : EndpointSecurity.ForViewer(h)).ToList());
         });
 
-        g.MapGet("/{id}", (string id, IStore store) =>
-            store.Col<SiteHost>().FindById(id) is { } h ? Results.Ok(h) : ApiResults.NotFound("Host"));
+        g.MapGet("/{id}", async (string id, IStore store, HttpContext http) =>
+        {
+            if (store.Col<SiteHost>().FindById(id) is not { } h) return ApiResults.NotFound("Host");
+            return Results.Ok(await EndpointSecurity.IsAdminAsync(http) ? h : EndpointSecurity.ForViewer(h));
+        });
 
         g.MapPost("/", async (SiteHost? body, IStore store, HttpContext http) =>
         {
@@ -36,16 +42,18 @@ internal static class HostEndpoints
             body.Id = Entity.NewId();
             body.CreatedAt = body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
+            if (await EndpointSecurity.CheckHostAsync(http, body, null, store) is { } denied) return denied;
             if (ModelValidation.Validate(body, store) is { } problem) return problem;
 
             var col = store.Col<SiteHost>();
+            var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             return await ConfigTransaction.RunAsync(http, $"Host created: {Name(body)}",
                 persist: () => col.Insert(body),
                 rollback: () => col.Delete(body.Id),
                 onSuccess: apply =>
                 {
                     ConfigTransaction.Audit(http, "created", "host", body.Id, Name(body), body.Kind.ToString().ToLowerInvariant());
-                    return Results.Ok(new { item = body, apply });
+                    return Results.Ok(new { item = isAdmin ? body : EndpointSecurity.ForViewer(body), apply });
                 });
         }).RequireAuthorization(Policies.Operator);
 
@@ -59,15 +67,17 @@ internal static class HostEndpoints
             body.CreatedAt = existing.CreatedAt;
             body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
+            if (await EndpointSecurity.CheckHostAsync(http, body, existing, store) is { } denied) return denied;
             if (ModelValidation.Validate(body, store) is { } problem) return problem;
 
+            var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             return await ConfigTransaction.RunAsync(http, $"Host updated: {Name(body)}",
                 persist: () => col.Update(body),
                 rollback: () => col.Upsert(existing),
                 onSuccess: apply =>
                 {
                     ConfigTransaction.Audit(http, "updated", "host", id, Name(body));
-                    return Results.Ok(new { item = body, apply });
+                    return Results.Ok(new { item = isAdmin ? body : EndpointSecurity.ForViewer(body), apply });
                 });
         }).RequireAuthorization(Policies.Operator);
 
@@ -103,15 +113,21 @@ internal static class HostEndpoints
         updated.Enabled = enabled;
         updated.UpdatedAt = DateTime.UtcNow;
         if (enabled && ModelValidation.DomainConflict(updated, store) is { } conflict) return conflict;
+        if (enabled && EndpointSecurity.TargetProblems(updated, EndpointSecurity.Guard(store, includeUi: false)).FirstOrDefault() is { Message: not null } target)
+            return ApiResults.BadRequest($"The host cannot be enabled: {target.Message}");
+        if (enabled && updated.Kind == HostKind.Static &&
+            PathGuard.CheckStaticRoot(updated.RootPath, http.RequestServices.GetRequiredService<AppPaths>(), EndpointSecurity.CertificateStore(http), isAdmin: true) is { } rootProblem)
+            return ApiResults.BadRequest($"The host cannot be enabled: {rootProblem.Message}");
 
         var verb = enabled ? "enabled" : "disabled";
+        var isAdmin = await EndpointSecurity.IsAdminAsync(http);
         return await ConfigTransaction.RunAsync(http, $"Host {verb}: {Name(updated)}",
             persist: () => col.Update(updated),
             rollback: () => col.Upsert(existing),
             onSuccess: apply =>
             {
                 ConfigTransaction.Audit(http, verb, "host", id, Name(updated));
-                return Results.Ok(new { item = updated, apply });
+                return Results.Ok(new { item = isAdmin ? updated : EndpointSecurity.ForViewer(updated), apply });
             });
     }
 }

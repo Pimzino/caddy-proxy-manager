@@ -1,15 +1,20 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Models;
+using CaddyManager.Core.Infrastructure;
 using CaddyManager.Platform.Binary;
+using CaddyManager.Platform.Hosting;
 using CaddyManager.Platform.Infrastructure;
 using CaddyManager.Platform.Readiness;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting.WindowsServices;
@@ -95,6 +100,61 @@ internal static partial class PlatformEndpoints
             }
         }).RequireAuthorization(Policies.Admin);
 
+        g.MapPost("/binary/upload", async (HttpRequest request, CaddyBinaryManager bin, AppPaths paths, IAuditLog audit,
+            ILoggerFactory lf, CancellationToken ct) =>
+        {
+            var logger = lf.CreateLogger("CaddyBinary");
+            if (!bin.CanStartJob)
+                return ApiResults.Conflict("A Caddy install/update job is already running. Wait for it to finish, then upload again.");
+            Directory.CreateDirectory(paths.CaddyStagingDir);
+            BinaryUploadReceiver.CleanStale(paths.CaddyStagingDir, TimeSpan.FromHours(24));
+            ReceivedUpload upload;
+            try
+            {
+                upload = await BinaryUploadReceiver.ReceiveAsync(request, paths.CaddyStagingDir, BinaryUploadReceiver.MaxFileBytes, ct);
+            }
+            catch (BinaryUploadException ex)
+            {
+                audit.Record("upload-rejected", "caddyBinary", details: ex.Message);
+                return ex.StatusCode == StatusCodes.Status413PayloadTooLarge
+                    ? Results.Problem(title: "Upload too large", detail: ex.Message, statusCode: StatusCodes.Status413PayloadTooLarge)
+                    : ApiResults.BadRequest(ex.Message, new Dictionary<string, string[]> { [ex.Field] = [ex.Message] });
+            }
+            try
+            {
+                var job = bin.StartInstallFromFile(upload.FilePath, upload.ExpectedSha512, upload.FileName);
+                audit.Record("upload-install-started", "caddyBinary", job.Id, upload.FileName,
+                    $"{upload.Length} bytes, SHA-512 {upload.Sha512}{(upload.ExpectedSha512 is null ? " (no expected checksum given)" : " (matches the expected checksum)")}");
+                logger.LogInformation("Offline Caddy install started from uploaded file {File} ({Bytes} bytes, SHA-512 {Sha}) as job {Job}",
+                    upload.FileName, upload.Length, upload.Sha512, job.Id);
+                return Results.Ok(job);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or FileNotFoundException)
+            {
+                bin.DeleteUpload(upload.FilePath);
+                audit.Record("upload-rejected", "caddyBinary", objectName: upload.FileName, details: ex.Message);
+                return ex is InvalidOperationException ? ApiResults.Conflict(ex.Message) : ApiResults.BadRequest(ex.Message);
+            }
+        }).RequireAuthorization(Policies.Admin)
+          .DisableAntiforgery()
+          .WithMetadata(new UploadSizeLimit(BinaryUploadReceiver.MaxRequestBytes));
+
+        g.MapPost("/binary/rollback", async (CaddyBinaryManager bin, IAuditLog audit, CancellationToken ct) =>
+        {
+            var from = (await bin.GetInstalledAsync(ct))?.Version;
+            var to = await bin.GetPreviousVersionAsync(ct);
+            try
+            {
+                var job = bin.StartRollback();
+                audit.Record("rollback-started", "caddyBinary", job.Id, to, $"Rolling back from {from ?? "unknown"} to {to ?? "unknown"}");
+                return Results.Ok(job);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return ApiResults.Conflict(ex.Message);
+            }
+        }).RequireAuthorization(Policies.Admin);
+
         g.MapGet("/plugins/catalog", async (string? q, ICaddyBinaryManager bin, CancellationToken ct) =>
         {
             try
@@ -173,39 +233,72 @@ internal static partial class PlatformEndpoints
 
         g.MapGet("", (IStore store) => Redact(store.GetSettings<BinarySettings>()));
 
-        g.MapPut("", async (BinarySettings body, IStore store, CaddyBinaryManager bin, IAuditLog audit, CancellationToken ct) =>
+        g.MapPut("", async (BinarySettings body, IStore store, CaddyBinaryManager bin, AppPaths paths, CaddyEnvironmentSync envSync,
+            IAuditLog audit, CancellationToken ct) =>
         {
             var current = store.GetSettings<BinarySettings>();
-            var v = new Validator();
-            v.Require(body.CheckIntervalHours is >= 1 and <= 168, "checkIntervalHours", "Check interval must be between 1 and 168 hours.");
-            var proxy = string.IsNullOrWhiteSpace(body.OutboundProxy) ? null : body.OutboundProxy.Trim();
-            if (proxy is not null)
-            {
-                proxy = RestoreProxyPassword(proxy, current.OutboundProxy);
-                try { OutboundHttp.CreateProxy(proxy); }
-                catch (ArgumentException ex) { v.Add("outboundProxy", ex.Message); }
-            }
-            if (!v.IsValid) return v.ToResult();
-            var (plugins, error) = await ValidatePluginsAsync(body.Plugins ?? [], bin, ct);
+            var (updated, error) = await ValidateBinarySettingsAsync(body, current, bin, ct);
             if (error is not null) return error;
 
-            var updated = new BinarySettings
-            {
-                Plugins = plugins,
-                AutoCheckUpdates = body.AutoCheckUpdates,
-                CheckIntervalHours = body.CheckIntervalHours,
-                AutoInstallUpdates = body.AutoInstallUpdates,
-                OutboundProxy = proxy,
-                LastCheckedAt = current.LastCheckedAt,           // server-managed
-                LatestKnownVersion = current.LatestKnownVersion, // server-managed
-            };
-            store.SaveSettings(updated);
+            store.SaveSettings(updated!);
             audit.Record("updated", "settings", "binary", "Caddy binary & updates",
-                $"autoCheck={updated.AutoCheckUpdates}, interval={updated.CheckIntervalHours}h, autoInstall={updated.AutoInstallUpdates}, " +
-                $"proxy={(updated.OutboundProxy is null ? "none" : OutboundHttp.RedactProxy(updated.OutboundProxy))}, plugins=[{string.Join(", ", plugins)}]");
-            return Results.Ok(Redact(updated));
+                $"autoCheck={updated!.AutoCheckUpdates}, interval={updated.CheckIntervalHours}h, autoInstall={updated.AutoInstallUpdates}, " +
+                $"proxy={(updated.OutboundProxy is null ? "none" : OutboundHttp.RedactProxy(updated.OutboundProxy))}, " +
+                $"proxyCaddyTraffic={updated.ProxyCaddyTraffic}, noProxy={updated.NoProxy}, " +
+                $"managerReleaseRepo={updated.ManagerReleaseRepo ?? "none"}, plugins=[{string.Join(", ", updated.Plugins)}]");
+
+            // Caddy's own environment (HTTPS_PROXY/HTTP_PROXY/NO_PROXY) changed: repair the service and restart Caddy.
+            string? notice = null;
+            if (!SameEnvironment(CaddyHostSupport.CaddyEnvironment(paths, current), CaddyHostSupport.CaddyEnvironment(paths, updated)))
+                notice = await envSync.ApplyAsync(CancellationToken.None); // not bound to the request: never stop half-way
+            var node = JsonSerializer.SerializeToNode(Redact(updated), JsonDefaults.Api)!.AsObject();
+            if (notice is not null) node["notice"] = notice;
+            return Results.Json(node, JsonDefaults.Api);
         }).RequireAuthorization(Policies.Admin);
     }
+
+    /// <summary>Validates and normalises a PUT /api/settings/binary body. Server-managed fields are kept from <paramref name="current"/>.</summary>
+    internal static async Task<(BinarySettings? Settings, IResult? Error)> ValidateBinarySettingsAsync(BinarySettings body, BinarySettings current,
+        CaddyBinaryManager bin, CancellationToken ct)
+    {
+        var v = new Validator();
+        v.Require(body.CheckIntervalHours is >= 1 and <= 168, "checkIntervalHours", "Check interval must be between 1 and 168 hours.");
+        var proxy = string.IsNullOrWhiteSpace(body.OutboundProxy) ? null : body.OutboundProxy.Trim();
+        if (proxy is not null)
+        {
+            proxy = RestoreProxyPassword(proxy, current.OutboundProxy);
+            try { OutboundHttp.CreateProxy(proxy); }
+            catch (ArgumentException ex) { v.Add("outboundProxy", ex.Message); }
+        }
+        if (body.ProxyCaddyTraffic && proxy is null)
+            v.Add("proxyCaddyTraffic", "Set the outbound proxy first: Caddy can only use a proxy when one is configured.");
+        var noProxy = CaddyHostSupport.NormalizeNoProxy(body.NoProxy);
+        foreach (var e in CaddyHostSupport.ValidateNoProxy(noProxy)) v.Add("noProxy", e);
+        if (noProxy.Length > 2000) v.Add("noProxy", "NO_PROXY is limited to 2000 characters.");
+        string? repo = null;
+        try { repo = CaddyBinaryManager.NormalizeReleaseRepo(body.ManagerReleaseRepo); }
+        catch (ArgumentException ex) { v.Add("managerReleaseRepo", ex.Message); }
+        if (!v.IsValid) return (null, v.ToResult());
+        var (plugins, error) = await ValidatePluginsAsync(body.Plugins ?? [], bin, ct);
+        if (error is not null) return (null, error);
+
+        return (new BinarySettings
+        {
+            Plugins = plugins,
+            AutoCheckUpdates = body.AutoCheckUpdates,
+            CheckIntervalHours = body.CheckIntervalHours,
+            AutoInstallUpdates = body.AutoInstallUpdates,
+            OutboundProxy = proxy,
+            ProxyCaddyTraffic = body.ProxyCaddyTraffic,
+            NoProxy = noProxy,
+            ManagerReleaseRepo = repo,
+            LastCheckedAt = current.LastCheckedAt,           // server-managed
+            LatestKnownVersion = current.LatestKnownVersion, // server-managed
+        }, null);
+    }
+
+    private static bool SameEnvironment(Dictionary<string, string> a, Dictionary<string, string> b) =>
+        a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var v) && v == kv.Value);
 
     /// <summary>The proxy password is never returned; "********" in a PUT keeps the stored password.</summary>
     private static BinarySettings Redact(BinarySettings s) => new()
@@ -217,6 +310,9 @@ internal static partial class PlatformEndpoints
         LastCheckedAt = s.LastCheckedAt,
         LatestKnownVersion = s.LatestKnownVersion,
         OutboundProxy = string.IsNullOrEmpty(s.OutboundProxy) ? s.OutboundProxy : OutboundHttp.RedactProxy(s.OutboundProxy),
+        ProxyCaddyTraffic = s.ProxyCaddyTraffic,
+        NoProxy = s.NoProxy,
+        ManagerReleaseRepo = s.ManagerReleaseRepo,
     };
 
     internal static string RestoreProxyPassword(string incoming, string? stored)
@@ -316,6 +412,12 @@ internal static partial class PlatformEndpoints
             });
             return Results.Accepted(value: new { message = "The manager service is restarting; the UI will be back in a few seconds." });
         }).RequireAuthorization(Policies.Admin);
+    }
+
+    /// <summary>Request body limit for one endpoint (honoured by Kestrel through endpoint routing).</summary>
+    private sealed class UploadSizeLimit(long bytes) : IRequestSizeLimitMetadata
+    {
+        public long? MaxRequestBodySize => bytes;
     }
 
     internal static string ProductVersion() =>

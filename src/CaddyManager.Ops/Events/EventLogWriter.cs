@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using CaddyManager.Core;
 using CaddyManager.Core.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 
 namespace CaddyManager.Ops.Events;
 
@@ -13,15 +14,76 @@ internal interface IEventLogWriter
 }
 
 /// <summary>
+/// Registers the "Caddy Proxy Manager" source in the Windows Application log with a message file that exists.
+/// .NET's EventLog.CreateEventSource points EventMessageFile at System.Diagnostics.EventLog.Messages.dll next to
+/// the runtime, which does not exist for a single-file executable — Event Viewer then shows "The description for
+/// Event ID ... cannot be found". The .NET Framework 4 EventLogMessages.dll (present on every Windows Server)
+/// provides the same "%1" message for every event ID.
+/// </summary>
+public static class EventLogSource
+{
+    public const string Name = AppPaths.ProductName;
+    public const string LogName = "Application";
+    public const string MessageFile = @"%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll";
+    private const string RegistryBase = @"SYSTEM\CurrentControlSet\Services\EventLog\";
+
+    /// <summary>
+    /// Creates the source when missing and repairs a registration whose message file does not exist.
+    /// Returns a warning for the log when that was not possible (requires LocalSystem/administrator), else null.
+    /// No-op off Windows.
+    /// </summary>
+    public static string? Ensure()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            return EnsureWindows();
+        }
+        catch (Exception ex)
+        {
+            return $"The Windows Event Log source '{Name}' could not be registered or repaired ({ex.GetType().Name}: {ex.Message}). " +
+                   "Run the service as LocalSystem, or register it once from an elevated PowerShell: " +
+                   $"New-EventLog -LogName {LogName} -Source '{Name}' -MessageResourceFile '{Environment.ExpandEnvironmentVariables(MessageFile)}'";
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string? EnsureWindows()
+    {
+        var expanded = Environment.ExpandEnvironmentVariables(MessageFile);
+        if (!EventLog.SourceExists(Name))
+        {
+            var data = new EventSourceCreationData(Name, LogName);
+            if (File.Exists(expanded)) data.MessageResourceFile = expanded;
+            EventLog.CreateEventSource(data);
+        }
+
+        using var key = Registry.LocalMachine.OpenSubKey(RegistryBase + LogName + @"\" + Name, writable: true);
+        if (key is null) return null; // registered under another log by an administrator: leave it alone
+        var current = key.GetValue("EventMessageFile", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
+        if (current is not null && MessageFilesExist(current)) return null;
+        if (!File.Exists(expanded))
+            return $"The Event Log message file {expanded} (.NET Framework 4) is missing; events from '{Name}' will show without a description in Event Viewer.";
+        key.SetValue("EventMessageFile", MessageFile, RegistryValueKind.ExpandString);
+        return null;
+    }
+
+    internal static bool MessageFilesExist(string value)
+    {
+        var files = value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return files.Length > 0 && files.All(f => File.Exists(Environment.ExpandEnvironmentVariables(f)));
+    }
+}
+
+/// <summary>
 /// Writes events to the Windows "Application" log under source "Caddy Proxy Manager".
-/// The source is created on first use (LocalSystem may do this). Event IDs: category base + severity
+/// The source is registered on first use (LocalSystem may do this). Event IDs: category base + severity
 /// (caddy 1000, config 1100, upstream 1200, certificate 1300, update 1400, readiness 1500,
-/// notification 1600, other 1900; +0 info, +1 warning, +2 error, +3 recovered).
+/// notification 1600, backup 1700, other 1900; +0 info, +1 warning, +2 error, +3 recovered).
 /// </summary>
 internal sealed class WindowsEventLogWriter(ILogger<WindowsEventLogWriter> logger) : IEventLogWriter
 {
-    public const string Source = AppPaths.ProductName;
-    private const string LogName = "Application";
+    public const string Source = EventLogSource.Name;
     private bool _disabled;
     private bool _sourceChecked;
 
@@ -46,8 +108,7 @@ internal sealed class WindowsEventLogWriter(ILogger<WindowsEventLogWriter> logge
     {
         if (!_sourceChecked)
         {
-            if (!EventLog.SourceExists(Source))
-                EventLog.CreateEventSource(new EventSourceCreationData(Source, LogName));
+            if (EventLogSource.Ensure() is { } warning) logger.LogWarning("{Warning}", warning);
             _sourceChecked = true;
         }
         var type = e.Severity switch
@@ -74,6 +135,7 @@ internal sealed class WindowsEventLogWriter(ILogger<WindowsEventLogWriter> logge
             "update" => 1400,
             "readiness" => 1500,
             "notification" => 1600,
+            "backup" => 1700,
             _ => 1900,
         };
         return baseId + e.Severity switch

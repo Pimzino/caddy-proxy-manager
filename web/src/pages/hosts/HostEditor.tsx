@@ -1,11 +1,13 @@
 import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { Globe, KeyRound, Lock, LockOpen, Plus, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
+import { AlertTriangle, Globe, KeyRound, Lock, LockOpen, Plus, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
 import { ApiError } from '@/api/client';
-import { useAccessLists, useCaddySettings, useCertificates, useSaveHost } from '@/api/hooks';
+import { useAccessLists, useBinaryOverview, useCaddySettings, useCertificates, useSaveHost } from '@/api/hooks';
 import type { HeaderOp, HostKind, ProxyLocation, SiteHost, SiteHostFields } from '@/api/types';
+import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
 import {
+  Badge,
   Button,
   Callout,
   ChipInput,
@@ -24,13 +26,15 @@ import {
   useConfirm,
 } from '@/components/ui';
 import { formatDate } from '@/lib/format';
-import { isValidHostname, type FieldErrors } from '@/lib/validation';
+import { isValidHostname, serverFieldErrors, type FieldErrors } from '@/lib/validation';
 import {
   certCovers,
   HEADER_ACTIONS,
   kindMeta,
   LOAD_BALANCING,
   newUpstream,
+  NTLM_MODULE,
+  NTLM_PLUGIN,
   REDIRECT_CODES,
   tabOfField,
   toPayload,
@@ -73,7 +77,11 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
   const save = useSaveHost();
   const feedback = useFeedback();
   const confirm = useConfirm();
+  const { isAdmin } = useAuth();
   const meta = kindMeta[kind];
+  // Raw Caddy routes are admin-only: other roles send the stored value back untouched (a new host gets none).
+  const lockedRoutes = !isAdmin;
+  const droppedRoutes = lockedRoutes && !host && !!initial.advancedRoutesJson?.trim();
 
   const clientErrors = useMemo(() => (submitted ? validateHost(form) : {}), [form, submitted]);
   const errors: FieldErrors = { ...serverErrors, ...clientErrors };
@@ -113,8 +121,10 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
       if (first && !keys.some((k) => tabOfField(k) === tab)) setTab(first);
       return;
     }
+    const payload = toPayload(form);
+    if (lockedRoutes) payload.advancedRoutesJson = host ? (host.advancedRoutesJson ?? null) : null;
     save.mutate(
-      { id: host?.id, host: toPayload(form) },
+      { id: host?.id, host: payload },
       {
         onSuccess: (res) => {
           feedback.applied(res.apply, host ? 'Saved and applied' : `${capitalize(meta.singular)} created and applied`);
@@ -124,6 +134,16 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
           if (err instanceof ApiError && err.status === 409) {
             setServerErrors({ domains: err.detail ?? err.title });
             setTab('details');
+            return;
+          }
+          if (err instanceof ApiError && err.status === 403) {
+            // Privilege boundaries (SPEC round 2): e.g. only administrators may change raw Caddy routes.
+            const message = err.detail ?? 'Your role does not allow this change.';
+            const fe = err.errors ? serverFieldErrors(err.errors) : /route|advanced/i.test(message) ? { advancedRoutesJson: message } : {};
+            const firstTab = Object.keys(fe).map(tabOfField).find(Boolean);
+            setServerErrors(fe);
+            if (firstTab) setTab(firstTab);
+            else setGeneralError(message);
             return;
           }
           feedback.failed(err, {
@@ -195,7 +215,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
                 {unmapped.map(([k, m]) => (
                   <li key={k}>{m}</li>
                 ))}
-                {generalError && unmapped.length === 0 && <li>{generalError}</li>}
+                {generalError && <li>{generalError}</li>}
               </ul>
             </Callout>
           )}
@@ -222,7 +242,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
             <LocationsTab form={form} set={set} errors={errors} />
           </TabPanel>
           <TabPanel idBase={idBase} value="advanced" active={tab === 'advanced'}>
-            <AdvancedTab form={form} set={set} errors={errors} />
+            <AdvancedTab form={form} set={set} errors={errors} locked={lockedRoutes} droppedRoutes={droppedRoutes} />
           </TabPanel>
         </fieldset>
       </form>
@@ -314,6 +334,7 @@ function DetailsTab({
                 onChange={(v) => set('upstreamTlsInsecure', v)}
               />
             )}
+            <NtlmField checked={form.upstreamNtlm} onChange={(v) => set('upstreamNtlm', v)} error={errors.upstreamNtlm} />
             <Field label="Host header sent to upstream" error={errors.upstreamHostHeader}>
               <div className="flex flex-col gap-2">
                 <Segmented
@@ -421,7 +442,14 @@ function DetailsTab({
             label="Root folder"
             required
             error={errors.rootPath}
-            hint="Local path or UNC share. Caddy runs as LocalSystem, so shares must grant read access to this computer's account (DOMAIN\SERVER$)."
+            hint={
+              <>
+                Local path or UNC share. Caddy runs as LocalSystem, so shares must grant read access to this computer’s account
+                (<span className="mono">DOMAIN\SERVER$</span>). Not allowed: drive roots such as <span className="mono">D:\</span>, the
+                Windows and Program Files folders, and the manager’s data folder (including Caddy’s storage and the certificate
+                store). UNC paths can only be set by an administrator.
+              </>
+            }
           >
             <Input
               mono
@@ -485,6 +513,52 @@ function DetailsTab({
   );
 }
 
+/** "Upstream uses Windows authentication" with a warning when the installed Caddy lacks the NTLM transport. */
+function NtlmField({ checked, onChange, error }: { checked: boolean; onChange: (v: boolean) => void; error?: string }) {
+  const binary = useBinaryOverview();
+  const installed = binary.data?.installed;
+  const missing = !!installed && !installed.modules.includes(NTLM_MODULE);
+  return (
+    <div className="flex flex-col gap-2">
+      <SwitchField
+        label={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            Upstream uses Windows authentication (NTLM)
+            {missing && (
+              <Badge tone="warning" icon={<AlertTriangle size={11} aria-hidden />} title={`The installed Caddy binary has no ${NTLM_MODULE} module`}>
+                Plugin not installed
+              </Badge>
+            )}
+          </span>
+        }
+        description={
+          <>
+            For IIS, SharePoint, SSRS or Exchange sites using Integrated Windows Authentication: keeps each client on its own upstream
+            connection so the NTLM/Negotiate handshake succeeds. Requires the plugin <span className="mono">{NTLM_PLUGIN}</span> —{' '}
+            <Link to="/caddy/plugins?q=ntlm" className="text-accent-text hover:underline">
+              manage plugins
+            </Link>
+            .
+          </>
+        }
+        checked={checked}
+        onChange={onChange}
+      />
+      {checked && missing && (
+        <Callout tone="warning" title="The NTLM transport is not available">
+          The installed Caddy binary does not contain the module <span className="mono">{NTLM_MODULE}</span>, so Caddy cannot load
+          this setting. Add <span className="mono">{NTLM_PLUGIN}</span> on the Plugins page and rebuild Caddy before saving.
+        </Callout>
+      )}
+      {error && (
+        <p className="text-xs text-danger" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- TLS
 
 function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; errors: FieldErrors }) {
@@ -531,10 +605,19 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
             },
           ]}
         />
-        {form.tls === 'acme' && wildcard && (
+        {form.tls === 'acme' && wildcard && settings.data && !settings.data.hasAcmeIssuerJson && (
           <Callout tone="warning">
-            Wildcard certificates cannot be obtained with the HTTP or TLS-ALPN challenge. They require a DNS provider plugin
-            configured through advanced settings, or use a custom or internal certificate instead.
+            Wildcard certificates cannot be obtained with the HTTP or TLS-ALPN challenge. Install a DNS provider plugin (for example{' '}
+            <span className="mono">github.com/caddy-dns/cloudflare</span>) and configure the DNS challenge under{' '}
+            <Link to="/settings#plugins-advanced" className="text-accent-text hover:underline">
+              Settings › Caddy › Plugins &amp; advanced
+            </Link>
+            , or use a custom or internal certificate instead.
+          </Callout>
+        )}
+        {form.tls === 'acme' && wildcard && settings.data?.hasAcmeIssuerJson && (
+          <Callout tone="info">
+            Wildcard names are validated with the DNS challenge configured in Settings › Caddy › Plugins &amp; advanced.
           </Callout>
         )}
         {form.tls === 'custom' && (
@@ -790,7 +873,21 @@ function LocationsTab({ form, set, errors }: { form: SiteHostFields; set: Setter
 
 // ---------------------------------------------------------------- Advanced
 
-function AdvancedTab({ form, set, errors }: { form: SiteHostFields; set: Setter; errors: FieldErrors }) {
+function AdvancedTab({
+  form,
+  set,
+  errors,
+  locked,
+  droppedRoutes,
+}: {
+  form: SiteHostFields;
+  set: Setter;
+  errors: FieldErrors;
+  /** Not an administrator: raw routes are shown read-only. */
+  locked: boolean;
+  /** Duplicating a host with custom routes as a non-admin: the routes are not copied. */
+  droppedRoutes: boolean;
+}) {
   const first = form.domains[0] ?? '<first-domain>';
   const format = () => {
     try {
@@ -818,21 +915,35 @@ function AdvancedTab({ form, set, errors }: { form: SiteHostFields; set: Setter;
         title="Custom Caddy routes"
         description="Raw Caddy JSON: an array of route objects inserted before the generated handlers of this host. Invalid routes make Caddy reject the whole configuration."
       >
+        {locked && (
+          <Callout tone="info" title="Only administrators can change raw Caddy routes">
+            {droppedRoutes
+              ? 'The custom routes of the host you duplicated are not copied. Ask an administrator to add them after saving.'
+              : 'Raw routes can bypass access lists and other protections, so they are read-only for your role. All other settings of this host can still be changed.'}
+          </Callout>
+        )}
         <Field
           label="Routes (JSON array)"
           error={errors.advancedRoutesJson}
           labelAction={
-            <Button size="xs" variant="ghost" icon={<Wand2 size={12} />} onClick={format} disabled={!form.advancedRoutesJson?.trim()}>
-              Format
-            </Button>
+            !locked && (
+              <Button size="xs" variant="ghost" icon={<Wand2 size={12} />} onClick={format} disabled={!form.advancedRoutesJson?.trim()}>
+                Format
+              </Button>
+            )
           }
         >
           <Textarea
             mono
             rows={12}
             spellCheck={false}
-            placeholder={'[\n  {\n    "match": [{ "path": ["/health"] }],\n    "handle": [{ "handler": "static_response", "status_code": 200, "body": "ok" }]\n  }\n]'}
-            value={form.advancedRoutesJson ?? ''}
+            readOnly={locked}
+            placeholder={
+              locked
+                ? 'No custom routes.'
+                : '[\n  {\n    "match": [{ "path": ["/health"] }],\n    "handle": [{ "handler": "static_response", "status_code": 200, "body": "ok" }]\n  }\n]'
+            }
+            value={droppedRoutes ? '' : (form.advancedRoutesJson ?? '')}
             onChange={(e) => set('advancedRoutesJson', e.target.value)}
           />
         </Field>

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using CaddyManager.Config.Certificates;
 using CaddyManager.Config.Generation;
 using CaddyManager.Core;
 using CaddyManager.Core.Infrastructure;
@@ -81,6 +82,58 @@ public static class TestCerts
         cert.GetRSAPrivateKey() is { } rsa ? rsa.ExportPkcs8PrivateKeyPem() : cert.GetECDsaPrivateKey()!.ExportPkcs8PrivateKeyPem();
 
     public static string RsaTraditionalKeyPem(X509Certificate2 cert) => cert.GetRSAPrivateKey()!.ExportRSAPrivateKeyPem();
+}
+
+/// <summary>In-memory Windows certificate store for selection / sync tests on every OS.</summary>
+public sealed class FakeWindowsStore : IWindowsCertificateSource
+{
+    public bool IsSupported { get; set; } = true;
+    public List<(StoreCertificateInfo Info, X509Certificate2 Cert, bool Exportable)> Certificates { get; } = new();
+    public int Exports { get; private set; }
+
+    public StoreCertificateInfo Add(X509Certificate2 cert, bool hasKey = true, bool exportable = true, bool serverAuth = true)
+    {
+        var info = new StoreCertificateInfo
+        {
+            Thumbprint = cert.Thumbprint,
+            Subject = cert.Subject,
+            CommonName = cert.GetNameInfo(X509NameType.SimpleName, false),
+            DnsNames = WindowsCertificateStoreSource.DnsNames(cert),
+            Issuer = cert.Issuer,
+            NotBefore = cert.NotBefore.ToUniversalTime(),
+            NotAfter = cert.NotAfter.ToUniversalTime(),
+            HasPrivateKey = hasKey,
+            Exportable = exportable,
+            ServerAuth = serverAuth,
+        };
+        Certificates.Add((info, cert, exportable));
+        return info;
+    }
+
+    public IReadOnlyList<StoreCertificateInfo> List(string storeLocation, string storeName) =>
+        IsSupported ? Certificates.Select(c => c.Info).ToList() : [];
+
+    public ParsedCertificate Export(string storeLocation, string storeName, string thumbprint)
+    {
+        Exports++;
+        var c = Certificates.First(x => x.Info.Thumbprint == thumbprint);
+        if (!c.Exportable) throw new CertificateImportException(WindowsCertificateStoreSource.NotExportableMessage);
+        return CertificateParser.FromCertificate(c.Cert, [], WindowsCertificateStoreSource.NotExportableMessage);
+    }
+}
+
+public static class TestSync
+{
+    public static CertificateSyncService Create(TempEnv env, IWindowsCertificateSource? windows = null, IEventSink? events = null)
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        if (events is not null) Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, events);
+        return new CertificateSyncService(env.Store,
+            new CertificateFileStore(env.Store, env.Paths, Microsoft.Extensions.Logging.Abstractions.NullLogger<CertificateFileStore>.Instance),
+            new SecretProtector(env.Paths), windows ?? new FakeWindowsStore { IsSupported = false },
+            Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CertificateSyncService>.Instance);
+    }
 }
 
 public static class CaddyBinary

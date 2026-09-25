@@ -193,7 +193,7 @@ internal sealed class BackupService(IStore store, AppPaths paths, ILogger<Backup
         return count;
     }
 
-    private static string SafeName(string s) => string.Concat(s.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-'));
+    internal static string SafeName(string s) => string.Concat(s.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-'));
 
     private static void TryDelete(string file)
     {

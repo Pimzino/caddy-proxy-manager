@@ -89,6 +89,12 @@ public static class OpsCli
             stderr.WriteLine($"No user with e-mail '{email}'." + (all.Count > 0 ? " Existing users: " + string.Join(", ", all) : " No users exist yet — use the setup page."));
             return 1;
         }
+        if (user.ExternalSource is not null)
+        {
+            stderr.WriteLine($"{user.Email} is a directory ({user.ExternalSource}) account: it has no local password. Reset the password in the directory, " +
+                             "or sign in with a local administrator account.");
+            return 1;
+        }
 
         var generated = !opts.TryGetValue("password", out var password) || string.IsNullOrEmpty(password);
         if (generated) password = PasswordPolicy.Generate();
@@ -135,11 +141,11 @@ public static class OpsCli
         }
         var emailWidth = Math.Max(5, users.Max(u => u.Email.Length));
         var nameWidth = Math.Max(4, Math.Min(30, users.Max(u => u.Name.Length)));
-        stdout.WriteLine($"{"EMAIL".PadRight(emailWidth)}  {"NAME".PadRight(nameWidth)}  {"ROLE",-8}  {"STATUS",-8}  LAST LOGIN (UTC)");
+        stdout.WriteLine($"{"EMAIL".PadRight(emailWidth)}  {"NAME".PadRight(nameWidth)}  {"ROLE",-8}  {"STATUS",-8}  {"SOURCE",-6}  LAST LOGIN (UTC)");
         foreach (var u in users)
         {
             var name = u.Name.Length > nameWidth ? u.Name[..(nameWidth - 1)] + "…" : u.Name;
-            stdout.WriteLine($"{u.Email.PadRight(emailWidth)}  {name.PadRight(nameWidth)}  {CpmClaims.RoleValue(u.Role),-8}  {(u.Disabled ? "disabled" : "enabled"),-8}  {u.LastLoginAt?.ToString("yyyy-MM-dd HH:mm") ?? "never"}");
+            stdout.WriteLine($"{u.Email.PadRight(emailWidth)}  {name.PadRight(nameWidth)}  {CpmClaims.RoleValue(u.Role),-8}  {(u.Disabled ? "disabled" : "enabled"),-8}  {u.ExternalSource ?? "local",-6}  {u.LastLoginAt?.ToString("yyyy-MM-dd HH:mm") ?? "never"}");
         }
         return 0;
     }

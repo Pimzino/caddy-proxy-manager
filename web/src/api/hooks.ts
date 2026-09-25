@@ -7,11 +7,16 @@ import type {
   AdaptResult,
   ApplyResult,
   AuditEntry,
+  BackupFile,
+  BackupSettings,
+  BackupSettingsInput,
   BinaryOverview,
   BinarySettings,
   CaddySettings,
   CaddySettingsInput,
   CaddyStatus,
+  CaddyfileImportCommitResult,
+  CaddyfileImportResult,
   Certificate,
   CertificateInfo,
   ConfigRevision,
@@ -24,6 +29,9 @@ import type {
   HostKind,
   JobInfo,
   JsonDoc,
+  LdapSettings,
+  LdapSettingsInput,
+  LdapTestResult,
   LogResult,
   MutationResult,
   NotificationSettings,
@@ -47,6 +55,7 @@ import type {
   UserCreateInput,
   UserDto,
   UserUpdateInput,
+  WindowsStoreCertificate,
 } from './types';
 
 export const qk = {
@@ -57,7 +66,8 @@ export const qk = {
   streamSupport: ['streams', 'support'] as const,
   accessLists: ['access-lists'] as const,
   certificates: ['certificates'] as const,
-  settings: (name: 'caddy' | 'binary' | 'notifications' | 'ui') => ['settings', name] as const,
+  settings: (name: 'caddy' | 'binary' | 'notifications' | 'ui' | 'ldap' | 'backup') => ['settings', name] as const,
+  backups: ['backups'] as const,
   config: ['config'] as const,
   caddy: ['caddy'] as const,
   caddyStatus: ['caddy', 'status'] as const,
@@ -266,7 +276,12 @@ export function useCertificates() {
 export type CertificateCreate =
   | { method: 'upload'; form: FormData }
   | { method: 'pem'; body: { name: string; certPem: string; keyPem: string } }
-  | { method: 'path'; body: { name: string; certPath: string; keyPath: string } };
+  | { method: 'path'; body: { name: string; certPath: string; keyPath: string } }
+  | { method: 'pfxPath'; body: { name?: string; pfxPath: string; pfxPassword?: string } }
+  | {
+      method: 'windowsStore';
+      body: { name?: string; storeLocation?: string; storeName?: string; thumbprint?: string; subject?: string };
+    };
 
 export function useCreateCertificate() {
   const qc = useQueryClient();
@@ -279,6 +294,10 @@ export function useCreateCertificate() {
           return api.post<MutationResult<Certificate>>('/api/certificates/pem', input.body);
         case 'path':
           return api.post<MutationResult<Certificate>>('/api/certificates/path', input.body);
+        case 'pfxPath':
+          return api.post<MutationResult<Certificate>>('/api/certificates/pfx-path', input.body);
+        case 'windowsStore':
+          return api.post<MutationResult<Certificate>>('/api/certificates/windows-store', input.body);
       }
     },
     onSettled: () => invalidateConfigState(qc),
@@ -299,6 +318,26 @@ export function useUpdateCertificate() {
   return useMutation({
     mutationFn: ({ id, name, notes }: { id: string; name: string; notes: string }) =>
       api.put<MutationResult<Certificate> | Certificate>(`/api/certificates/${id}`, { name, notes }),
+    onSettled: () => invalidateConfigState(qc),
+  });
+}
+
+/** Certificates in a Windows certificate store (admin; always [] on non-Windows hosts). */
+export function useWindowsStoreCertificates(location: string, store: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...qk.certificates, 'windows-store', location, store],
+    queryFn: ({ signal }) => api.get<WindowsStoreCertificate[]>('/api/certificates/windows-store', { location, store }, signal),
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Re-read a path / PFX / Windows-store certificate now. */
+export function useSyncCertificate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<MutationResult<Certificate>>(`/api/certificates/${encodeURIComponent(id)}/sync`),
     onSettled: () => invalidateConfigState(qc),
   });
 }
@@ -377,6 +416,21 @@ export function useAdaptCaddyfile() {
   });
 }
 
+/** Converts a Caddyfile into host drafts (nothing is saved). */
+export function useImportCaddyfile() {
+  return useMutation({
+    mutationFn: (caddyfile: string) => api.post<CaddyfileImportResult>('/api/config/caddyfile/import', { caddyfile }),
+  });
+}
+
+export function useCommitCaddyfileImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (hosts: SiteHostFields[]) => api.post<CaddyfileImportCommitResult>('/api/config/caddyfile/import/commit', { hosts }),
+    onSettled: () => invalidateConfigState(qc),
+  });
+}
+
 export function useUpstreams() {
   return useQuery({
     queryKey: qk.upstreams,
@@ -432,6 +486,22 @@ export function useInstallBinary() {
   return useMutation({
     mutationFn: (version?: string) => api.post<JobInfo>('/api/caddy/binary/install', version ? { version } : {}),
   });
+}
+
+/** Offline install: upload caddy.exe or an official release archive (optional SHA-512) → job. */
+export function useUploadBinary() {
+  return useMutation({
+    mutationFn: ({ file, sha512 }: { file: File; sha512?: string }) => {
+      const form = new FormData();
+      form.append('file', file);
+      if (sha512) form.append('sha512', sha512);
+      return api.upload<JobInfo>('/api/caddy/binary/upload', form);
+    },
+  });
+}
+
+export function useRollbackBinary() {
+  return useMutation({ mutationFn: () => api.post<JobInfo>('/api/caddy/binary/rollback') });
 }
 
 export function usePluginCatalog(q: string) {
@@ -639,10 +709,58 @@ export function useManagerLog(params: { lines: number; q: string }, refetchInter
 
 export function useRestoreBackup() {
   return useMutation({
-    mutationFn: (file: File) => {
+    mutationFn: ({ file, password }: { file: File; password?: string }) => {
       const form = new FormData();
       form.append('file', file);
+      if (password) form.append('password', password);
       return api.upload<RestoreResult>('/api/backup/restore', form);
     },
+  });
+}
+
+export function useBackupSettings() {
+  return useQuery({ queryKey: qk.settings('backup'), queryFn: () => api.get<BackupSettings>('/api/settings/backup') });
+}
+
+export function useSaveBackupSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (s: BackupSettingsInput) => api.put<unknown>('/api/settings/backup', s),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: qk.settings('backup') });
+      void qc.invalidateQueries({ queryKey: qk.backups });
+    },
+  });
+}
+
+export function useBackups() {
+  return useQuery({ queryKey: qk.backups, queryFn: () => api.get<BackupFile[]>('/api/backups') });
+}
+
+export function useRunBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ name: string }>('/api/backups/run'),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.backups }),
+  });
+}
+
+// ---------------------------------------------------------------- Directory (LDAP)
+
+export function useLdapSettings() {
+  return useQuery({ queryKey: qk.settings('ldap'), queryFn: () => api.get<LdapSettings>('/api/settings/ldap') });
+}
+
+export function useSaveLdapSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (s: LdapSettingsInput) => api.put<unknown>('/api/settings/ldap', s),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.settings('ldap') }),
+  });
+}
+
+export function useTestLdap() {
+  return useMutation({
+    mutationFn: (body: { username: string; password: string }) => api.post<LdapTestResult>('/api/settings/ldap/test', body),
   });
 }

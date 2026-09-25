@@ -2,6 +2,7 @@ using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Models;
 using CaddyManager.Ops.Events;
+using CaddyManager.Ops.Logs;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -31,6 +32,7 @@ internal sealed class MonitorService(
     private int _consecutiveCaddyFailures;
     private readonly List<DateTime> _restartAttempts = new();
     private DateTime _lastCertCheck = DateTime.MinValue;
+    private DateTime _lastCertMissingCheck = DateTime.MinValue;
     private DateTime? _lastReadinessSeen;
     private bool _readinessRunning;
 
@@ -67,6 +69,7 @@ internal sealed class MonitorService(
         if (status is { AdminReachable: true })
             await Guard("upstream health", () => CheckUpstreamsAsync(ct), ct);
         await Guard("certificate expiry", () => CheckCertificatesAsync(settings, ct), ct);
+        await Guard("missing certificates", () => CheckMissingCertificatesAsync(status, ct), ct);
         await Guard("readiness", () => CheckReadinessAsync(ct), ct);
     }
 
@@ -255,6 +258,111 @@ internal sealed class MonitorService(
         }
         foreach (var key in alerts.ActiveKeys("cert-expiry:").Where(k => !problems.Contains(k)))
             events.Raise(EventSeverity.Recovered, "certificate", $"Certificate {key["cert-expiry:".Length..]} is no longer expiring", null, key, "certificateExpiry");
+    }
+
+    // ------------------------------------------------------------------ missing certificates
+
+    internal const string CertMissingPrefix = "cert-missing:";
+
+    /// <summary>
+    /// Every enabled ACME/internal host (non-wildcard domains) should have a certificate from Caddy within
+    /// OpsOptions.CertificateMissingGrace of its last change. Skipped while Caddy is not running (nothing can be issued).
+    /// </summary>
+    private async Task CheckMissingCertificatesAsync(CaddyStatus? status, CancellationToken ct)
+    {
+        if (status is not { State: CaddyRunState.Running, AdminReachable: true }) return;
+        var now = time.GetUtcNow().UtcDateTime;
+        if (now - _lastCertMissingCheck < _o.CertificateMissingInterval) return;
+        var inventory = services.GetService<ICertificateInventory>();
+        if (inventory is null) return;
+        _lastCertMissingCheck = now;
+
+        var expected = new Dictionary<string, SiteHost>(StringComparer.OrdinalIgnoreCase);
+        var managed = true;
+        try { managed = store.GetSettings<CaddySettings>().Mode == ConfigMode.Managed; }
+        catch { /* assume managed */ }
+        if (managed)
+            foreach (var h in store.Col<SiteHost>().Find(h => h.Enabled))
+            {
+                if (h.Tls is not (TlsMode.Acme or TlsMode.Internal)) continue;
+                foreach (var d in h.Domains.Select(d => d.Trim().TrimEnd('.').ToLowerInvariant()).Where(d => d.Length > 0 && !d.StartsWith('*')))
+                    expected.TryAdd(d, h);
+            }
+
+        List<CertificateInfo> certs = [];
+        if (expected.Count > 0)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromMinutes(1));
+            certs = await inventory.ListAsync(timeout.Token).WaitAsync(TimeSpan.FromSeconds(70), ct);
+        }
+
+        var stillOpen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (domain, host) in expected)
+        {
+            var key = CertMissingPrefix + domain;
+            if (IsCovered(domain, certs, now)) continue;
+            if (now - host.UpdatedAt < _o.CertificateMissingGrace)
+            {
+                // Recently changed: give Caddy time to obtain it (and do not declare an open alert recovered).
+                if (alerts.IsActive(key)) stillOpen.Add(key);
+                continue;
+            }
+            stillOpen.Add(key);
+            var minutes = (int)(now - host.UpdatedAt).TotalMinutes;
+            var hint = host.Tls == TlsMode.Acme
+                ? "Caddy has not obtained an ACME certificate yet. Check that the domain's public DNS points at this server and that TCP 80 and 443 " +
+                  "reach it from the internet (HTTP-01 / TLS-ALPN-01 challenges), or configure a DNS challenge; see Logs → Caddy."
+                : "Caddy's internal CA has not issued a certificate for this name; see Logs → Caddy.";
+            var errors = LastIssuanceErrors(domain);
+            events.Raise(EventSeverity.Warning, "certificate", $"No certificate has been issued for {domain}",
+                $"Host: {string.Join(", ", host.Domains)} ({host.Kind}, TLS {host.Tls}), last changed {minutes} minute(s) ago.\n{hint}" +
+                (errors.Count > 0 ? "\n\nLast certificate errors from caddy.log:\n" + string.Join("\n", errors) : ""),
+                key, "certificateExpiry");
+        }
+
+        foreach (var key in alerts.ActiveKeys(CertMissingPrefix).Where(k => !stillOpen.Contains(k)))
+        {
+            var domain = key[CertMissingPrefix.Length..];
+            var message = expected.ContainsKey(domain)
+                ? $"The certificate for {domain} has been issued"
+                : $"{domain} no longer needs a certificate from Caddy (host removed, disabled or changed)";
+            events.Raise(EventSeverity.Recovered, "certificate", message, null, key, "certificateExpiry");
+        }
+    }
+
+    /// <summary>A current (not expired, readable) Caddy-managed certificate whose subjects include the domain or a matching wildcard.</summary>
+    internal static bool IsCovered(string domain, IEnumerable<CertificateInfo> certs, DateTime nowUtc) =>
+        certs.Any(c => c.Kind is CertificateKind.Acme or CertificateKind.Internal && string.IsNullOrEmpty(c.Error) && c.NotAfter > nowUtc &&
+                       c.Subjects.Any(s => Matches(s.Trim().TrimEnd('.'), domain)));
+
+    private static bool Matches(string subject, string domain)
+    {
+        if (string.Equals(subject, domain, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!subject.StartsWith("*.", StringComparison.Ordinal)) return false;
+        var suffix = subject[1..]; // ".example.com"
+        return domain.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) && domain.Length > suffix.Length &&
+               !domain[..^suffix.Length].Contains('.');
+    }
+
+    /// <summary>Last tls.obtain / tls.issuance warnings and errors in caddy.log that mention the domain.</summary>
+    private List<string> LastIssuanceErrors(string domain)
+    {
+        try
+        {
+            var paths = services.GetService<AppPaths>();
+            if (paths is null) return [];
+            return LogTail.Read(paths.CaddyProcessLog, 400, domain, maxScanBytes: 16L * 1024 * 1024)
+                .Where(l => (l.Contains("\"tls.obtain\"", StringComparison.Ordinal) || l.Contains("\"tls.issuance", StringComparison.Ordinal)) &&
+                            (l.Contains("\"level\":\"error\"", StringComparison.Ordinal) || l.Contains("\"level\":\"warn\"", StringComparison.Ordinal)))
+                .TakeLast(3)
+                .Select(l => l.Length > 800 ? l[..800] + "…" : l)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     // ------------------------------------------------------------------ readiness

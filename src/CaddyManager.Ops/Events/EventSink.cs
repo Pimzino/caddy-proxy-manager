@@ -239,7 +239,11 @@ internal sealed class EventSink(
         _ => 0,
     };
 
-    /// <summary>Maps an alertRule name to its NotificationSettings toggle. null/unknown = no notification.</summary>
+    /// <summary>
+    /// Maps an alertRule name to its NotificationSettings toggle. null/unknown = no notification.
+    /// "backupFailure" (scheduled backup failed) shares the "configuration failure" toggle: both mean the
+    /// server's configuration may not be recoverable/applied and need an administrator.
+    /// </summary>
     internal bool IsRuleEnabled(NotificationSettings s, string? alertRule)
     {
         if (string.IsNullOrEmpty(alertRule)) return false;
@@ -247,6 +251,7 @@ internal sealed class EventSink(
         {
             "caddydown" => s.AlertCaddyDown,
             "configfailure" => s.AlertConfigFailure,
+            "backupfailure" => s.AlertConfigFailure,
             "upstreamunhealthy" => s.AlertUpstreamUnhealthy,
             "certificateexpiry" => s.AlertCertificateExpiry,
             "updateavailable" => s.AlertUpdateAvailable,

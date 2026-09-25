@@ -2,6 +2,8 @@
 import type {
   AccessList,
   AuditEntry,
+  BackupFile,
+  BackupSettings,
   BinaryOverview,
   BinarySettings,
   CaddySettings,
@@ -11,6 +13,7 @@ import type {
   ConfigRevision,
   EventEntry,
   JobInfo,
+  LdapSettings,
   NotificationSettings,
   PluginPackage,
   ReadinessCheck,
@@ -20,6 +23,7 @@ import type {
   StreamHost,
   UiSettings,
   UserDto,
+  WindowsStoreCertificate,
 } from '../src/api/types.ts';
 
 let seq = 1000;
@@ -60,10 +64,14 @@ export interface MockState {
   accessLists: StoredAccessList[];
   certificates: Certificate[];
   managedCerts: CertificateInfo[];
-  caddySettings: CaddySettings & { eabMacKey?: string };
+  caddySettings: CaddySettings & { eabMacKey?: string; acmeIssuerJson?: string };
   binarySettings: BinarySettings;
-  notificationSettings: NotificationSettings & { smtpPassword?: string };
+  notificationSettings: NotificationSettings & { smtpPassword?: string; oAuthClientSecret?: string };
   uiSettings: UiSettings & { httpsPfxPassword?: string };
+  ldapSettings: LdapSettings & { bindPassword?: string };
+  backupSettings: BackupSettings & { password?: string };
+  backups: BackupFile[];
+  windowsStore: Record<string, WindowsStoreCertificate[]>;
   status: CaddyStatus;
   binary: BinaryOverview;
   revisions: ConfigRevision[];
@@ -93,6 +101,7 @@ const baseHost = (kind: SiteHostFields['kind']): SiteHostFields => ({
   loadBalancing: 'roundRobin',
   healthCheck: { enabled: false, path: '/', intervalSeconds: 30, timeoutSeconds: 5, expectStatus: 0 },
   upstreamTlsInsecure: false,
+  upstreamNtlm: false,
   requestHeaders: [],
   locations: [],
   redirectCode: 301,
@@ -151,6 +160,13 @@ const CATALOG: PluginPackage[] = [
   downloads: downloads as number,
   modules: modules as string[],
 }));
+
+/** Caddy modules provided by a plugin package (for the installed binary's module list). */
+export function modulesOf(pkg: string): string[] {
+  return CATALOG.find((p) => p.path === pkg)?.modules ?? [];
+}
+
+export const BASE_MODULES = ['http', 'tls', 'pki', 'http.handlers.reverse_proxy', 'http.handlers.file_server', 'http.reverse_proxy.transport.http'];
 
 export function catalog(q: string): PluginPackage[] {
   const n = q.toLowerCase();
@@ -309,6 +325,7 @@ export function createState(): MockState {
     { id: 'u-oper000002', email: 'operator@example.com', name: 'Sam Patel', role: 'operator', disabled: false, lastLoginAt: iso(2 * DAY), createdAt: iso(90 * DAY), password: 'x' },
     { id: 'u-view000003', email: 'viewer@example.com', name: 'Jordan Lee', role: 'viewer', disabled: false, lastLoginAt: iso(9 * DAY), createdAt: iso(60 * DAY), password: 'x' },
     { id: 'u-old0000004', email: 'svc-monitoring@example.com', name: 'Monitoring (old)', role: 'viewer', disabled: true, createdAt: iso(300 * DAY), password: 'x' },
+    { id: 'u-ldap000005', email: 'priya.shah@corp.example.com', name: 'Priya Shah', role: 'operator', disabled: false, lastLoginAt: iso(3 * HOUR), createdAt: iso(14 * DAY), password: '', externalSource: 'ldap' },
   ];
 
   const officeList: StoredAccessList = {
@@ -385,6 +402,42 @@ export function createState(): MockState {
     updatedAt: iso(20 * DAY),
   };
 
+  const pfx: Certificate = {
+    id: 'crt-pfx00004',
+    name: 'Shop (win-acme PFX)',
+    source: 'pfxFile',
+    sourcePath: 'C:\\ProgramData\\win-acme\\certificates\\shop.example.com-chain.pfx',
+    certPath: 'C:\\ProgramData\\CaddyProxyManager\\certificates\\crt-pfx00004\\fullchain.pem',
+    keyPath: 'C:\\ProgramData\\CaddyProxyManager\\certificates\\crt-pfx00004\\privkey.pem',
+    subjects: ['shop.example.com', 'www.shop.example.com'],
+    issuer: 'CN=R11, O=Let’s Encrypt, C=US',
+    notBefore: iso(25 * DAY),
+    notAfter: iso(-65 * DAY),
+    thumbprint: '5566778899AABBCCDDEEFF001122334455667788',
+    lastSyncedAt: iso(12 * MIN),
+    createdAt: iso(60 * DAY),
+    updatedAt: iso(25 * DAY),
+  };
+  const store: Certificate = {
+    id: 'crt-store005',
+    name: 'Exchange OWA (AD CS autoenrollment)',
+    source: 'windowsStore',
+    storeLocation: 'LocalMachine',
+    storeName: 'My',
+    storeSubject: 'mail.corp.example.com',
+    certPath: 'C:\\ProgramData\\CaddyProxyManager\\certificates\\crt-store005\\fullchain.pem',
+    keyPath: 'C:\\ProgramData\\CaddyProxyManager\\certificates\\crt-store005\\privkey.pem',
+    subjects: ['mail.corp.example.com', 'autodiscover.corp.example.com'],
+    issuer: 'CN=Example Corp Issuing CA 01, DC=corp, DC=example, DC=com',
+    notBefore: iso(40 * DAY),
+    notAfter: iso(-325 * DAY),
+    thumbprint: 'A1B2C3D4E5F60718293A4B5C6D7E8F9012345678',
+    lastSyncedAt: iso(6 * MIN),
+    lastSyncError: 'Windows store sync: no currently valid certificate with a private key matches “mail.corp.example.com” in LocalMachine\\My; keeping the last exported certificate.',
+    createdAt: iso(40 * DAY),
+    updatedAt: iso(6 * MIN),
+  };
+
   const hosts: SiteHost[] = [
     host('proxy', { domains: ['app.example.com', 'www.app.example.com'], upstreams: [{ scheme: 'http', host: '10.0.10.21', port: 8080 }], hsts: true, blockExploits: true, accessLog: true, notes: 'Customer portal (IIS on APP01).' }),
     host('proxy', {
@@ -402,6 +455,8 @@ export function createState(): MockState {
       tls: 'internal',
       upstreams: [{ scheme: 'https', host: 'sp01.corp.example.com', port: 443 }],
       upstreamTlsInsecure: true,
+      upstreamNtlm: true,
+      notes: 'SharePoint 2019 (Windows authentication).',
       upstreamHostHeader: '{upstream}',
       accessListId: officeList.id,
     }),
@@ -513,7 +568,7 @@ export function createState(): MockState {
       { id: newId(), createdAt: iso(10 * DAY), updatedAt: iso(10 * DAY), enabled: false, protocol: 'tcp', listenPort: 5432, upstreamHost: 'pg01.corp.example.com', upstreamPort: 5432 },
     ],
     accessLists: [officeList, contractors],
-    certificates: [wildcard, legacy, pki],
+    certificates: [wildcard, legacy, pki, pfx, store],
     managedCerts,
     caddySettings: {
       mode: 'managed',
@@ -521,6 +576,8 @@ export function createState(): MockState {
       acmeEmail: 'hostmaster@example.com',
       acmeCa: 'letsEncrypt',
       hasEabMacKey: false,
+      hasAcmeIssuerJson: false,
+      tlsConnectionPolicyJson: '{\n  "protocol_min": "tls1.2"\n}',
       disableHttpChallenge: false,
       disableTlsAlpnChallenge: false,
       httpPort: 80,
@@ -539,19 +596,28 @@ export function createState(): MockState {
       autoInstallUpdates: false,
       lastCheckedAt: iso(47 * MIN),
       latestKnownVersion: 'v2.11.4',
+      proxyCaddyTraffic: false,
+      noProxy: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local',
+      managerReleaseRepo: 'contoso/caddy-proxy-manager',
     },
     notificationSettings: {
       smtpEnabled: true,
       smtpHost: 'smtp.office365.com',
       smtpPort: 587,
       smtpSecurity: 'startTls',
+      smtpAuth: 'oAuth2ClientCredentials',
       smtpUsername: 'caddy-alerts@example.com',
       hasSmtpPassword: true,
       smtpPassword: 'secret',
+      oAuthTenantId: 'example.onmicrosoft.com',
+      oAuthClientId: '3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c',
+      hasOAuthClientSecret: true,
+      oAuthClientSecret: 'secret',
       smtpFrom: 'caddy-alerts@example.com',
       recipients: ['it-ops@example.com', 'alex.morgan@example.com'],
       allowInvalidCertificate: false,
       webhookEnabled: false,
+      webhookFormat: 'teamsWorkflow',
       writeWindowsEventLog: true,
       alertCaddyDown: true,
       alertConfigFailure: true,
@@ -564,7 +630,39 @@ export function createState(): MockState {
       cooldownMinutes: 30,
       sendRecoveryNotices: true,
     },
-    uiSettings: { port: 81, bindAddress: '0.0.0.0', httpsEnabled: false, httpsPort: 8443, hasHttpsPfxPassword: false, sessionHours: 12, displayName: 'DMZ proxy – London' },
+    uiSettings: { port: 81, bindAddress: '0.0.0.0', httpsEnabled: false, redirectHttpToHttps: false, httpsPort: 8443, hasHttpsPfxPassword: false, sessionHours: 12, displayName: 'DMZ proxy – London' },
+    ldapSettings: {
+      enabled: true,
+      server: 'corp.example.com',
+      port: 636,
+      security: 'ldaps',
+      allowInvalidCertificate: false,
+      bindDn: 'svc-cpm@corp.example.com',
+      hasBindPassword: true,
+      bindPassword: 'secret',
+      baseDn: 'DC=corp,DC=example,DC=com',
+      userFilter: '(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))',
+      adminGroupDn: 'CN=CPM Admins,OU=Groups,DC=corp,DC=example,DC=com',
+      operatorGroupDn: 'CN=CPM Operators,OU=Groups,DC=corp,DC=example,DC=com',
+      viewerGroupDn: 'CN=IT Staff,OU=Groups,DC=corp,DC=example,DC=com',
+      nestedGroups: true,
+    },
+    backupSettings: { enabled: true, hourLocal: 2, directory: '\\\\nas01.corp.example.com\\backups\\web-proxy01', keep: 14, hasPassword: true, password: 'secret' },
+    backups: Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now() - (i + 1) * DAY);
+      d.setHours(2, 0, 0, 0);
+      return { name: `cpm-backup-WEB-PROXY01-${d.toISOString().slice(0, 10).replace(/-/g, '')}-0200.zip`, size: 2_400_000 + i * 18_000, createdAt: d.toISOString() };
+    }),
+    windowsStore: {
+      'LocalMachine/My': [
+        { thumbprint: 'A1B2C3D4E5F60718293A4B5C6D7E8F9012345678', subject: 'CN=mail.corp.example.com', dnsNames: ['mail.corp.example.com', 'autodiscover.corp.example.com'], issuer: 'CN=Example Corp Issuing CA 01, DC=corp, DC=example, DC=com', notBefore: iso(40 * DAY), notAfter: iso(-325 * DAY), hasPrivateKey: true, exportable: true, template: 'WebServer-Exportable' },
+        { thumbprint: '0F1E2D3C4B5A69788796A5B4C3D2E1F00F1E2D3C', subject: 'CN=erp.corp.example.com', dnsNames: ['erp.corp.example.com'], issuer: 'CN=Example Corp Issuing CA 01, DC=corp, DC=example, DC=com', notBefore: iso(20 * DAY), notAfter: iso(-345 * DAY), hasPrivateKey: true, exportable: true, template: 'WebServer-Exportable' },
+        { thumbprint: '9988776655443322110099887766554433221100', subject: 'CN=WEB-PROXY01.corp.example.com', dnsNames: ['WEB-PROXY01.corp.example.com'], issuer: 'CN=Example Corp Issuing CA 01, DC=corp, DC=example, DC=com', notBefore: iso(100 * DAY), notAfter: iso(-265 * DAY), hasPrivateKey: true, exportable: false, template: 'Machine' },
+        { thumbprint: '1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD', subject: 'CN=old-owa.corp.example.com', dnsNames: ['old-owa.corp.example.com'], issuer: 'CN=Example Corp Issuing CA 01, DC=corp, DC=example, DC=com', notBefore: iso(420 * DAY), notAfter: iso(55 * DAY), hasPrivateKey: true, exportable: true },
+        { thumbprint: 'FEDCBA9876543210FEDCBA9876543210FEDCBA98', subject: 'CN=WMSvc-SHA2-WEB-PROXY01', dnsNames: [], issuer: 'CN=WMSvc-SHA2-WEB-PROXY01', notBefore: iso(700 * DAY), notAfter: iso(-3000 * DAY), hasPrivateKey: false, exportable: false },
+      ],
+      'LocalMachine/WebHosting': [],
+    },
     status: {
       binaryInstalled: true,
       serviceInstalled: true,
@@ -584,7 +682,7 @@ export function createState(): MockState {
         path: 'C:\\ProgramData\\CaddyProxyManager\\caddy\\bin\\caddy.exe',
         installedAt: iso(34 * DAY),
         plugins: [],
-        modules: ['http', 'tls', 'http.handlers.reverse_proxy', 'http.handlers.file_server'],
+        modules: BASE_MODULES,
       },
       latest: { version: 'v2.11.4', publishedAt: iso(3 * DAY), url: 'https://github.com/caddyserver/caddy/releases/tag/v2.11.4', notes: RELEASE_NOTES },
       updateAvailable: true,
@@ -592,6 +690,12 @@ export function createState(): MockState {
       desiredPlugins: [],
       pluginsOutOfSync: false,
       platform: 'windows/amd64',
+      canRollback: true,
+      previousVersion: 'v2.11.2',
+      managerVersion: '1.0.0',
+      managerLatestVersion: '1.1.0',
+      managerLatestUrl: 'https://github.com/contoso/caddy-proxy-manager/releases/tag/v1.1.0',
+      managerUpdateAvailable: true,
     },
     revisions,
     runningJson: null,

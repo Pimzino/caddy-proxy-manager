@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { AlertTriangle, Download, FileKey2, MoreHorizontal, Pencil, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { AlertTriangle, Download, FileKey2, MoreHorizontal, Pencil, Plus, RefreshCw, RefreshCcwDot, ShieldCheck, Trash2 } from 'lucide-react';
 import { ApiError, downloadFile, errorMessage } from '@/api/client';
-import { useCertificates, useDeleteCertificate, useHosts, useUpdateCertificate } from '@/api/hooks';
+import { useCertificates, useDeleteCertificate, useHosts, useSyncCertificate, useUpdateCertificate } from '@/api/hooks';
 import type { CertificateInfo, CertificateKind } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
@@ -43,6 +43,17 @@ const kindLabel: Record<CertificateKind, { label: string; tone: Tone }> = {
   internal: { label: 'Internal', tone: 'info' },
   internalRoot: { label: 'Internal root CA', tone: 'neutral' },
 };
+
+/** Where a custom certificate comes from (CertificateInfo.source). */
+const SOURCE_LABEL: Record<string, string> = {
+  uploaded: 'Uploaded',
+  filePath: 'File',
+  pfxFile: 'PFX file',
+  windowsStore: 'Windows store',
+};
+
+/** Sources the manager re-reads by itself (watcher / periodic sync) and that support "Sync now". */
+const SYNCED_SOURCES = new Set(['filePath', 'pfxFile', 'windowsStore']);
 
 /** Time left until `notAfter`, in hours below two days (Caddy's internal leaves live ~12h). */
 function timeLeft(notAfter: string, now: number): string {
@@ -104,6 +115,7 @@ export default function CertificatesPage() {
   const certs = useCertificates();
   const hosts = useHosts();
   const del = useDeleteCertificate();
+  const sync = useSyncCertificate();
   const feedback = useFeedback();
   const confirm = useConfirm();
   const toast = useToast();
@@ -137,13 +149,30 @@ export default function CertificatesPage() {
       ),
     );
 
+  const syncNow = (c: CertificateInfo) =>
+    sync.mutate(c.id, {
+      onSuccess: (res) => {
+        if (res.item.lastSyncError) toast.warning(`“${c.name}” could not be re-read`, res.item.lastSyncError);
+        else
+          feedback.applied(
+            res.apply,
+            res.item.lastSyncedAt ? `“${c.name}” synced at ${formatDateTime(res.item.lastSyncedAt)}` : `“${c.name}” synced`,
+          );
+      },
+      onError: (err) => feedback.failed(err, { title: `Could not sync “${c.name}”` }),
+    });
+
   const remove = async (c: CertificateInfo) => {
     const ok = await confirm({
       title: 'Delete certificate?',
       message:
         c.source === 'filePath'
           ? `“${c.name}” will be removed from the manager. The referenced files on disk are not deleted.`
-          : `“${c.name}” and its private key will be deleted from the certificate store. This cannot be undone.`,
+          : c.source === 'pfxFile'
+            ? `“${c.name}” and its converted PEM copy will be removed. The PFX file on disk is not deleted.`
+            : c.source === 'windowsStore'
+              ? `“${c.name}” and its exported PEM copy will be removed. The certificate stays in the Windows certificate store.`
+              : `“${c.name}” and its private key will be deleted from the certificate store. This cannot be undone.`,
       confirmLabel: 'Delete',
       danger: true,
     });
@@ -218,6 +247,7 @@ export default function CertificatesPage() {
               <tr>
                 <TH>Name</TH>
                 <TH>Type</TH>
+                <TH>Source</TH>
                 <TH>Subjects</TH>
                 <TH>Expires</TH>
                 <TH>Used by</TH>
@@ -231,6 +261,7 @@ export default function CertificatesPage() {
                 const exp = expiryInfo(c, now);
                 const kind = kindLabel[c.kind];
                 const isCustom = c.kind === 'custom';
+                const synced = isCustom && SYNCED_SOURCES.has(c.source ?? '');
                 return (
                   <TR key={`${c.kind}:${c.id}`}>
                     <TD className="max-w-[280px]">
@@ -245,7 +276,6 @@ export default function CertificatesPage() {
                         )}
                       </div>
                       <p className="truncate text-xs text-fg-subtle" title={c.issuer}>
-                        {isCustom && c.source && `${c.source === 'filePath' ? 'By path' : 'Uploaded'} · `}
                         {issuerName(c.issuer)}
                       </p>
                       {c.notes && (
@@ -257,6 +287,20 @@ export default function CertificatesPage() {
                     </TD>
                     <TD>
                       <Badge tone={kind.tone}>{kind.label}</Badge>
+                    </TD>
+                    <TD className="whitespace-nowrap">
+                      {isCustom ? (
+                        <>
+                          <span className="text-sm text-fg">{SOURCE_LABEL[c.source ?? ''] ?? c.source ?? '—'}</span>
+                          {synced && (
+                            <p className="text-xs" title={c.error ?? 'Re-read automatically when the source changes'}>
+                              {c.error ? <StatusDot tone="danger" label="Sync failed" /> : <StatusDot tone="success" label="Auto-sync" />}
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-sm text-fg-subtle">{c.kind === 'acme' ? 'ACME (Caddy)' : 'Caddy local CA'}</span>
+                      )}
                     </TD>
                     <TD className="max-w-[260px]">
                       <div className="flex flex-wrap gap-1">
@@ -298,10 +342,17 @@ export default function CertificatesPage() {
                               : [
                                   { label: 'Edit name & notes', icon: <Pencil size={14} />, onSelect: () => setEditing(c) },
                                   {
+                                    label: 'Sync now',
+                                    icon: <RefreshCcwDot size={14} />,
+                                    onSelect: () => syncNow(c),
+                                    hidden: !synced,
+                                    disabled: sync.isPending,
+                                  },
+                                  {
                                     label: 'Replace…',
                                     icon: <RefreshCw size={14} />,
                                     onSelect: () => setReplacing(c),
-                                    hidden: c.source === 'filePath',
+                                    hidden: c.source !== 'uploaded',
                                   },
                                   'separator',
                                   {

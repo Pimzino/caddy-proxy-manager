@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { Check, ExternalLink, Hammer, Package, Plus, Puzzle, Save, Trash2, Undo2 } from 'lucide-react';
 import { errorMessage } from '@/api/client';
 import { useBinaryOverview, useInstallBinary, usePluginCatalog, useSavePlugins } from '@/api/hooks';
@@ -50,7 +51,9 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
   const [desired, setDesired] = useState<string[]>(overview.desiredPlugins);
   const [manual, setManual] = useState('');
   const [manualError, setManualError] = useState<string | null>(null);
-  const [q, setQ] = useState('');
+  const [params] = useSearchParams();
+  // "?q=ntlm" pre-fills the catalog search (links from the host editor and settings).
+  const [q, setQ] = useState(() => params.get('q') ?? '');
   const debounced = useDebounced(q.trim(), 350);
   const catalog = usePluginCatalog(debounced);
   const save = useSavePlugins();

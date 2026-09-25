@@ -1,11 +1,19 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text;
 
 namespace CaddyManager;
 
-/// <summary>Minimal daily-rolling file logger (logs/manager/manager-yyyyMMdd.log, 14 days kept).</summary>
+/// <summary>
+/// Minimal daily-rolling file logger: logs/manager/manager-yyyyMMdd.log (UTF-8 without BOM, so the files concatenate and
+/// grep cleanly), <see cref="RetentionDays"/> days kept — pruned at start-up and whenever the day rolls over.
+/// A single background thread owns the open file; the file is shared for reading (log viewer) and deletion.
+/// </summary>
 public sealed class FileLoggerProvider : ILoggerProvider
 {
+    public const int RetentionDays = 14;
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private readonly string _dir;
     private readonly BlockingCollection<string> _queue = new(10_000);
     private readonly Thread _writer;
@@ -14,9 +22,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
     {
         _dir = dir;
         Directory.CreateDirectory(dir);
+        Prune();
         _writer = new Thread(Write) { IsBackground = true, Name = "file-logger" };
         _writer.Start();
-        Prune();
     }
 
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
@@ -25,28 +33,69 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     private void Write()
     {
-        foreach (var line in _queue.GetConsumingEnumerable())
+        StreamWriter? writer = null;
+        string? day = null;
+        try
         {
-            try
+            foreach (var line in _queue.GetConsumingEnumerable())
             {
-                var file = Path.Combine(_dir, $"manager-{DateTime.Now:yyyyMMdd}.log");
-                File.AppendAllText(file, line, Encoding.UTF8);
+                try
+                {
+                    var today = DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+                    if (writer is null || today != day)
+                    {
+                        var rolled = day is not null && today != day;
+                        writer?.Dispose();
+                        writer = null;
+                        day = today;
+                        var stream = new FileStream(Path.Combine(_dir, $"manager-{today}.log"), FileMode.Append, FileAccess.Write,
+                            FileShare.ReadWrite | FileShare.Delete);
+                        writer = new StreamWriter(stream, Utf8NoBom) { AutoFlush = false };
+                        if (rolled) Prune();
+                    }
+                    writer.Write(line);
+                    if (_queue.Count == 0) writer.Flush();
+                }
+                catch
+                {
+                    // Never throw from logging; reopen on the next line (e.g. the file was deleted or the disk was full).
+                    try { writer?.Dispose(); } catch { /* ignore */ }
+                    writer = null;
+                }
             }
-            catch { /* never throw from logging */ }
+        }
+        finally
+        {
+            try { writer?.Dispose(); } catch { /* ignore */ }
         }
     }
 
+    /// <summary>Deletes manager-yyyyMMdd.log files older than <see cref="RetentionDays"/> days (by the date in the name).</summary>
     private void Prune()
     {
         try
         {
-            foreach (var f in new DirectoryInfo(_dir).GetFiles("manager-*.log").Where(f => f.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-14)))
-                f.Delete();
+            var cutoff = DateTime.Now.Date.AddDays(-RetentionDays);
+            foreach (var f in new DirectoryInfo(_dir).EnumerateFiles("manager-*.log"))
+            {
+                var stamp = Path.GetFileNameWithoutExtension(f.Name)["manager-".Length..];
+                var date = DateTime.TryParseExact(stamp, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+                    ? d : f.LastWriteTime.Date;
+                if (date < cutoff)
+                {
+                    try { f.Delete(); } catch { /* in use or no permission: try again next roll */ }
+                }
+            }
         }
-        catch { }
+        catch { /* never throw from logging */ }
     }
 
-    public void Dispose() => _queue.CompleteAdding();
+    public void Dispose()
+    {
+        _queue.CompleteAdding();
+        // Let the writer drain and flush what is queued (shutdown messages).
+        _writer.Join(TimeSpan.FromSeconds(3));
+    }
 
     private sealed class FileLogger(FileLoggerProvider provider, string category) : ILogger
     {
@@ -62,7 +111,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             };
             var shortCat = category[(category.LastIndexOf('.') + 1)..];
             var sb = new StringBuilder()
-                .Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")).Append(' ')
+                .Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)).Append(' ')
                 .Append(level).Append(' ').Append(shortCat).Append(": ").Append(Sanitize(formatter(state, exception))).AppendLine();
             if (exception is not null) sb.AppendLine(exception.ToString());
             provider.Enqueue(sb.ToString());

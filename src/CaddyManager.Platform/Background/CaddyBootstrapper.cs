@@ -11,7 +11,9 @@ namespace CaddyManager.Platform.Background;
 /// <summary>
 /// Brings Caddy up when the manager starts, without blocking web host startup:
 /// ensure binary (auto-install latest vanilla release when missing) → boot config → Windows service
-/// registered/repaired → Caddy started → current config applied.
+/// registered/repaired (restarting a running Caddy when its environment changed) → Caddy started → current config applied.
+/// After every later binary install (download, upload or rollback) <see cref="AfterInstallAsync"/> repeats the
+/// service and apply steps, so an offline install through the UI completes what a failed bootstrap left undone.
 /// Set CM_CADDY_AUTOSTART=0 to skip starting Caddy (the binary/service steps still run).
 /// </summary>
 public sealed class CaddyBootstrapper(
@@ -25,6 +27,9 @@ public sealed class CaddyBootstrapper(
     /// <summary>Completes when bootstrapping has finished (successfully or not). Used by tests and diagnostics.</summary>
     public Task Completion => _done.Task;
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile bool _notInstalledRaised;
+
+    public const string NotInstalledKey = "caddy-not-installed";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -65,10 +70,16 @@ public sealed class CaddyBootstrapper(
             logger.LogInformation("Caddy is not installed; installing the latest release automatically");
             if (!await InstallVanillaAsync(ct))
             {
+                var platform = CaddyPlatform.Current;
                 sink?.Raise(EventSeverity.Error, "caddy",
                     "Caddy is not installed and the automatic installation failed",
-                    "Open the Caddy page to retry the installation. If the server has no Internet access, configure an outbound proxy in Settings → Updates or copy caddy.exe to " + paths.CaddyExe + ".",
-                    key: "caddy-not-installed", alertRule: "caddyDown");
+                    "Open Caddy → Service & Updates to retry the download. If this server has no Internet access, download " +
+                    $"caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} (or {platform.BinaryName}) " +
+                    "from https://github.com/caddyserver/caddy/releases on another machine and install it with Upload on that page " +
+                    "(optionally with the SHA-512 from caddy_<version>_checksums.txt); the manager then registers the service and applies " +
+                    "the configuration automatically. Behind a proxy, set the outbound proxy in Settings → Updates.",
+                    key: NotInstalledKey, alertRule: "caddyDown");
+                _notInstalledRaised = true;
                 return;
             }
         }
@@ -81,11 +92,13 @@ public sealed class CaddyBootstrapper(
         }
 
         // 3. Windows service registered and correct (idempotent repair: binPath, start type, recovery, environment)
-        if (host.HostMode == Hosting.WindowsServiceCaddyHost.Mode)
+        var environmentChanged = false;
+        if (OperatingSystem.IsWindows() && host is Hosting.WindowsServiceCaddyHost windowsHost)
         {
             try
             {
-                await host.InstallServiceAsync(ct);
+                var changes = await windowsHost.RepairServiceAsync(ct);
+                environmentChanged = changes.Any(Hosting.WindowsServiceCaddyHost.IsEnvironmentChange);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -104,7 +117,20 @@ public sealed class CaddyBootstrapper(
         else
         {
             var status = await host.GetStatusAsync(ct);
-            if (status.State is not (CaddyRunState.Running or CaddyRunState.Starting))
+            if (environmentChanged && status.State == CaddyRunState.Running)
+            {
+                try
+                {
+                    logger.LogInformation("The Caddy service environment changed (outbound proxy settings); restarting Caddy to apply it");
+                    await host.RestartAsync(ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError("Restarting Caddy after its environment changed failed: {Error}", ex.Message);
+                    sink?.Raise(EventSeverity.Error, "caddy", "Caddy failed to restart", ex.Message, key: "caddy-down", alertRule: "caddyDown");
+                }
+            }
+            else if (status.State is not (CaddyRunState.Running or CaddyRunState.Starting))
             {
                 try
                 {
@@ -132,6 +158,60 @@ public sealed class CaddyBootstrapper(
             {
                 logger.LogError(ex, "Applying the configuration at startup failed");
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs inside every successful binary install job (download, upload, rollback) after the swap: boot config, Windows
+    /// service registration/repair (restarting a running Caddy when its environment changed) and applying the current
+    /// configuration. Clears the "Caddy is not installed" alert raised by a failed bootstrap.
+    /// </summary>
+    public async Task AfterInstallAsync(Action<string> log, CancellationToken ct)
+    {
+        var sink = services.GetService<IEventSink>();
+        var config = services.GetService<ICaddyConfigService>();
+        if (config is not null)
+        {
+            try { config.EnsureBootConfig(); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { log("Warning: could not write the boot configuration: " + ex.Message); }
+        }
+
+        if (OperatingSystem.IsWindows() && host is Hosting.WindowsServiceCaddyHost windowsHost)
+        {
+            log($"Checking the Windows service '{AppPaths.CaddyServiceName}'");
+            try
+            {
+                var changes = await windowsHost.RepairServiceAsync(ct);
+                foreach (var c in changes) log(c);
+                if (changes.Count == 0) log("The service registration is up to date");
+                if (changes.Any(Hosting.WindowsServiceCaddyHost.IsEnvironmentChange)
+                    && (await host.GetStatusAsync(ct)).State == CaddyRunState.Running)
+                {
+                    log("Restarting Caddy to apply its new service environment");
+                    await host.RestartAsync(ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                log("Warning: registering/repairing the Caddy service failed: " + ex.Message);
+                sink?.Raise(EventSeverity.Error, "caddy", "Registering the Caddy Windows service failed", ex.Message,
+                    key: "caddy-service-install", alertRule: "caddyDown");
+            }
+        }
+
+        if (config is not null)
+        {
+            log("Applying the managed configuration");
+            var r = await config.ApplyAsync("caddy installed", ct);
+            log(r.Success
+                ? r.WrittenOnly ? "Configuration written (Caddy is not running; it is loaded when Caddy starts)" : "Configuration applied"
+                : $"Warning: applying the configuration failed: {r.Error}");
+        }
+
+        if (_notInstalledRaised)
+        {
+            _notInstalledRaised = false;
+            sink?.Raise(EventSeverity.Recovered, "caddy", "Caddy is installed", null, key: NotInstalledKey, alertRule: "caddyDown");
         }
     }
 

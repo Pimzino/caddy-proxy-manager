@@ -1,11 +1,9 @@
-import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
-import { Archive, Download, Save, Upload } from 'lucide-react';
-import { downloadFile, errorMessage } from '@/api/client';
 import {
+  useBinaryOverview,
   useBinarySettings,
   useCaddySettings,
-  useRestoreBackup,
   useSaveBinarySettings,
   useSaveCaddySettings,
   useSaveUiSettings,
@@ -19,7 +17,6 @@ import { useFeedback } from '@/components/feedback';
 import { SecretInput, secretPayload } from '@/components/SecretInput';
 import {
   Badge,
-  Button,
   Callout,
   Card,
   CardBody,
@@ -27,10 +24,8 @@ import {
   ChipInput,
   DescriptionList,
   Field,
-  FileInput,
   FormSection,
   Input,
-  LoadingBlock,
   NumberInput,
   PageHeader,
   Select,
@@ -38,24 +33,31 @@ import {
   TabPanel,
   Tabs,
   Textarea,
-  useConfirm,
   useToast,
 } from '@/components/ui';
 import { formatDateTime, formatDuration } from '@/lib/format';
 import { isAbsoluteHttpUrl, isIpv4, isIpv6, isValidCidr, isValidEmail, isValidPort, jsonObjectError, type FieldErrors } from '@/lib/validation';
+import { BackupTab } from './BackupTab';
+import { LdapTab } from './LdapTab';
+import { HiddenValue, PLUGIN_FIELDS, PluginsAdvancedSection, validatePluginFields } from './PluginsAdvancedSection';
 import { RestartPanel } from './RestartPanel';
+import { fieldError, Loader, SaveBar, UnplacedErrors } from './shared';
 
-type SettingsTab = 'caddy' | 'updates' | 'ui' | 'backup';
+type SettingsTab = 'caddy' | 'updates' | 'ui' | 'ldap' | 'backup';
+const TABS: SettingsTab[] = ['caddy', 'updates', 'ui', 'ldap', 'backup'];
 
 export default function SettingsPage() {
   const idBase = useId();
   const { isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab') as SettingsTab | null;
-  const tab: SettingsTab = requested && ['caddy', 'updates', 'ui', 'backup'].includes(requested) && (isAdmin || requested === 'caddy' || requested === 'updates') ? requested : 'caddy';
+  const tab: SettingsTab = requested && TABS.includes(requested) && (isAdmin || requested === 'caddy' || requested === 'updates') ? requested : 'caddy';
   return (
     <>
-      <PageHeader title="Settings" description={isAdmin ? 'Global Caddy behaviour, update policy, the management UI listener, and backups.' : 'Global settings (read-only for your role).'} />
+      <PageHeader
+        title="Settings"
+        description={isAdmin ? 'Global Caddy behaviour, update policy, the management UI listener, directory sign-in and backups.' : 'Global settings (read-only for your role).'}
+      />
       <Tabs
         idBase={idBase}
         aria-label="Settings sections"
@@ -66,7 +68,8 @@ export default function SettingsPage() {
           { value: 'caddy', label: 'Caddy' },
           { value: 'updates', label: 'Updates' },
           { value: 'ui', label: 'Management UI', hidden: !isAdmin },
-          { value: 'backup', label: 'Backup & restore', hidden: !isAdmin },
+          { value: 'ldap', label: 'Directory (LDAP)', hidden: !isAdmin },
+          { value: 'backup', label: 'Backups', hidden: !isAdmin },
         ]}
       />
       <TabPanel idBase={idBase} value="caddy" active={tab === 'caddy'}>
@@ -78,36 +81,13 @@ export default function SettingsPage() {
       <TabPanel idBase={idBase} value="ui" active={tab === 'ui' && isAdmin}>
         <UiTab />
       </TabPanel>
+      <TabPanel idBase={idBase} value="ldap" active={tab === 'ldap' && isAdmin}>
+        <LdapTab />
+      </TabPanel>
       <TabPanel idBase={idBase} value="backup" active={tab === 'backup' && isAdmin}>
         <BackupTab />
       </TabPanel>
     </>
-  );
-}
-
-function Loader<T>({ query, children }: { query: { isPending: boolean; isError: boolean; error: unknown; data?: T }; children: (data: T) => ReactNode }) {
-  if (query.isPending) return <LoadingBlock />;
-  if (query.isError || query.data === undefined)
-    return (
-      <Callout tone="danger" title="Could not load settings">
-        {errorMessage(query.error)}
-      </Callout>
-    );
-  return <>{children(query.data)}</>;
-}
-
-function SaveBar({ dirty, saving, onReset, readOnly }: { dirty: boolean; saving: boolean; onReset: () => void; readOnly?: boolean }) {
-  if (readOnly) return <p className="text-sm text-fg-subtle">Only administrators can change these settings.</p>;
-  return (
-    <div className="flex items-center justify-end gap-2">
-      {dirty && <span className="mr-auto text-sm text-fg-subtle">Unsaved changes</span>}
-      <Button onClick={onReset} disabled={!dirty || saving}>
-        Discard
-      </Button>
-      <Button type="submit" variant="primary" icon={<Save size={14} />} loading={saving} disabled={!dirty}>
-        Save
-      </Button>
-    </div>
   );
 }
 
@@ -150,22 +130,15 @@ function validateCaddy(f: CaddySettingsInput): FieldErrors {
   if (f.disableHttpChallenge && f.disableTlsAlpnChallenge)
     e.disableTlsAlpnChallenge = 'Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.';
   if (!!f.eabKeyId?.trim() && f.eabMacKey === '') e.eabKeyId = 'External account binding needs both the key ID and the HMAC key.';
-  return e;
+  return { ...e, ...validatePluginFields(f) };
 }
 
 /** Field keys the Caddy settings form shows next to a field; other server errors go to a summary. */
 const CADDY_FIELDS = [
   'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort',
   'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
+  ...PLUGIN_FIELDS,
 ];
-
-/** The message for a field, including item errors such as "trustedProxies.1" for list fields. */
-function fieldError(errors: FieldErrors, key: string): string | undefined {
-  const msgs = Object.entries(errors)
-    .filter(([k]) => k === key || k.startsWith(`${key}.`))
-    .map(([, m]) => m);
-  return msgs.length ? msgs.join(' ') : undefined;
-}
 
 function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   const { isAdmin } = useAuth();
@@ -181,7 +154,6 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
     setForm((f) => ({ ...f, [k]: v }));
     setServerErrors({});
   };
-  const unplaced = Object.entries(errors).filter(([k]) => !CADDY_FIELDS.some((f) => k === f || k.startsWith(`${f}.`)));
   const adminHost = form.adminListen.split(':').slice(0, -1).join(':').replace(/^\[|\]$/g, '');
   const adminLoopback = ['127.0.0.1', 'localhost', '::1'].includes(adminHost);
 
@@ -200,6 +172,9 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
         defaultRedirectUrl: form.defaultRedirectUrl?.trim() || null,
         certificateStorePath: form.certificateStorePath?.trim() || null,
         serverOptionsJson: form.serverOptionsJson?.trim() || null,
+        extraAppsJson: form.extraAppsJson?.trim() || null,
+        tlsConnectionPolicyJson: form.tlsConnectionPolicyJson?.trim() || null,
+        acmeIssuerJson: secretPayload(form.acmeIssuerJson),
         adminListen: form.adminListen.trim(),
       });
       feedback.applied(res.apply, 'Settings saved and applied');
@@ -212,15 +187,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
     <form onSubmit={(e) => void submit(e)} noValidate>
       <Card className="p-5">
         <fieldset disabled={!isAdmin || save.isPending} className="min-w-0">
-          {unplaced.length > 0 && (
-            <Callout tone="danger" className="mb-4" title="The settings were not saved">
-              <ul className="list-disc pl-4">
-                {unplaced.map(([k, m]) => (
-                  <li key={k}>{m}</li>
-                ))}
-              </ul>
-            </Callout>
-          )}
+          <UnplacedErrors errors={errors} fields={CADDY_FIELDS} />
           <FormSection title="Certificates (ACME)" description="Used by hosts with Automatic TLS. Let’s Encrypt needs inbound port 80 (HTTP challenge) or 443 (TLS-ALPN) from the Internet.">
             <Field label="Account e-mail" error={errors.acmeEmail} hint="Receives expiry warnings from the CA. Strongly recommended.">
               <Input type="email" placeholder="hostmaster@example.com" value={form.acmeEmail} onChange={(e) => set('acmeEmail', e.target.value)} />
@@ -329,6 +296,8 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             </Field>
           </FormSection>
 
+          <PluginsAdvancedSection settings={settings} form={form} set={set} errors={errors} isAdmin={isAdmin} />
+
           <FormSection title="Advanced">
             <Field label="Configuration mode">
               <div className="flex items-center gap-2 text-sm">
@@ -347,7 +316,11 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
               </Callout>
             )}
             <Field label="Server options (JSON)" error={errors.serverOptionsJson} hint="Merged into every apps.http.servers entry, e.g. timeouts or max_header_bytes. Leave empty unless you know you need it.">
-              <Textarea mono rows={5} spellCheck={false} placeholder={'{\n  "timeouts": { "read_header": "10s" }\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
+              {isAdmin || form.serverOptionsJson !== undefined ? (
+                <Textarea mono rows={5} spellCheck={false} placeholder={'{\n  "timeouts": { "read_header": "10s" }\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
+              ) : (
+                <HiddenValue />
+              )}
             </Field>
           </FormSection>
         </fieldset>
@@ -366,8 +339,21 @@ function UpdatesTab() {
   return <Loader query={q}>{(data) => <UpdatesForm key={JSON.stringify(data)} settings={data} />}</Loader>;
 }
 
+const REPO_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+/** Accepts "owner/repo" or a pasted GitHub URL. */
+function normalizeRepo(v: string | null | undefined): string {
+  return (v ?? '')
+    .trim()
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+}
+
 function UpdatesForm({ settings }: { settings: BinarySettings }) {
   const { isAdmin } = useAuth();
+  const binary = useBinaryOverview();
+  const versionText = binary.data?.managerVersion ? `v${binary.data.managerVersion.replace(/^v/, '')}` : null;
   const [form, setForm] = useState<BinarySettings>(settings);
   const [submitted, setSubmitted] = useState(false);
   const save = useSaveBinarySettings();
@@ -377,6 +363,11 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
     const e: FieldErrors = {};
     if (!(Number.isInteger(f.checkIntervalHours) && f.checkIntervalHours >= 1 && f.checkIntervalHours <= 168)) e.checkIntervalHours = 'Enter 1–168 hours.';
     if (f.outboundProxy && !isAbsoluteHttpUrl(f.outboundProxy)) e.outboundProxy = 'Enter a proxy URL such as http://proxy.corp.local:8080.';
+    if (f.proxyCaddyTraffic && !f.outboundProxy?.trim()) e.proxyCaddyTraffic = 'Enter the proxy URL above first.';
+    const badNoProxy = (f.noProxy ?? '').split(',').map((x) => x.trim()).filter((x) => x && /\s|\/\/|[;]/.test(x));
+    if (badNoProxy.length) e.noProxy = `Separate entries with commas; not valid: ${badNoProxy.join(', ')}`;
+    const repo = normalizeRepo(f.managerReleaseRepo);
+    if (repo && !REPO_RE.test(repo)) e.managerReleaseRepo = 'Use the GitHub “owner/repository” form, e.g. contoso/caddy-proxy-manager.';
     return e;
   };
   const errors = submitted ? validate(form) : {};
@@ -388,7 +379,16 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
     setSubmitted(true);
     if (Object.keys(validate(form)).length) return;
     try {
-      await save.mutateAsync({ ...form, outboundProxy: form.outboundProxy?.trim() || null });
+      await save.mutateAsync({
+        ...form,
+        outboundProxy: form.outboundProxy?.trim() || null,
+        noProxy: (form.noProxy ?? '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .join(','),
+        managerReleaseRepo: normalizeRepo(form.managerReleaseRepo) || null,
+      });
       toast.success('Update settings saved');
     } catch (err) {
       feedback.failed(err);
@@ -426,9 +426,46 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
               ]}
             />
           </FormSection>
-          <FormSection title="Outbound proxy" description="Used for downloads from GitHub and caddyserver.com and for update checks. ACME traffic from Caddy itself is not affected.">
+          <FormSection title="Outbound proxy" description="Used by the manager for downloads from GitHub and caddyserver.com and for update checks. Optionally also given to Caddy for ACME and DNS-provider API calls.">
             <Field label="Proxy URL" error={errors.outboundProxy} hint="Leave empty for a direct connection.">
               <Input mono placeholder="http://proxy.corp.local:8080" value={form.outboundProxy ?? ''} onChange={(e) => set('outboundProxy', e.target.value)} />
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <SwitchField
+                label="Send Caddy’s own traffic through the proxy"
+                description="Sets HTTPS_PROXY and HTTP_PROXY in the Caddy service environment so certificates can be obtained behind a corporate proxy. Takes effect when Caddy next starts."
+                checked={form.proxyCaddyTraffic}
+                onChange={(v) => set('proxyCaddyTraffic', v)}
+                disabled={!form.outboundProxy?.trim() && !form.proxyCaddyTraffic}
+              />
+              {errors.proxyCaddyTraffic && (
+                <p className="text-xs text-danger" role="alert">
+                  {errors.proxyCaddyTraffic}
+                </p>
+              )}
+            </div>
+            {form.proxyCaddyTraffic && (
+              <Field
+                label="Bypass the proxy for (NO_PROXY)"
+                error={errors.noProxy}
+                hint="Comma-separated host names, domain suffixes (.corp.local) and CIDR ranges. Every upstream must match an entry, otherwise Caddy sends backend traffic through the proxy too."
+              >
+                <Input mono value={form.noProxy ?? ''} onChange={(e) => set('noProxy', e.target.value)} placeholder="localhost,127.0.0.1,::1,10.0.0.0/8,.corp.local" />
+              </Field>
+            )}
+          </FormSection>
+          <FormSection title="Manager updates" description="Checks a GitHub repository for new releases of Caddy Proxy Manager itself and shows a notice on the dashboard. Updating the manager is done with the installer.">
+            <Field
+              label="Release repository"
+              error={errors.managerReleaseRepo}
+              hint={
+                <>
+                  GitHub <span className="mono">owner/repository</span>. Leave empty to disable the check.
+                  {versionText && <> Installed: <span className="mono">{versionText}</span>.</>}
+                </>
+              }
+            >
+              <Input mono placeholder="contoso/caddy-proxy-manager" value={form.managerReleaseRepo ?? ''} onChange={(e) => set('managerReleaseRepo', e.target.value)} />
             </Field>
           </FormSection>
         </fieldset>
@@ -515,6 +552,7 @@ function UiForm({ settings, onRestartRequired }: { settings: UiSettings; onResta
         displayName: form.displayName?.trim() || null,
         httpsPfxPath: form.httpsPfxPath?.trim() || null,
         httpsPfxPassword: secretPayload(form.httpsPfxPassword),
+        redirectHttpToHttps: form.httpsEnabled && form.redirectHttpToHttps,
       });
       toast.success('Management UI settings saved');
       if (res.restartRequired) onRestartRequired(url);
@@ -560,6 +598,17 @@ function UiForm({ settings, onRestartRequired }: { settings: UiSettings; onResta
           </FormSection>
           <FormSection title="HTTPS" description="Serve the console over HTTPS. Without a PFX, a self-signed certificate is generated.">
             <SwitchField label="Enable HTTPS" checked={form.httpsEnabled} onChange={(v) => set('httpsEnabled', v)} />
+            <SwitchField
+              label="Redirect HTTP to HTTPS"
+              description={
+                form.httpsEnabled
+                  ? `Plain-HTTP requests on port ${Number.isFinite(form.port) ? form.port : 'HTTP'} are redirected to HTTPS, so sign-in cookies never travel unencrypted.`
+                  : 'Available when HTTPS is enabled.'
+              }
+              checked={form.httpsEnabled && form.redirectHttpToHttps}
+              onChange={(v) => set('redirectHttpToHttps', v)}
+              disabled={!form.httpsEnabled}
+            />
             {form.httpsEnabled && (
               <>
                 <Field label="HTTPS port" error={errors.httpsPort} className="max-w-xs">
@@ -580,102 +629,5 @@ function UiForm({ settings, onRestartRequired }: { settings: UiSettings; onResta
         </div>
       </Card>
     </form>
-  );
-}
-
-// ---------------------------------------------------------------- Backup
-
-function BackupTab() {
-  const [file, setFile] = useState<File | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [restartNeeded, setRestartNeeded] = useState(false);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const restore = useRestoreBackup();
-  const confirm = useConfirm();
-  const feedback = useFeedback();
-  const toast = useToast();
-  const inputKey = useId();
-  const [inputVersion, setInputVersion] = useState(0);
-
-  const download = async () => {
-    setDownloading(true);
-    try {
-      const stamp = new Date().toISOString().slice(0, 10);
-      await downloadFile('/api/backup', `caddy-proxy-manager-backup-${stamp}.zip`);
-    } catch (err) {
-      feedback.failed(err, { title: 'Backup failed' });
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const runRestore = async () => {
-    if (!file) {
-      setFileError('Choose a backup .zip file.');
-      return;
-    }
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      setFileError('Backups are .zip files created by this console.');
-      return;
-    }
-    const ok = await confirm({
-      title: 'Restore this backup?',
-      message:
-        'The database, certificates and Caddy configuration are replaced when the management service restarts. Changes made since the backup are lost. Secrets (SMTP password, EAB key) from another server must be re-entered.',
-      confirmLabel: 'Stage restore',
-      danger: true,
-    });
-    if (!ok) return;
-    restore.mutate(file, {
-      onSuccess: (r) => {
-        toast.success('Backup staged', 'It is applied the next time the management service starts.');
-        setRestartNeeded(r.restartRequired);
-        setFile(null);
-        setInputVersion((v) => v + 1);
-      },
-      onError: (err) => feedback.failed(err, { title: 'Restore failed' }),
-    });
-  };
-
-  return (
-    <div className="flex flex-col gap-4">
-      {restartNeeded && <RestartPanel reason="A restored backup is staged and will be applied when the management service restarts." />}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader icon={<Archive size={16} />} title="Download a backup" />
-          <CardBody className="flex flex-col gap-4">
-            <p className="text-sm text-fg-muted">
-              A zip containing the manager database, the certificate store, the current <span className="mono">caddy.json</span> and a manifest. It contains
-              private keys — store it securely.
-            </p>
-            <div>
-              <Button variant="primary" icon={<Download size={14} />} loading={downloading} onClick={() => void download()}>
-                Download backup
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardHeader icon={<Upload size={16} />} title="Restore from a backup" />
-          <CardBody className="flex flex-col gap-4">
-            <Field label="Backup file" error={fileError}>
-              <FileInput
-                key={`${inputKey}-${inputVersion}`}
-                accept=".zip,application/zip"
-                onFile={(f) => {
-                  setFile(f);
-                  setFileError(null);
-                }}
-              />
-            </Field>
-            <div>
-              <Button variant="danger" icon={<Upload size={14} />} loading={restore.isPending} onClick={() => void runRestore()} disabled={!file}>
-                Restore…
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
-      </div>
-    </div>
   );
 }

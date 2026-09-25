@@ -34,7 +34,7 @@ public sealed class WatcherAndBootTests
         env.Store.Col<SiteHost>().Insert(new SiteHost { Id = "h1", Domains = ["renew.example.com"], Tls = TlsMode.Custom, CertificateId = "c1" });
 
         var config = new CountingConfigService();
-        using var watcher = new CertificateWatcher(env.Store, config, NullLogger<CertificateWatcher>.Instance);
+        using var watcher = new CertificateWatcher(env.Store, config, TestSync.Create(env), NullLogger<CertificateWatcher>.Instance);
         Assert.False(await watcher.CheckAsync(CancellationToken.None)); // initial snapshot
         Assert.False(await watcher.CheckAsync(CancellationToken.None)); // unchanged
 
@@ -62,7 +62,7 @@ public sealed class WatcherAndBootTests
         File.WriteAllText(keyPath, TestCerts.KeyPem(first));
         env.Store.Col<Certificate>().Insert(new Certificate { Id = "c1", Name = "idle", Source = CertificateSource.FilePath, CertPath = certPath, KeyPath = keyPath });
         var config = new CountingConfigService();
-        using var watcher = new CertificateWatcher(env.Store, config, NullLogger<CertificateWatcher>.Instance);
+        using var watcher = new CertificateWatcher(env.Store, config, TestSync.Create(env), NullLogger<CertificateWatcher>.Instance);
         await watcher.CheckAsync(CancellationToken.None);
 
         File.Delete(keyPath);

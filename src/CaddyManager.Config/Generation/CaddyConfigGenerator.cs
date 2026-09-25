@@ -17,6 +17,13 @@ public static class CaddyConfigGenerator
     public const string Layer4Module = "layer4";
     public const string Layer4Plugin = "github.com/mholt/caddy-l4";
     public const string CertificateTagPrefix = "cpm-";
+    /// <summary>Module ID of the NTLM-aware reverse proxy transport.</summary>
+    public const string NtlmModule = "http.reverse_proxy.transport.http_ntlm";
+    public const string NtlmPlugin = "github.com/caddyserver/ntlm-transport";
+    /// <summary>Apps the manager generates; CaddySettings.ExtraAppsJson may not override them.</summary>
+    public static readonly string[] ReservedApps = ["http", "tls", "pki", "layer4"];
+    /// <summary>Connection policy keys the manager controls; CaddySettings.TlsConnectionPolicyJson may not set them.</summary>
+    public static readonly string[] ReservedConnectionPolicyKeys = ["match", "certificate_selection"];
     public const string AccessLoggerPrefix = "cpm_access_";
     private const string StreamsSkippedWarningMarker = "were not applied";
 
@@ -85,8 +92,8 @@ public static class CaddyConfigGenerator
         var sites = SelectSites(ctx);
 
         // ---- servers
-        var httpsRoutes = new JsonArray();
-        var httpRoutes = new JsonArray();
+        var httpsSites = new List<(Site Site, JsonObject Handler)>();
+        var httpSites = new List<(Site Site, JsonObject Handler)>();
         var accessLoggers = new SortedDictionary<string, (string Domain, SiteHost Host)>(StringComparer.Ordinal);
         var loggerNames = new SortedDictionary<string, string>(StringComparer.Ordinal);
 
@@ -99,17 +106,19 @@ public static class CaddyConfigGenerator
                 foreach (var d in site.Domains) loggerNames[d] = logger;
             }
 
-            var route = HostRoute(site, ctx);
+            var handler = HostHandler(site, ctx);
             if (site.Host.Tls == TlsMode.None)
             {
-                httpRoutes.Add(route);
+                httpSites.Add((site, handler));
             }
             else
             {
-                httpsRoutes.Add(route);
-                if (!site.Host.ForceHttps) httpRoutes.Add(route.DeepClone());
+                httpsSites.Add((site, handler));
+                if (!site.Host.ForceHttps) httpSites.Add((site, handler));
             }
         }
+        var httpsRoutes = HostRoutes(httpsSites);
+        var httpRoutes = HostRoutes(httpSites);
 
         var servers = new JsonObject();
         var httpsHosts = sites.Where(x => x.Host.Tls != TlsMode.None).ToList();
@@ -121,7 +130,7 @@ public static class CaddyConfigGenerator
                 ["listen"] = Listen(s, s.HttpsPort),
                 ["routes"] = httpsRoutes,
             };
-            var connPolicies = ConnectionPolicies(httpsHosts);
+            var connPolicies = ConnectionPolicies(httpsHosts, ctx);
             if (connPolicies is not null) srv0["tls_connection_policies"] = connPolicies;
             var autoHttps = AutomaticHttps(sites);
             if (autoHttps is not null) srv0["automatic_https"] = autoHttps;
@@ -165,6 +174,7 @@ public static class CaddyConfigGenerator
         }
         var l4 = Layer4App(ctx);
         if (l4 is not null) apps["layer4"] = l4;
+        MergeExtraApps(apps, s, ctx);
 
         // ---- logging
         var logs = ProcessLoggers(s, input.Paths, accessLoggers.Keys.Select(k => "http.log.access." + k).ToList());
@@ -285,7 +295,44 @@ public static class CaddyConfigGenerator
 
     // ------------------------------------------------------------------ per-host route
 
-    private static JsonObject HostRoute(Site site, Ctx ctx)
+    /// <summary>
+    /// Host routes in matching order. Caddy evaluates routes top to bottom and a host matcher with a wildcard also
+    /// matches names another host serves exactly, so every host's exact names are emitted first (one route per host),
+    /// then its wildcard names (one route per host and wildcard depth, more specific wildcards first). A host with
+    /// both kinds shares one built handler between its routes.
+    /// </summary>
+    private static JsonArray HostRoutes(List<(Site Site, JsonObject Handler)> items)
+    {
+        var routes = new JsonArray();
+        foreach (var (site, handler) in items)
+        {
+            var exact = site.Domains.Where(d => !IsWildcard(d)).ToList();
+            if (exact.Count > 0) routes.Add(RouteFor(exact, handler));
+        }
+        var wildcardGroups = items
+            .SelectMany(x => x.Site.Domains.Where(IsWildcard)
+                .GroupBy(LabelCount)
+                .Select(g => (Depth: g.Key, Domains: g.OrderBy(d => d, StringComparer.Ordinal).ToList(), x.Site, x.Handler)))
+            .OrderByDescending(g => g.Depth)
+            .ThenBy(g => g.Domains[0], StringComparer.Ordinal)
+            .ThenBy(g => g.Site.Host.Id, StringComparer.Ordinal);
+        foreach (var g in wildcardGroups) routes.Add(RouteFor(g.Domains, g.Handler));
+        return routes;
+
+        static JsonObject RouteFor(List<string> domains, JsonObject handler) => new()
+        {
+            ["match"] = new JsonArray(new JsonObject { ["host"] = StringArray(domains) }),
+            ["handle"] = new JsonArray(handler.DeepClone()),
+            ["terminal"] = true,
+        };
+    }
+
+    internal static bool IsWildcard(string domain) => domain.StartsWith("*.", StringComparison.Ordinal);
+
+    private static int LabelCount(string domain) => domain.Count(c => c == '.') + 1;
+
+    /// <summary>The host's subroute handler (access list, headers, compression, advanced routes, kind handler).</summary>
+    private static JsonObject HostHandler(Site site, Ctx ctx)
     {
         var h = site.Host;
         var routes = new JsonArray();
@@ -345,12 +392,7 @@ public static class CaddyConfigGenerator
                 break;
         }
 
-        return new JsonObject
-        {
-            ["match"] = new JsonArray(new JsonObject { ["host"] = StringArray(site.Domains) }),
-            ["handle"] = new JsonArray(new JsonObject { ["handler"] = "subroute", ["routes"] = routes }),
-            ["terminal"] = true,
-        };
+        return new JsonObject { ["handler"] = "subroute", ["routes"] = routes };
     }
 
     private static JsonObject Forbidden() => new()
@@ -546,6 +588,16 @@ public static class CaddyConfigGenerator
                 ctx.Warn($"Host '{label}': advanced routes must be a JSON array; they were ignored.");
                 return [];
             }
+            if (ctx.Input.EndpointGuard is { } guard)
+            {
+                var problems = new List<string>();
+                guard.CheckNode(arr, problems);
+                if (problems.Count > 0)
+                {
+                    ctx.Warn($"Host '{label}': the advanced routes were ignored because a reverse_proxy in them targets a protected endpoint: {problems[0]}");
+                    return [];
+                }
+            }
             var list = new List<JsonNode>();
             foreach (var item in arr)
             {
@@ -630,6 +682,11 @@ public static class CaddyConfigGenerator
                 ctx.Warn($"{label}: invalid upstream '{u.Host}:{u.Port}' was ignored.");
                 continue;
             }
+            if (ctx.Input.EndpointGuard?.Check(u.Host, u.Port) is { } problem)
+            {
+                ctx.Warn($"{label}: upstream ignored: {problem}");
+                continue;
+            }
             list.Add(u);
         }
         return list;
@@ -651,13 +708,20 @@ public static class CaddyConfigGenerator
         if (reqJson is not null) rp["headers"] = new JsonObject { ["request"] = reqJson };
 
         var https = upstreams.Any(u => u.Scheme == UpstreamScheme.Https);
-        if (https)
+        var ntlm = h.UpstreamNtlm && NtlmAvailable(label, ctx);
+        if (https || ntlm)
         {
-            if (upstreams.Any(u => u.Scheme == UpstreamScheme.Http))
-                ctx.Warn($"Host '{label}': upstreams mix http and https; Caddy uses one transport per proxy, so all are contacted over HTTPS.");
-            var tls = new JsonObject();
-            if (insecure) tls["insecure_skip_verify"] = true;
-            rp["transport"] = new JsonObject { ["protocol"] = "http", ["tls"] = tls };
+            // http_ntlm embeds the standard HTTP transport, so tls options sit at the same level.
+            var transport = new JsonObject { ["protocol"] = ntlm ? "http_ntlm" : "http" };
+            if (https)
+            {
+                if (upstreams.Any(u => u.Scheme == UpstreamScheme.Http))
+                    ctx.Warn($"Host '{label}': upstreams mix http and https; Caddy uses one transport per proxy, so all are contacted over HTTPS.");
+                var tls = new JsonObject();
+                if (insecure) tls["insecure_skip_verify"] = true;
+                transport["tls"] = tls;
+            }
+            rp["transport"] = transport;
         }
 
         if (upstreams.Count > 1 || h.LoadBalancing != LoadBalancingPolicy.RoundRobin)
@@ -689,6 +753,17 @@ public static class CaddyConfigGenerator
         foreach (var u in upstreams) ups.Add(new JsonObject { ["dial"] = NetUtil.HostPort(u.Host, u.Port) });
         rp["upstreams"] = ups;
         return rp;
+    }
+
+    /// <summary>True when the installed binary has the http_ntlm transport; otherwise warns (the flag is skipped).</summary>
+    private static bool NtlmAvailable(string label, Ctx ctx)
+    {
+        var modules = ctx.Input.InstalledModules;
+        if (modules is not null && modules.Contains(NtlmModule, StringComparer.Ordinal)) return true;
+        ctx.Warn(modules is null
+            ? $"Host '{label}': Windows authentication (NTLM) pass-through needs Caddy's http_ntlm transport, but the modules of the Caddy binary are unknown (is Caddy installed?), so the host is proxied with the standard transport and NTLM/Negotiate logins will fail. Install Caddy with the plugin '{NtlmPlugin}' (Caddy > Plugins)."
+            : $"Host '{label}': Windows authentication (NTLM) pass-through needs Caddy's http_ntlm transport, which the installed Caddy binary does not include, so the host is proxied with the standard transport and NTLM/Negotiate logins will fail. Add the plugin '{NtlmPlugin}' under Caddy > Plugins and rebuild Caddy.");
+        return false;
     }
 
     public static string PolicyName(LoadBalancingPolicy p) => p switch
@@ -839,21 +914,55 @@ public static class CaddyConfigGenerator
         }
     }
 
-    private static JsonArray? ConnectionPolicies(List<Site> httpsSites)
+    /// <summary>
+    /// SNI-specific policies for custom certificates — exact names first, then wildcards (more specific first) — and a
+    /// final catch-all. CaddySettings.TlsConnectionPolicyJson is merged into every policy, the catch-all included.
+    /// </summary>
+    private static JsonArray? ConnectionPolicies(List<Site> httpsSites, Ctx ctx)
     {
+        var extra = ConnectionPolicyExtra(ctx);
         var custom = httpsSites.Where(x => x.Host.Tls == TlsMode.Custom && x.Certificate is not null).ToList();
-        if (custom.Count == 0) return null;
+        if (custom.Count == 0 && extra is null) return null;
         var arr = new JsonArray();
         foreach (var site in custom)
         {
-            arr.Add(new JsonObject
-            {
-                ["match"] = new JsonObject { ["sni"] = StringArray(site.Domains) },
-                ["certificate_selection"] = new JsonObject { ["any_tag"] = new JsonArray(CertificateTagPrefix + site.Certificate!.Id) },
-            });
+            var exact = site.Domains.Where(d => !IsWildcard(d)).ToList();
+            if (exact.Count > 0) arr.Add(SniPolicy(exact, site.Certificate!));
         }
+        var wildcardGroups = custom
+            .SelectMany(site => site.Domains.Where(IsWildcard).GroupBy(LabelCount)
+                .Select(g => (Depth: g.Key, Domains: g.OrderBy(d => d, StringComparer.Ordinal).ToList(), Site: site)))
+            .OrderByDescending(g => g.Depth)
+            .ThenBy(g => g.Domains[0], StringComparer.Ordinal)
+            .ThenBy(g => g.Site.Host.Id, StringComparer.Ordinal);
+        foreach (var g in wildcardGroups) arr.Add(SniPolicy(g.Domains, g.Site.Certificate!));
         arr.Add(new JsonObject());
+        if (extra is not null)
+            foreach (var policy in arr) CaddyJson.DeepMerge(policy!.AsObject(), extra);
         return arr;
+
+        static JsonObject SniPolicy(List<string> domains, Certificate cert) => new()
+        {
+            ["match"] = new JsonObject { ["sni"] = StringArray(domains) },
+            ["certificate_selection"] = new JsonObject { ["any_tag"] = new JsonArray(CertificateTagPrefix + cert.Id) },
+        };
+    }
+
+    private static JsonObject? ConnectionPolicyExtra(Ctx ctx)
+    {
+        var extra = CaddyJson.ParseObject(ctx.Input.Settings.TlsConnectionPolicyJson, out var error);
+        if (error is not null)
+        {
+            ctx.Warn($"The TLS connection policy JSON {error}; it was ignored.");
+            return null;
+        }
+        if (extra is null) return null;
+        foreach (var key in ReservedConnectionPolicyKeys)
+        {
+            if (extra.Remove(key))
+                ctx.Warn($"TLS connection policy option '{key}' is managed by Caddy Proxy Manager and was ignored.");
+        }
+        return extra.Count == 0 ? null : extra;
     }
 
     private static JsonObject? AutomaticHttps(List<Site> sites)
@@ -907,19 +1016,51 @@ public static class CaddyConfigGenerator
         }
         if (acmeDomains.Count > 0)
         {
-            foreach (var w in acmeDomains.Where(d => d.StartsWith("*.", StringComparison.Ordinal)))
-                ctx.Warn($"'{w}': wildcard certificates from a public ACME CA need the DNS challenge, which requires a DNS provider plugin and custom configuration. Use Internal or Custom TLS for wildcards, or expect issuance to fail.");
-            if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge)
-                ctx.Warn("Both the HTTP and TLS-ALPN ACME challenges are disabled; public certificates cannot be obtained.");
+            var issuerExtra = AcmeIssuerExtra(ctx);
+            var dnsProvider = DnsProviderName(issuerExtra, out var hasDnsChallenge);
+            if (!hasDnsChallenge)
+            {
+                foreach (var w in acmeDomains.Where(IsWildcard))
+                    ctx.Warn($"'{w}': wildcard certificates from a public ACME CA need the DNS challenge, which requires a DNS provider plugin (caddy-dns) and its settings in the ACME issuer JSON under Settings > Caddy. Use Internal or Custom TLS for wildcards, or expect issuance to fail.");
+                if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge)
+                    ctx.Warn("Both the HTTP and TLS-ALPN ACME challenges are disabled and no DNS challenge is configured; public certificates cannot be obtained.");
+            }
+            if (dnsProvider is not null && ctx.Input.InstalledModules is { } modules && !modules.Contains("dns.providers." + dnsProvider, StringComparer.Ordinal))
+                ctx.Warn($"The ACME issuer JSON uses the DNS provider '{dnsProvider}', but the installed Caddy binary does not include the module 'dns.providers.{dnsProvider}'. Add the matching caddy-dns plugin (e.g. github.com/caddy-dns/{dnsProvider}) under Caddy > Plugins and rebuild Caddy.");
+            var issuers = AcmeIssuers(s, ctx);
+            if (issuerExtra is not null)
+                foreach (var iss in issuers) CaddyJson.DeepMerge(iss!.AsObject(), issuerExtra);
             policies.Add(new JsonObject
             {
                 ["subjects"] = StringArray(acmeDomains),
-                ["issuers"] = AcmeIssuers(s, ctx),
+                ["issuers"] = issuers,
             });
         }
         if (policies.Count > 0) tls["automation"] = new JsonObject { ["policies"] = policies };
 
         return tls.Count == 0 ? null : tls;
+    }
+
+    private static JsonObject? AcmeIssuerExtra(Ctx ctx)
+    {
+        var extra = CaddyJson.ParseObject(ctx.Input.AcmeIssuerJson, out var error);
+        if (error is not null)
+        {
+            ctx.Warn($"The ACME issuer JSON {error}; it was ignored.");
+            return null;
+        }
+        if (extra is null) return null;
+        if (extra.Remove("module")) ctx.Warn("ACME issuer option 'module' is managed by Caddy Proxy Manager and was ignored.");
+        return extra.Count == 0 ? null : extra;
+    }
+
+    /// <summary>The DNS provider module name configured in the ACME issuer JSON (challenges.dns.provider.name).</summary>
+    internal static string? DnsProviderName(JsonObject? issuerExtra, out bool hasDnsChallenge)
+    {
+        hasDnsChallenge = issuerExtra?["challenges"]?["dns"] is JsonObject;
+        return issuerExtra?["challenges"]?["dns"]?["provider"]?["name"] is JsonValue v && v.GetValueKind() == JsonValueKind.String
+            ? v.GetValue<string>().Trim()
+            : null;
     }
 
     private static JsonArray AcmeIssuers(CaddySettings s, Ctx ctx)
@@ -1003,6 +1144,11 @@ public static class CaddyConfigGenerator
                 continue;
             }
             var proto = st.Protocol == StreamProtocol.Udp ? "udp" : "tcp";
+            if (ctx.Input.EndpointGuard?.Check(st.UpstreamHost, st.UpstreamPort) is { } problem)
+            {
+                ctx.Warn($"Stream {proto}/{st.ListenPort} was skipped: {problem}");
+                continue;
+            }
             var listen = binds.Count == 0
                 ? new JsonArray($"{proto}/:{st.ListenPort}")
                 : StringArray(binds.Select(b => $"{proto}/{NetUtil.ListenAddress(b, st.ListenPort)}"));
@@ -1023,6 +1169,33 @@ public static class CaddyConfigGenerator
             };
         }
         return servers.Count == 0 ? null : new JsonObject { ["servers"] = servers };
+    }
+
+    // ------------------------------------------------------------------ extra apps
+
+    private static void MergeExtraApps(JsonObject apps, CaddySettings s, Ctx ctx)
+    {
+        var extra = CaddyJson.ParseObject(s.ExtraAppsJson, out var error);
+        if (error is not null)
+        {
+            ctx.Warn($"The extra apps JSON {error}; it was ignored.");
+            return;
+        }
+        if (extra is null) return;
+        foreach (var (name, value) in extra)
+        {
+            if (ReservedApps.Contains(name, StringComparer.Ordinal))
+            {
+                ctx.Warn($"Extra app '{name}' is generated by Caddy Proxy Manager and cannot be overridden; it was ignored.");
+                continue;
+            }
+            if (value is not JsonObject)
+            {
+                ctx.Warn($"Extra app '{name}' must be a JSON object; it was ignored.");
+                continue;
+            }
+            apps[name] = value.DeepClone();
+        }
     }
 
     // ------------------------------------------------------------------ shared pieces

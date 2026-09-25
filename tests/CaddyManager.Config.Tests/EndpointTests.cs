@@ -39,7 +39,7 @@ public sealed class ApiHost : IAsyncDisposable
     public RecordingAuditLog Audit { get; } = new();
     public RecordingEventSink Events { get; } = new();
 
-    private ApiHost(bool installBinary)
+    private ApiHost(bool installBinary, Action<IServiceCollection>? configure)
     {
         if (installBinary) ConfigServices.InstallBinary(Env.Paths);
         // Keep the admin API pointed at a port where nothing listens.
@@ -53,6 +53,7 @@ public sealed class ApiHost : IAsyncDisposable
         builder.Services.AddProblemDetails();
         builder.Services.AddSingleton<IAuditLog>(Audit);
         builder.Services.AddSingleton<IEventSink>(Events);
+        configure?.Invoke(builder.Services);
         builder.Services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", null);
         builder.Services.AddAuthorization(o =>
         {
@@ -68,7 +69,7 @@ public sealed class ApiHost : IAsyncDisposable
         Client = App.GetTestClient();
     }
 
-    public static ApiHost Start(bool installBinary = false) => new(installBinary);
+    public static ApiHost Start(bool installBinary = false, Action<IServiceCollection>? configure = null) => new(installBinary, configure);
 
     public IStore Store => Env.Store;
 
@@ -78,6 +79,14 @@ public sealed class ApiHost : IAsyncDisposable
         await App.StopAsync();
         await App.DisposeAsync();
         Env.Dispose();
+    }
+}
+
+internal sealed class DirCleanup(string dir) : IDisposable
+{
+    public void Dispose()
+    {
+        try { Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 }
 
@@ -231,7 +240,7 @@ public sealed class EndpointTests
             advancedRoutesJson = """[{"handle":[{"handler":"not_a_real_handler"}]}]""",
         };
         var rejected = await c.PostAsJsonAsync("/api/hosts", badHost, Json);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejected.StatusCode);
+        Assert.True(rejected.StatusCode == HttpStatusCode.UnprocessableEntity, await rejected.Content.ReadAsStringAsync());
         Assert.Contains("not_a_real_handler", (await Body(rejected))["detail"]!.GetValue<string>());
         Assert.Single(api.Store.Col<SiteHost>().FindAll());
 
@@ -239,7 +248,7 @@ public sealed class EndpointTests
         var badPut = await c.PutAsJsonAsync($"/api/hosts/{id}", new
         {
             kind = "proxy", domains = new[] { "keep.example.com" }, tls = "none",
-            upstreams = new[] { new { host = "127.0.0.1", port = 81 } },
+            upstreams = new[] { new { host = "127.0.0.1", port = 8081 } }, // not 81: that is the manager UI port (refused)
             advancedRoutesJson = """[{"handle":[{"handler":"not_a_real_handler"}]}]""",
         }, Json);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, badPut.StatusCode);
@@ -429,9 +438,10 @@ public sealed class EndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, mismatch.StatusCode);
         Assert.Contains("does not match", (await Body(mismatch))["detail"]!.GetValue<string>());
 
-        // file path
-        var dir = Path.Combine(api.Env.Dir, "external");
+        // file path (outside the data folder: certificate files may only be referenced there inside the certificate store)
+        var dir = Path.Combine(Path.GetTempPath(), "cpm-config-tests-external", Guid.NewGuid().ToString("N")[..10]);
         Directory.CreateDirectory(dir);
+        using var cleanup = new DirCleanup(dir);
         File.WriteAllText(Path.Combine(dir, "c.pem"), cert.ExportCertificatePem());
         File.WriteAllText(Path.Combine(dir, "k.pem"), TestCerts.KeyPem(cert));
         var byPath = await c.PostAsJsonAsync("/api/certificates/path", new { name = "OnDisk", certPath = Path.Combine(dir, "c.pem"), keyPath = Path.Combine(dir, "k.pem") }, Json);

@@ -20,13 +20,14 @@ internal sealed record Notification(
     string? Details = null);
 
 /// <summary>
-/// Delivers notifications via SMTP (MailKit) and a generic JSON webhook (Slack/Teams compatible "text").
-/// Returns per-channel error messages instead of throwing.
+/// Delivers notifications via SMTP (MailKit; password or Microsoft 365 OAuth2 client-credentials authentication) and a
+/// webhook (generic JSON, Slack or Teams Workflows Adaptive Card). Returns per-channel error messages instead of throwing.
 /// </summary>
 internal sealed class Notifier(
     IStore store,
     ISecretProtector secrets,
     IHttpClientFactory httpFactory,
+    OAuthTokenProvider oauth,
     ILogger<Notifier> logger) : INotifier
 {
     private static readonly TimeSpan ChannelTimeout = TimeSpan.FromSeconds(30);
@@ -75,7 +76,7 @@ internal sealed class Notifier(
         {
             try
             {
-                await SendWebhookAsync(n, s.WebhookUrl!, server, uiUrl, ct);
+                await SendWebhookAsync(n, s.WebhookUrl!, s.WebhookFormat, server, uiUrl, ct);
                 logger.LogInformation("Webhook notification sent: {Title}", n.Title);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -116,27 +117,46 @@ internal sealed class Notifier(
             SmtpSecurity.SslOnConnect => SecureSocketOptions.SslOnConnect,
             _ => SecureSocketOptions.Auto,
         };
-        await client.ConnectAsync(s.SmtpHost.Trim(), s.SmtpPort, security, timeout.Token);
-        if (!string.IsNullOrWhiteSpace(s.SmtpUsername))
+        // Fetch the OAuth token before connecting so an Entra ID problem is reported as such.
+        string? token = null;
+        if (s.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials)
         {
-            var password = string.IsNullOrEmpty(s.SmtpPasswordProtected) ? "" : secrets.Unprotect(s.SmtpPasswordProtected);
-            await client.AuthenticateAsync(s.SmtpUsername.Trim(), password, timeout.Token);
+            if (string.IsNullOrWhiteSpace(s.SmtpUsername))
+                throw new InvalidOperationException("OAuth2 needs the sending mailbox in 'SMTP username' (e.g. alerts@contoso.com).");
+            if (string.IsNullOrWhiteSpace(s.OAuthTenantId) || string.IsNullOrWhiteSpace(s.OAuthClientId) || string.IsNullOrEmpty(s.OAuthClientSecretProtected))
+                throw new InvalidOperationException("OAuth2 needs the tenant ID, client ID and client secret of the Entra ID app registration.");
+            token = await oauth.GetTokenAsync(s.OAuthTenantId, s.OAuthClientId, secrets.Unprotect(s.OAuthClientSecretProtected), timeout.Token);
+        }
+
+        await client.ConnectAsync(s.SmtpHost.Trim(), s.SmtpPort, security, timeout.Token);
+        switch (s.SmtpAuth)
+        {
+            case SmtpAuthMode.OAuth2ClientCredentials:
+                try
+                {
+                    await client.AuthenticateAsync(new SaslMechanismOAuth2(s.SmtpUsername!.Trim(), token!), timeout.Token);
+                }
+                catch (AuthenticationException ex)
+                {
+                    oauth.Invalidate();
+                    throw new InvalidOperationException(
+                        $"The SMTP server rejected the OAuth2 token for {s.SmtpUsername!.Trim()} ({ex.Message.TrimEnd('.')}). In Exchange Online: register the app's " +
+                        "service principal (New-ServicePrincipal), grant it FullAccess to the mailbox (Add-MailboxPermission) and make sure SMTP AUTH is " +
+                        "enabled for the mailbox (Set-CASMailbox -SmtpClientAuthenticationDisabled $false).", ex);
+                }
+                break;
+            case SmtpAuthMode.Password when !string.IsNullOrWhiteSpace(s.SmtpUsername):
+                var password = string.IsNullOrEmpty(s.SmtpPasswordProtected) ? "" : secrets.Unprotect(s.SmtpPasswordProtected);
+                await client.AuthenticateAsync(s.SmtpUsername.Trim(), password, timeout.Token);
+                break;
         }
         await client.SendAsync(message, timeout.Token);
         await client.DisconnectAsync(true, timeout.Token);
     }
 
-    private async Task SendWebhookAsync(Notification n, string url, string server, string? uiUrl, CancellationToken ct)
+    private async Task SendWebhookAsync(Notification n, string url, WebhookFormat format, string server, string? uiUrl, CancellationToken ct)
     {
-        var payload = new
-        {
-            title = n.Title,
-            text = NotificationFormatter.WebhookText(n, server, uiUrl),
-            severity = n.Severity,
-            category = n.Category,
-            server,
-            time = n.TimeUtc.ToString("O"),
-        };
+        var payload = WebhookPayloads.Build(format, n, server, uiUrl);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ChannelTimeout);
         var http = httpFactory.CreateClient("default");

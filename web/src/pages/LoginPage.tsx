@@ -31,7 +31,7 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     if (!email.trim() || !password) {
-      setError('Enter your e-mail address and password.');
+      setError('Enter your e-mail address or user name and your password.');
       return;
     }
     login.mutate(
@@ -39,7 +39,9 @@ export default function LoginPage() {
       {
         onSuccess: () => navigate(next, { replace: true }),
         onError: (err) => {
-          if (err instanceof ApiError && err.status === 401) setError('The e-mail address or password is incorrect.');
+          if (err instanceof ApiError && err.status === 401) setError('The user name or password is incorrect.');
+          else if (err instanceof ApiError && err.status === 403)
+            setError(err.detail ?? 'Your account is not authorised to use this console. Ask an administrator to add you to a mapped directory group.');
           else if (err instanceof ApiError && err.status === 429)
             setError('Too many sign-in attempts. Wait a minute before trying again.');
           else setError(errorMessage(err));
@@ -51,7 +53,7 @@ export default function LoginPage() {
   return (
     <AuthLayout
       title="Sign in"
-      description="Use your Caddy Proxy Manager account."
+      description="Use your Caddy Proxy Manager account or, when directory sign-in is enabled, your domain account."
       footer={
         <>
           Forgot the admin password? On the server, in an elevated prompt run{' '}
@@ -61,9 +63,12 @@ export default function LoginPage() {
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         {error && <Callout tone="danger">{error}</Callout>}
-        <Field label="E-mail">
+        <Field label="E-mail or user name" hint="Use your e-mail, or DOMAIN\user when directory sign-in is enabled.">
           <Input
-            type="email"
+            type="text"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}

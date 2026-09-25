@@ -23,6 +23,7 @@ public static class PlatformModule
         services.AddSingleton<CaddyBinaryManager>();
         services.AddSingleton<ICaddyBinaryManager>(sp => sp.GetRequiredService<CaddyBinaryManager>());
         services.AddSingleton<ICaddyHost>(CreateHost);
+        services.AddSingleton<CaddyEnvironmentSync>();
         services.AddSingleton<PowerShellRunner>();
         services.AddSingleton<ReadinessService>();
         services.AddSingleton<IReadinessService>(sp => sp.GetRequiredService<ReadinessService>());

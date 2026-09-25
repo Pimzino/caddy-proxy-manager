@@ -28,6 +28,14 @@ public sealed class OpsOptions
     public int EventRetentionDays { get; set; } = 90;
     public int AuditRetentionDays { get; set; } = 365;
 
+    /// <summary>How often the scheduled-backup service checks whether the daily backup is due.</summary>
+    public TimeSpan BackupCheckInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>An enabled ACME/internal host without a certificate this long after its last change raises "cert-missing".</summary>
+    public TimeSpan CertificateMissingGrace { get; set; } = TimeSpan.FromMinutes(10);
+    /// <summary>How often hosts are compared with the certificate inventory for missing certificates.</summary>
+    public TimeSpan CertificateMissingInterval { get; set; } = TimeSpan.FromMinutes(5);
+
     /// <summary>Upper bound for each independent part of GET /api/dashboard.</summary>
     public TimeSpan DashboardPartTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }

@@ -38,7 +38,7 @@ public sealed class TestApp : IAsyncDisposable
     private readonly bool _ownsDataDir;
 
     private TestApp(Action<OpsOptions>? configure, bool fakeNotifier, ManualTimeProvider? time, bool registerFakes, string? dataDir,
-        Action<WebApplication>? mapExtra)
+        Action<WebApplication>? mapExtra, Action<IServiceCollection>? services, Action<WebApplication>? pipeline)
     {
         _ownsDataDir = dataDir is null;
         DataDir = dataDir ?? Path.Combine(Path.GetTempPath(), "cpm-ops-tests", Guid.NewGuid().ToString("N"));
@@ -73,8 +73,11 @@ public sealed class TestApp : IAsyncDisposable
             builder.Services.AddSingleton<ICaddyAdminClient>(Admin);
         }
 
+        services?.Invoke(builder.Services);
+
         App = builder.Build();
         App.UseExceptionHandler();
+        pipeline?.Invoke(App);
         App.UseAuthentication();
         App.UseAuthorization();
         App.MapCoreEndpoints();
@@ -83,20 +86,22 @@ public sealed class TestApp : IAsyncDisposable
     }
 
     public static async Task<TestApp> StartAsync(Action<OpsOptions>? configure = null, bool fakeNotifier = true,
-        ManualTimeProvider? time = null, bool registerFakes = true, string? dataDir = null, Action<WebApplication>? mapExtra = null)
+        ManualTimeProvider? time = null, bool registerFakes = true, string? dataDir = null, Action<WebApplication>? mapExtra = null,
+        Action<IServiceCollection>? services = null, Action<WebApplication>? pipeline = null)
     {
-        var app = new TestApp(configure, fakeNotifier, time, registerFakes, dataDir, mapExtra);
+        var app = new TestApp(configure, fakeNotifier, time, registerFakes, dataDir, mapExtra, services, pipeline);
         await app.App.StartAsync();
         return app;
     }
 
     /// <summary>HTTP client with a cookie jar; sends the CSRF header unless told not to.</summary>
-    public HttpClient Client(bool csrfHeader = true, string? remoteIp = null, CookieContainer? jar = null)
+    public HttpClient Client(bool csrfHeader = true, string? remoteIp = null, CookieContainer? jar = null, bool https = false)
     {
         var server = App.GetTestServer();
         HttpMessageHandler inner = server.CreateHandler(ctx =>
         {
             if (remoteIp is not null) ctx.Connection.RemoteIpAddress = IPAddress.Parse(remoteIp);
+            if (https) ctx.Request.Scheme = "https";
         });
         var client = new HttpClient(new CookieHandler(jar ?? new CookieContainer()) { InnerHandler = inner })
         {

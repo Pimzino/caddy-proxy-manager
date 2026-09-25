@@ -5,10 +5,19 @@ using System.Text;
 
 namespace CaddyManager.Ops.Tests;
 
-/// <summary>Minimal plain-text SMTP server (EHLO/MAIL/RCPT/DATA/QUIT) capturing received messages.</summary>
+/// <summary>
+/// Minimal plain-text SMTP server (EHLO/MAIL/RCPT/DATA/QUIT) capturing received messages. With
+/// <c>oauth: true</c> it advertises AUTH XOAUTH2 and records the decoded SASL initial responses.
+/// </summary>
 public sealed class SmtpTestServer : IAsyncDisposable
 {
     public sealed record Received(string From, List<string> To, string Data);
+
+    private readonly bool _oauth;
+    /// <summary>Decoded XOAUTH2 initial responses ("user=...^Aauth=Bearer ...^A^A").</summary>
+    public ConcurrentQueue<string> AuthAttempts { get; } = new();
+    /// <summary>When set, only this bearer token is accepted.</summary>
+    public string? AcceptToken { get; set; }
 
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly CancellationTokenSource _cts = new();
@@ -16,8 +25,9 @@ public sealed class SmtpTestServer : IAsyncDisposable
     public ConcurrentQueue<Received> Messages { get; } = new();
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
-    public SmtpTestServer()
+    public SmtpTestServer(bool oauth = false)
     {
+        _oauth = oauth;
         _listener.Start();
         _loop = Task.Run(AcceptLoop);
     }
@@ -51,7 +61,17 @@ public sealed class SmtpTestServer : IAsyncDisposable
             {
                 case "EHLO":
                     await writer.WriteLineAsync("250-localhost");
+                    if (_oauth) await writer.WriteLineAsync("250-AUTH XOAUTH2");
                     await writer.WriteLineAsync("250 8BITMIME");
+                    break;
+                case "AUTH":
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var decoded = parts.Length >= 3 ? Encoding.UTF8.GetString(Convert.FromBase64String(parts[2])) : "";
+                    AuthAttempts.Enqueue(decoded);
+                    if (AcceptToken is null || decoded.Contains("auth=Bearer " + AcceptToken + "\x01", StringComparison.Ordinal))
+                        await writer.WriteLineAsync("235 2.7.0 Authentication successful");
+                    else
+                        await writer.WriteLineAsync("535 5.7.3 Authentication unsuccessful");
                     break;
                 case "HELO":
                     await writer.WriteLineAsync("250 localhost");

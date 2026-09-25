@@ -138,7 +138,9 @@ public sealed class CertificateTests : IDisposable
         File.WriteAllText(certPath, cert.ExportCertificatePem());
         File.WriteAllText(keyPath, TestCerts.KeyPem(cert));
         Assert.Equal(["file.example.com"], CertificateParser.FromFiles(certPath, keyPath).Metadata.Subjects);
-        Assert.Contains("not found", Assert.Throws<CertificateImportException>(() => CertificateParser.FromFiles(certPath + ".missing", keyPath)).Message);
+        // Generic message: the endpoint must not reveal whether a file exists.
+        Assert.Contains("cannot be read", Assert.Throws<CertificateImportException>(() => CertificateParser.FromFiles(certPath + ".missing", keyPath)).Message);
+        Assert.Contains("cannot be read", Assert.Throws<CertificateImportException>(() => CertificateParser.FromFiles(_env.Dir, keyPath)).Message);
         Assert.Contains("absolute", Assert.Throws<CertificateImportException>(() => CertificateParser.FromFiles("relative.pem", keyPath)).Message);
     }
 

@@ -1,6 +1,7 @@
 using CaddyManager.Core;
 using CaddyManager.Ops.Audit;
 using CaddyManager.Ops.Auth;
+using CaddyManager.Ops.Auth.Ldap;
 using CaddyManager.Ops.Backup;
 using CaddyManager.Ops.Dashboard;
 using CaddyManager.Ops.Events;
@@ -27,10 +28,14 @@ public static class OpsModule
         services.AddSingleton<ICurrentUser, CurrentUser>();
         services.AddSingleton<UserSnapshotCache>();
         services.AddSingleton<SetupState>();
+        services.AddSingleton<ILdapConnector, LdapConnector>();
+        services.AddSingleton<LdapAuthenticator>();
+        services.AddSingleton<LdapSignIn>();
 
         // Audit, events and notifications.
         services.AddSingleton<IAuditLog, AuditLog>();
         services.AddSingleton<IEventLogWriter, WindowsEventLogWriter>();
+        services.AddSingleton<OAuthTokenProvider>();
         services.AddSingleton<INotifier, Notifier>();
         services.AddSingleton<EventSink>();
         services.AddSingleton<IEventSink>(sp => sp.GetRequiredService<EventSink>());
@@ -38,18 +43,22 @@ public static class OpsModule
 
         services.AddSingleton<DashboardBuilder>();
         services.AddSingleton<BackupService>();
+        services.AddSingleton<ScheduledBackups>();
+        services.AddSingleton<ScheduledBackupService>();
 
         services.AddHostedService<OpsStartupService>();
         services.AddSingleton<MonitorService>();
         services.AddSingleton<RetentionService>();
         services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(MonitorService)));
         services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(RetentionService)));
+        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(ScheduledBackupService)));
         return services;
     }
 
     public static IEndpointRouteBuilder MapOpsEndpoints(this IEndpointRouteBuilder app)
     {
         AuthEndpoints.Map(app);
+        LdapEndpoints.Map(app);
         AuditEventEndpoints.Map(app);
         DashboardEndpoints.Map(app);
         SettingsEndpoints.Map(app);

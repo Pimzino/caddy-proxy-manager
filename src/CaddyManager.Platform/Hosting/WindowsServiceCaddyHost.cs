@@ -4,6 +4,7 @@ using System.ServiceProcess;
 using TimeoutException = System.TimeoutException;
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
+using CaddyManager.Core.Models;
 using CaddyManager.Platform.Windows;
 using Microsoft.Extensions.Logging;
 
@@ -28,7 +29,8 @@ public sealed class WindowsServiceCaddyHost(AppPaths paths, CaddyHostSupport sup
 
     public string HostMode => Mode;
 
-    public static ServiceDefinition Definition(AppPaths paths) => new()
+    /// <summary>Desired service configuration; the environment includes the proxy variables when Caddy should use the proxy.</summary>
+    public static ServiceDefinition Definition(AppPaths paths, BinarySettings? binary = null) => new()
     {
         Name = AppPaths.CaddyServiceName,
         DisplayName = DisplayName,
@@ -37,7 +39,7 @@ public sealed class WindowsServiceCaddyHost(AppPaths paths, CaddyHostSupport sup
         StartType = "auto",
         RestartDelaysMs = [5000, 5000, 30000],
         FailureResetSeconds = 86400,
-        Environment = CaddyHostSupport.CaddyEnvironment(paths).Select(kv => $"{kv.Key}={kv.Value}").ToList(),
+        Environment = CaddyHostSupport.CaddyEnvironment(paths, binary).Select(kv => $"{kv.Key}={kv.Value}").ToList(),
     };
 
     public async Task<CaddyStatus> GetStatusAsync(CancellationToken ct = default)
@@ -121,14 +123,35 @@ public sealed class WindowsServiceCaddyHost(AppPaths paths, CaddyHostSupport sup
         }
     }
 
-    private async Task InstallCoreAsync(CancellationToken ct)
+    /// <summary>
+    /// Registers or repairs the service like <see cref="InstallServiceAsync"/> and returns the changes made. A change of the
+    /// environment only takes effect when the service restarts; callers restart Caddy when it is running.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> RepairServiceAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            return await InstallCoreAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Prefix of the change message WindowsServiceManager reports when the Environment value was rewritten.</summary>
+    public static bool IsEnvironmentChange(string change) => change.StartsWith("Updated environment", StringComparison.Ordinal);
+
+    private async Task<List<string>> InstallCoreAsync(CancellationToken ct)
     {
         if (!File.Exists(paths.CaddyExe))
             throw new InvalidOperationException($"The Caddy binary is not installed yet ({paths.CaddyExe}). Install Caddy first, then register the service.");
         support.EnsureDirectories();
         support.EnsureBootConfig();
-        var changes = await WindowsServiceManager.CreateOrRepairAsync(Definition(paths), ct);
+        var changes = await WindowsServiceManager.CreateOrRepairAsync(Definition(paths, support.BinarySettings), ct);
         foreach (var c in changes) logger.LogInformation("{Change}", c);
+        return changes;
     }
 
     public async Task UninstallServiceAsync(CancellationToken ct = default)

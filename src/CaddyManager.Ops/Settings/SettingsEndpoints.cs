@@ -34,6 +34,8 @@ internal static class SettingsEndpoints
             next.Recipients = (next.Recipients ?? []).SelectMany(r => (r ?? "").Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             next.WebhookUrl = string.IsNullOrWhiteSpace(next.WebhookUrl) ? null : next.WebhookUrl.Trim();
+            next.OAuthTenantId = string.IsNullOrWhiteSpace(next.OAuthTenantId) ? null : next.OAuthTenantId.Trim();
+            next.OAuthClientId = string.IsNullOrWhiteSpace(next.OAuthClientId) ? null : next.OAuthClientId.Trim();
 
             var v = new Validator();
             if (next.SmtpEnabled)
@@ -41,7 +43,19 @@ internal static class SettingsEndpoints
                 v.Require(next.SmtpHost.Length > 0, "smtpHost", "SMTP host is required when e-mail is enabled.");
                 v.Require(IsValidAddress(next.SmtpFrom), "smtpFrom", "A valid sender address is required when e-mail is enabled.");
                 v.Require(next.Recipients.Count > 0, "recipients", "At least one recipient is required when e-mail is enabled.");
+                if (next.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials)
+                {
+                    v.Require(IsValidAddress(next.SmtpUsername), "smtpUsername",
+                        "With OAuth2 the SMTP username must be the sending mailbox address (e.g. alerts@contoso.com).");
+                    v.Require(next.OAuthTenantId is not null, "oAuthTenantId", "The Entra ID tenant ID is required for OAuth2.");
+                    v.Require(next.OAuthClientId is not null, "oAuthClientId", "The application (client) ID is required for OAuth2.");
+                    v.Require(!string.IsNullOrEmpty(next.OAuthClientSecretProtected), "oAuthClientSecret", "The client secret is required for OAuth2.");
+                }
             }
+            if (next.OAuthTenantId is not null && !OAuthTokenProvider.IsValidTenant(next.OAuthTenantId))
+                v.Add("oAuthTenantId", "Enter the tenant ID (a GUID) or a tenant domain such as contoso.onmicrosoft.com.");
+            if (next.OAuthClientId is not null && !Guid.TryParse(next.OAuthClientId, out _))
+                v.Add("oAuthClientId", "The application (client) ID is a GUID (Entra ID → App registrations → Overview).");
             v.Require(next.SmtpPort is >= 1 and <= 65535, "smtpPort", "SMTP port must be between 1 and 65535.");
             foreach (var r in next.Recipients.Where(r => !IsValidAddress(r)))
                 v.Add("recipients", $"'{r}' is not a valid e-mail address.");
@@ -53,8 +67,10 @@ internal static class SettingsEndpoints
             if (!v.IsValid) return v.ToResult();
 
             store.SaveSettings(next);
-            var detail = SettingsWire.TouchesSecret(body, "smtpPassword") ? "SMTP password changed" : null;
-            audit.Record("updated", "settings", "notifications", "Notification settings", detail);
+            var secretsChanged = new List<string>();
+            if (SettingsWire.TouchesSecret(body, "smtpPassword")) secretsChanged.Add("SMTP password changed");
+            if (SettingsWire.TouchesSecret(body, "oAuthClientSecret")) secretsChanged.Add("OAuth client secret changed");
+            audit.Record("updated", "settings", "notifications", "Notification settings", secretsChanged.Count > 0 ? string.Join("; ", secretsChanged) : null);
             return Results.Json(SettingsWire.ToWire(next));
         });
 
@@ -114,6 +130,7 @@ internal static class SettingsEndpoints
 
             var restartRequired = current.Port != next.Port || current.BindAddress != next.BindAddress ||
                                   current.HttpsEnabled != next.HttpsEnabled || current.HttpsPort != next.HttpsPort ||
+                                  current.RedirectHttpToHttps != next.RedirectHttpToHttps ||
                                   current.HttpsPfxPath != next.HttpsPfxPath ||
                                   current.HttpsPfxPasswordProtected != next.HttpsPfxPasswordProtected;
             store.SaveSettings(next);

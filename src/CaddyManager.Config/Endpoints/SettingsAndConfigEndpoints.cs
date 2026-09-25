@@ -18,27 +18,42 @@ internal static class SettingsEndpoints
     private const string MacInput = "eabMacKey";
     private const string MacOutput = "hasEabMacKey";
     private const string MacProtected = "eabMacKeyProtected";
+    private const string IssuerInput = "acmeIssuerJson";
+    private const string IssuerOutput = "hasAcmeIssuerJson";
+    private const string IssuerProtected = "acmeIssuerJsonProtected";
+
+    /// <summary>Settings only administrators may read (they can contain credentials or reveal internals).</summary>
+    internal static readonly string[] AdminOnlyFields = ["rawCaddyfile", "serverOptionsJson", "extraAppsJson"];
 
     public static void Map(IEndpointRouteBuilder app)
     {
         var g = app.MapGroup("/api/settings/caddy").RequireAuthorization(Policies.Viewer);
 
-        g.MapGet("/", (IStore store) => Results.Ok(ToWire(store.GetSettings<CaddySettings>())));
+        g.MapGet("/", async (IStore store, HttpContext http) =>
+            Results.Ok(ToWire(store.GetSettings<CaddySettings>(), await EndpointSecurity.IsAdminAsync(http))));
 
         g.MapPut("/", async (JsonObject? body, IStore store, ISecretProtector secrets, HttpContext http) =>
         {
             if (body is null) return ApiResults.BadRequest("A settings object is required.");
             var previous = store.GetSettings<CaddySettings>();
             CaddySettings next;
+            string? issuerPlain;
             try
             {
-                next = Merge(previous, body, secrets);
+                (next, issuerPlain) = Merge(previous, body, secrets);
             }
             catch (JsonException ex)
             {
                 return ApiResults.BadRequest("The settings could not be read: " + ex.Message);
             }
-            if (ModelValidation.Validate(next) is { } problem) return problem;
+            if (ModelValidation.Validate(next, issuerPlain, store.GetSettings<UiSettings>()) is { } problem) return problem;
+
+            // Changing the admin endpoint must not turn an existing upstream into a path to it.
+            var ui = store.GetSettings<UiSettings>();
+            var before = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(previous, ui, includeUi: false)).ToHashSet(StringComparer.Ordinal);
+            var targets = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(next, ui, includeUi: false)).Where(t => !before.Contains(t)).ToList();
+            if (targets.Count > 0)
+                return ApiResults.BadRequest("These enabled hosts/streams would target a protected endpoint with the new settings: " + string.Join("; ", targets));
 
             var changed = ChangedFields(previous, next);
             return await ConfigTransaction.RunAsync(http, "Caddy settings updated",
@@ -48,27 +63,37 @@ internal static class SettingsEndpoints
                 {
                     ConfigTransaction.Audit(http, "updated", "settings", "caddy", "Caddy settings",
                         changed.Count == 0 ? null : "changed: " + string.Join(", ", changed));
-                    return Results.Ok(new { item = ToWire(next), apply });
+                    return Results.Ok(new { item = ToWire(next, isAdmin: true), apply });
                 },
                 affectsCaddyfileMode: true);
         }).RequireAuthorization(Policies.Admin);
     }
 
-    /// <summary>Settings camelCased, minus *Protected, plus hasEabMacKey.</summary>
-    internal static JsonObject ToWire(CaddySettings s)
+    /// <summary>Settings camelCased, minus *Protected, plus has* flags; admin-only fields are absent for other roles.</summary>
+    internal static JsonObject ToWire(CaddySettings s, bool isAdmin)
     {
         var node = (JsonObject)JsonSerializer.SerializeToNode(s, JsonDefaults.Api)!;
         node.Remove(MacProtected);
+        node.Remove(IssuerProtected);
         node[MacOutput] = !string.IsNullOrEmpty(s.EabMacKeyProtected);
+        node[IssuerOutput] = !string.IsNullOrEmpty(s.AcmeIssuerJsonProtected);
+        if (!isAdmin)
+            foreach (var f in AdminOnlyFields) node.Remove(f);
         return node;
     }
 
-    /// <summary>Overlays the request on the current settings. eabMacKey: absent/null = unchanged, "" = clear, other = set.</summary>
-    internal static CaddySettings Merge(CaddySettings current, JsonObject body, ISecretProtector secrets)
+    /// <summary>
+    /// Overlays the request on the current settings. Secret inputs (eabMacKey, acmeIssuerJson): absent/null = unchanged,
+    /// "" = clear, other = set. acmeIssuerJson may be sent as JSON text or as an object. Returns the new settings and the
+    /// effective plain-text ACME issuer JSON (for validation).
+    /// </summary>
+    internal static (CaddySettings Settings, string? AcmeIssuerJson) Merge(CaddySettings current, JsonObject body, ISecretProtector secrets)
     {
         var merged = (JsonObject)JsonSerializer.SerializeToNode(current, JsonDefaults.Storage)!;
         string? macAction = null;
         var macPresent = false;
+        string? issuerAction = null;
+        var issuerPresent = false;
         foreach (var (key, value) in body)
         {
             if (key.Equals(MacInput, StringComparison.OrdinalIgnoreCase))
@@ -84,7 +109,26 @@ internal static class SettingsEndpoints
                 }
                 continue;
             }
-            if (key.Equals(MacOutput, StringComparison.OrdinalIgnoreCase) || key.Equals(MacProtected, StringComparison.OrdinalIgnoreCase))
+            if (key.Equals(IssuerInput, StringComparison.OrdinalIgnoreCase))
+            {
+                if (value is JsonValue v && v.GetValueKind() == JsonValueKind.String)
+                {
+                    issuerPresent = true;
+                    issuerAction = v.GetValue<string>();
+                }
+                else if (value is JsonObject o)
+                {
+                    issuerPresent = true;
+                    issuerAction = o.ToJsonString();
+                }
+                else if (value is not null)
+                {
+                    throw new JsonException("acmeIssuerJson must be a JSON object (or its text).");
+                }
+                continue;
+            }
+            if (key.Equals(MacOutput, StringComparison.OrdinalIgnoreCase) || key.Equals(MacProtected, StringComparison.OrdinalIgnoreCase) ||
+                key.Equals(IssuerOutput, StringComparison.OrdinalIgnoreCase) || key.Equals(IssuerProtected, StringComparison.OrdinalIgnoreCase))
                 continue;
             var existingKey = merged.Select(p => p.Key).FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)) ?? key;
             merged[existingKey] = value?.DeepClone();
@@ -94,6 +138,25 @@ internal static class SettingsEndpoints
         next.EabMacKeyProtected = current.EabMacKeyProtected;
         if (macPresent)
             next.EabMacKeyProtected = string.IsNullOrEmpty(macAction) ? null : secrets.Protect(macAction.Trim());
+
+        next.AcmeIssuerJsonProtected = current.AcmeIssuerJsonProtected;
+        string? issuerPlain = null;
+        if (issuerPresent)
+        {
+            issuerPlain = string.IsNullOrWhiteSpace(issuerAction) ? null : issuerAction.Trim();
+            next.AcmeIssuerJsonProtected = issuerPlain is null ? null : secrets.Protect(issuerPlain);
+        }
+        else if (!string.IsNullOrEmpty(current.AcmeIssuerJsonProtected))
+        {
+            try
+            {
+                issuerPlain = secrets.Unprotect(current.AcmeIssuerJsonProtected);
+            }
+            catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException or ArgumentException or IOException)
+            {
+                issuerPlain = null; // undecryptable: the generator reports it
+            }
+        }
 
         next.BindAddresses = (next.BindAddresses ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
         next.TrustedProxies = (next.TrustedProxies ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
@@ -107,7 +170,9 @@ internal static class SettingsEndpoints
         next.CertificateStorePath = string.IsNullOrWhiteSpace(next.CertificateStorePath) ? null : next.CertificateStorePath.Trim();
         next.DefaultRedirectUrl = string.IsNullOrWhiteSpace(next.DefaultRedirectUrl) ? null : next.DefaultRedirectUrl.Trim();
         next.ServerOptionsJson = string.IsNullOrWhiteSpace(next.ServerOptionsJson) ? null : next.ServerOptionsJson.Trim();
-        return next;
+        next.ExtraAppsJson = string.IsNullOrWhiteSpace(next.ExtraAppsJson) ? null : next.ExtraAppsJson.Trim();
+        next.TlsConnectionPolicyJson = string.IsNullOrWhiteSpace(next.TlsConnectionPolicyJson) ? null : next.TlsConnectionPolicyJson.Trim();
+        return (next, issuerPlain);
     }
 
     private static List<string> ChangedFields(CaddySettings a, CaddySettings b)
@@ -118,7 +183,7 @@ internal static class SettingsEndpoints
         foreach (var (k, v) in jb)
         {
             if (!JsonNode.DeepEquals(v, ja[k]))
-                list.Add(k == MacProtected ? MacInput : k);
+                list.Add(k switch { MacProtected => MacInput, IssuerProtected => IssuerInput, _ => k });
         }
         return list;
     }
@@ -131,8 +196,9 @@ internal static class ConfigEndpoints
         var g = app.MapGroup("/api/config").RequireAuthorization(Policies.Viewer);
 
         // What an apply would load: the generated config in Managed mode, the adapted Caddyfile in Caddyfile mode.
-        g.MapGet("/preview", async (CaddyConfigService config, IStore store, AppPaths paths, CancellationToken ct) =>
+        g.MapGet("/preview", async (CaddyConfigService config, IStore store, AppPaths paths, HttpContext http, CancellationToken ct) =>
         {
+            var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             var settings = store.GetSettings<CaddySettings>();
             if (settings.Mode == ConfigMode.Caddyfile)
             {
@@ -147,7 +213,7 @@ internal static class ConfigEndpoints
                             statusCode: StatusCodes.Status503ServiceUnavailable);
                     var warnings = adapted.Value.Warnings.ToList();
                     var json = CaddyConfigGenerator.CompleteAdaptedConfig(adapted.Value.Json, settings, paths, warnings);
-                    return Results.Ok(new { json = CaddyJson.Reformat(json), warnings, mode = "caddyfile" });
+                    return Results.Ok(new { json = Visible(json, isAdmin), warnings, mode = "caddyfile" });
                 }
                 catch (CaddyAdminException ex)
                 {
@@ -155,10 +221,10 @@ internal static class ConfigEndpoints
                 }
             }
             var result = config.Generate();
-            return Results.Ok(new { json = result.ToJson(), warnings = result.Warnings, mode = "managed" });
+            return Results.Ok(new { json = Visible(result.ToJson(), isAdmin), warnings = result.Warnings, mode = "managed" });
         });
 
-        g.MapGet("/running", async (ICaddyAdminClient admin, CancellationToken ct) =>
+        g.MapGet("/running", async (ICaddyAdminClient admin, HttpContext http, CancellationToken ct) =>
         {
             string? json;
             try
@@ -173,7 +239,7 @@ internal static class ConfigEndpoints
                 ? Results.Problem(title: "Caddy is not reachable",
                     detail: $"The Caddy admin API at {SafeBaseUrl(admin)} did not respond. Is Caddy running?",
                     statusCode: StatusCodes.Status503ServiceUnavailable)
-                : Results.Ok(new { json = CaddyJson.Reformat(json) });
+                : Results.Ok(new { json = Visible(json, await EndpointSecurity.IsAdminAsync(http)) });
         });
 
         g.MapPost("/apply", async (ICaddyConfigService config, HttpContext http) =>
@@ -215,8 +281,12 @@ internal static class ConfigEndpoints
             return Results.Ok(list);
         });
 
-        g.MapGet("/revisions/{id}", (string id, IStore store) =>
-            store.Col<ConfigRevision>().FindById(id) is { } r ? Results.Ok(r) : ApiResults.NotFound("Revision"));
+        g.MapGet("/revisions/{id}", async (string id, IStore store, HttpContext http) =>
+        {
+            if (store.Col<ConfigRevision>().FindById(id) is not { } r) return ApiResults.NotFound("Revision");
+            if (!await EndpointSecurity.IsAdminAsync(http)) r.Json = ConfigRedactor.Redact(r.Json);
+            return Results.Ok(r);
+        });
 
         g.MapPost("/caddyfile/adapt", async (CaddyfileAdaptInput? body, CaddyConfigService config, CancellationToken ct) =>
         {
@@ -247,6 +317,9 @@ internal static class ConfigEndpoints
             }
         }).RequireAuthorization(Policies.Viewer);
     }
+
+    /// <summary>Pretty JSON; secrets replaced with "***" unless the caller is an administrator.</summary>
+    private static string Visible(string json, bool isAdmin) => isAdmin ? CaddyJson.Reformat(json) : ConfigRedactor.Redact(json);
 
     private static string SafeBaseUrl(ICaddyAdminClient admin)
     {

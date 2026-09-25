@@ -3,7 +3,7 @@ import { Save, Send } from 'lucide-react';
 import { errorMessage } from '@/api/client';
 import { notificationSettingsInput } from '@/api/settings';
 import { useNotificationSettings, useSaveNotificationSettings, useTestNotifications } from '@/api/hooks';
-import type { NotificationSettings, NotificationSettingsInput, NotificationTestResult, SmtpSecurity } from '@/api/types';
+import type { NotificationSettings, NotificationSettingsInput, NotificationTestResult, SmtpAuthMode, SmtpSecurity, WebhookFormat } from '@/api/types';
 import { useFeedback } from '@/components/feedback';
 import { SecretInput, secretPayload } from '@/components/SecretInput';
 import {
@@ -11,12 +11,14 @@ import {
   Callout,
   Card,
   ChipInput,
+  CodeBlock,
   Field,
   FormSection,
   Input,
   LoadingBlock,
   NumberInput,
   PageHeader,
+  Segmented,
   Select,
   SwitchField,
   useToast,
@@ -42,9 +44,46 @@ const SECURITY_OPTIONS: { value: SmtpSecurity; label: string; port: number }[] =
   { value: 'none', label: 'None — unencrypted (port 25)', port: 25 },
 ];
 
-function validate(f: NotificationSettingsInput): FieldErrors {
+const AUTH_OPTIONS: { value: SmtpAuthMode; label: string }[] = [
+  { value: 'none', label: 'None (relay)' },
+  { value: 'password', label: 'Password' },
+  { value: 'oAuth2ClientCredentials', label: 'Microsoft 365 OAuth2' },
+];
+
+const WEBHOOK_FORMATS: { value: WebhookFormat; label: string; hint: string }[] = [
+  { value: 'generic', label: 'Generic JSON', hint: 'POSTs {"text": "…", …} with the event fields — for scripts, n8n, Power Automate HTTP triggers and similar.' },
+  { value: 'slack', label: 'Slack incoming webhook', hint: 'Formatted message for a Slack incoming webhook (https://hooks.slack.com/services/…).' },
+  {
+    value: 'teamsWorkflow',
+    label: 'Microsoft Teams (Workflows)',
+    hint: 'Adaptive Card for the Teams Workflows template “Post to a channel when a webhook request is received”. Legacy Office 365 connector URLs are retired by Microsoft.',
+  },
+];
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const M365_SCRIPT = `# Exchange Online PowerShell (Connect-ExchangeOnline), as an Exchange administrator.
+# <AppId>     = Application (client) ID of the app registration
+# <ObjectId>  = Object ID of the Enterprise application (service principal) — not of the app registration
+New-ServicePrincipal -AppId <AppId> -ObjectId <ObjectId> -DisplayName "Caddy Proxy Manager SMTP"
+Add-MailboxPermission -Identity caddy-alerts@example.com -User <ObjectId> -AccessRights FullAccess
+Set-CASMailbox -Identity caddy-alerts@example.com -SmtpClientAuthenticationDisabled $false`;
+
+function validate(f: NotificationSettingsInput, hasClientSecret: boolean, hasPassword: boolean): FieldErrors {
   const e: FieldErrors = {};
   if (f.smtpEnabled) {
+    if (f.smtpAuth === 'oAuth2ClientCredentials') {
+      const tenant = f.oAuthTenantId?.trim() ?? '';
+      if (!tenant) e.oAuthTenantId = 'Enter the Directory (tenant) ID or the tenant domain, e.g. contoso.onmicrosoft.com.';
+      else if (!GUID_RE.test(tenant) && !isValidHostname(tenant)) e.oAuthTenantId = 'Use the tenant ID (GUID) or a verified domain such as contoso.onmicrosoft.com.';
+      if (!f.oAuthClientId?.trim()) e.oAuthClientId = 'Enter the Application (client) ID of the app registration.';
+      else if (!GUID_RE.test(f.oAuthClientId.trim())) e.oAuthClientId = 'The client ID is a GUID, e.g. 11111111-2222-3333-4444-555555555555.';
+      if (!hasClientSecret && !secretPayload(f.oAuthClientSecret)) e.oAuthClientSecret = 'Enter a client secret of the app registration.';
+      if (f.oAuthClientSecret === '') e.oAuthClientSecret = 'OAuth2 needs a client secret. Choose another sign-in method to remove it.';
+      if (!isValidEmail(f.smtpUsername ?? '')) e.smtpUsername = 'Enter the mailbox that sends the alerts, e.g. caddy-alerts@example.com.';
+    }
+    if (f.smtpAuth === 'password' && !f.smtpUsername?.trim() && (hasPassword || secretPayload(f.smtpPassword)))
+      e.smtpUsername = 'Enter the user name for the password, or choose “None” for an anonymous relay.';
     if (!f.smtpHost.trim()) e.smtpHost = 'Enter the SMTP server.';
     else if (!isValidHostname(f.smtpHost.trim()) && !/^[\d.:[\]a-f]+$/i.test(f.smtpHost.trim())) e.smtpHost = 'Not a valid host name.';
     if (!isValidPort(f.smtpPort)) e.smtpPort = 'Port must be between 1 and 65535.';
@@ -67,7 +106,8 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
   const test = useTestNotifications();
   const toast = useToast();
   const feedback = useFeedback();
-  const errors = { ...serverErrors, ...(submitted ? validate(form) : {}) };
+  const check = (f: NotificationSettingsInput) => validate(f, settings.hasOAuthClientSecret, settings.hasSmtpPassword);
+  const errors = { ...serverErrors, ...(submitted ? check(form) : {}) };
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const set = <K extends keyof NotificationSettingsInput>(k: K, v: NotificationSettingsInput[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
@@ -77,16 +117,19 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitted(true);
-    if (Object.keys(validate(form)).length) return;
+    if (Object.keys(check(form)).length) return;
     try {
       // The form re-mounts with the saved values afterwards, so use mutateAsync (not per-call callbacks).
       await save.mutateAsync({
         ...form,
         smtpHost: form.smtpHost.trim(),
         smtpFrom: form.smtpFrom.trim(),
-        smtpUsername: form.smtpUsername?.trim() || null,
+        smtpUsername: form.smtpAuth === 'none' ? null : form.smtpUsername?.trim() || null,
         webhookUrl: form.webhookUrl?.trim() || null,
         smtpPassword: secretPayload(form.smtpPassword),
+        oAuthTenantId: form.oAuthTenantId?.trim() || null,
+        oAuthClientId: form.oAuthClientId?.trim() || null,
+        oAuthClientSecret: secretPayload(form.oAuthClientSecret),
       });
       toast.success('Notification settings saved');
     } catch (err) {
@@ -146,7 +189,7 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
         </Callout>
       )}
       <Card className="p-5">
-        <FormSection title="E-mail (SMTP)" description="Sent with MailKit. Works with Exchange, Microsoft 365 (authenticated SMTP), and most relays.">
+        <FormSection title="E-mail (SMTP)" description="Sent with MailKit. Works with Exchange relays, Microsoft 365 (OAuth2, since basic authentication is being retired) and most SMTP services.">
           <SwitchField label="Send e-mail alerts" checked={form.smtpEnabled} onChange={(v) => set('smtpEnabled', v)} />
           <fieldset disabled={!form.smtpEnabled} className="flex min-w-0 flex-col gap-4 disabled:opacity-60">
             <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1fr)]">
@@ -177,14 +220,59 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
                 </Select>
               </Field>
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="User name" hint="Leave empty for an anonymous relay.">
-                <Input autoComplete="off" value={form.smtpUsername ?? ''} onChange={(e) => set('smtpUsername', e.target.value)} />
-              </Field>
-              <Field label="Password">
-                <SecretInput has={settings.hasSmtpPassword} value={form.smtpPassword} onChange={(v) => set('smtpPassword', v)} disabled={!form.smtpEnabled} />
-              </Field>
-            </div>
+            <Field label="Sign-in">
+              <Segmented aria-label="SMTP authentication" value={form.smtpAuth ?? 'password'} onChange={(v) => set('smtpAuth', v)} options={AUTH_OPTIONS} />
+            </Field>
+            {form.smtpAuth === 'none' && (
+              <p className="-mt-2 text-xs text-fg-subtle">No authentication — for an internal relay (Exchange receive connector) that accepts mail from this server’s IP address.</p>
+            )}
+            {(form.smtpAuth ?? 'password') === 'password' && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="User name" error={errors.smtpUsername}>
+                  <Input autoComplete="off" value={form.smtpUsername ?? ''} onChange={(e) => set('smtpUsername', e.target.value)} />
+                </Field>
+                <Field label="Password">
+                  <SecretInput has={settings.hasSmtpPassword} value={form.smtpPassword} onChange={(v) => set('smtpPassword', v)} disabled={!form.smtpEnabled} />
+                </Field>
+              </div>
+            )}
+            {form.smtpAuth === 'oAuth2ClientCredentials' && (
+              <>
+                <Field
+                  label="Mailbox"
+                  required
+                  error={errors.smtpUsername}
+                  hint="The Exchange Online mailbox the alerts are sent from (SMTP AUTH user name). Use it as the From address too."
+                >
+                  <Input type="email" autoComplete="off" placeholder="caddy-alerts@example.com" value={form.smtpUsername ?? ''} onChange={(e) => set('smtpUsername', e.target.value)} />
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Directory (tenant) ID" required error={errors.oAuthTenantId}>
+                    <Input mono autoComplete="off" placeholder="contoso.onmicrosoft.com or GUID" value={form.oAuthTenantId ?? ''} onChange={(e) => set('oAuthTenantId', e.target.value)} />
+                  </Field>
+                  <Field label="Application (client) ID" required error={errors.oAuthClientId}>
+                    <Input mono autoComplete="off" placeholder="00000000-0000-0000-0000-000000000000" value={form.oAuthClientId ?? ''} onChange={(e) => set('oAuthClientId', e.target.value)} />
+                  </Field>
+                </div>
+                <Field label="Client secret" required error={errors.oAuthClientSecret} hint="Client secrets expire (at most 24 months). Put a reminder in your calendar — expired secrets make alert e-mails fail.">
+                  <SecretInput has={settings.hasOAuthClientSecret} value={form.oAuthClientSecret} onChange={(v) => set('oAuthClientSecret', v)} disabled={!form.smtpEnabled} />
+                </Field>
+                <Callout tone="info" title="Setting up Microsoft 365 (once per tenant)">
+                  <ol className="mt-1 list-decimal space-y-1 pl-4">
+                    <li>
+                      In Microsoft Entra ID › App registrations, register a single-tenant app and create a client secret.
+                    </li>
+                    <li>
+                      API permissions › Add a permission › APIs my organization uses › <span className="mono">Office 365 Exchange Online</span> ›
+                      Application permissions › <span className="mono">SMTP.SendAsApp</span>, then grant admin consent.
+                    </li>
+                    <li>Register the app’s service principal in Exchange and give it access to the mailbox:</li>
+                  </ol>
+                  <CodeBlock code={M365_SCRIPT} language="powershell" title="Exchange Online PowerShell" wrap maxHeight={220} className="mt-2" />
+                  <p className="mt-2">Use server <span className="mono">smtp.office365.com</span>, port 587, STARTTLS.</p>
+                </Callout>
+              </>
+            )}
             <Field label="From address" required error={errors.smtpFrom}>
               <Input type="email" placeholder="caddy-alerts@example.com" value={form.smtpFrom} onChange={(e) => set('smtpFrom', e.target.value)} />
             </Field>
@@ -208,8 +296,17 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
             />
           </fieldset>
         </FormSection>
-        <FormSection title="Webhook" description="POSTs JSON with a “text” field — compatible with Microsoft Teams workflows and Slack incoming webhooks.">
+        <FormSection title="Webhook" description="POSTs each alert as JSON to a chat channel or automation endpoint.">
           <SwitchField label="Send webhook alerts" checked={form.webhookEnabled} onChange={(v) => set('webhookEnabled', v)} />
+          <Field label="Format" hint={WEBHOOK_FORMATS.find((w) => w.value === (form.webhookFormat ?? 'generic'))?.hint}>
+            <Select value={form.webhookFormat ?? 'generic'} onChange={(e) => set('webhookFormat', e.target.value as WebhookFormat)} disabled={!form.webhookEnabled} className="max-w-sm">
+              {WEBHOOK_FORMATS.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
           <Field label="Webhook URL" error={errors.webhookUrl}>
             <Input mono type="url" placeholder="https://…" value={form.webhookUrl ?? ''} onChange={(e) => set('webhookUrl', e.target.value)} disabled={!form.webhookEnabled} />
           </Field>

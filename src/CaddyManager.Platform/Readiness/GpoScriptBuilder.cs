@@ -203,6 +203,20 @@ public static class GpoScriptBuilder
             sb.AppendLine("#        certutil -dspublish -f root.crt RootCA");
             sb.AppendLine("# The root is valid for 10 years; the intermediate is renewed by Caddy automatically.");
         }
-        return sb.ToString();
+        return AsciiPunctuation(sb.ToString());
     }
+
+    /// <summary>
+    /// Replaces typographic punctuation with ASCII. The script is often saved as UTF-8 without BOM and run in Windows
+    /// PowerShell 5.1, which then reads it as ANSI: the UTF-8 bytes of "→" contain 0x92, which cp1252 decodes to a
+    /// right single quotation mark - and PowerShell treats that as a quote, breaking single-quoted strings.
+    /// (Typographic single quotes in values are already normalised by <see cref="PowerShellRunner.Quote"/>.)
+    /// </summary>
+    internal static string AsciiPunctuation(string s) => s
+        .Replace("→", "->", StringComparison.Ordinal)
+        .Replace("—", "-", StringComparison.Ordinal)
+        .Replace("–", "-", StringComparison.Ordinal)
+        .Replace("…", "...", StringComparison.Ordinal)
+        .Replace("“", "\"", StringComparison.Ordinal)
+        .Replace("”", "\"", StringComparison.Ordinal);
 }

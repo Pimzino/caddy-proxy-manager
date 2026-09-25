@@ -6,9 +6,11 @@ using CaddyManager.Core.Models;
 namespace CaddyManager.Ops.Auth;
 
 /// <summary>Wire shape of a user. Never includes the password hash or security stamp.</summary>
-public sealed record UserDto(string Id, string Email, string Name, UserRole Role, bool Disabled, DateTime? LastLoginAt, DateTime CreatedAt)
+/// <remarks><c>externalSource</c> is "ldap" for directory accounts (no local password; role from group mapping) and omitted for local accounts.</remarks>
+public sealed record UserDto(string Id, string Email, string Name, UserRole Role, bool Disabled, DateTime? LastLoginAt, DateTime CreatedAt,
+    string? ExternalSource = null)
 {
-    public static UserDto From(User u) => new(u.Id, u.Email, u.Name, u.Role, u.Disabled, u.LastLoginAt, u.CreatedAt);
+    public static UserDto From(User u) => new(u.Id, u.Email, u.Name, u.Role, u.Disabled, u.LastLoginAt, u.CreatedAt, u.ExternalSource);
 }
 
 public static class PasswordPolicy
@@ -52,6 +54,10 @@ internal static class UserRules
         return store.Col<User>().FindOne(u => u.Email == norm);
     }
 
+    /// <summary>
+    /// Enabled local administrators. Directory administrators do not count: at least one local administrator must remain
+    /// so the server can be managed when the directory is unreachable.
+    /// </summary>
     public static int EnabledAdminCount(IStore store) =>
-        store.Col<User>().Count(u => u.Role == UserRole.Admin && !u.Disabled);
+        store.Col<User>().Count(u => u.Role == UserRole.Admin && !u.Disabled && u.ExternalSource == null);
 }

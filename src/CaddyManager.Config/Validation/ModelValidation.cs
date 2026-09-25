@@ -53,9 +53,24 @@ public static partial class ModelValidation
         if (h.Tls != TlsMode.Custom) h.CertificateId = null;
     }
 
+    /// <summary>Validator that prefixes field names (e.g. "hosts[2]." for bulk imports).</summary>
+    internal sealed class FieldErrors(Validator target, string prefix)
+    {
+        public void Add(string field, string message) => target.Add(prefix + field, message);
+    }
+
     public static IResult? Validate(SiteHost h, IStore store)
     {
         var v = new Validator();
+        ValidateFields(h, store, v, "");
+        if (!v.IsValid) return v.ToResult();
+        return DomainConflict(h, store);
+    }
+
+    /// <summary>Field validation of a host (no conflict check); errors are added to <paramref name="target"/> with the prefix.</summary>
+    internal static void ValidateFields(SiteHost h, IStore store, Validator target, string prefix)
+    {
+        var v = new FieldErrors(target, prefix);
         if (h.Domains.Count == 0) v.Add("domains", "At least one domain is required.");
         foreach (var d in h.Domains)
             if (!NetUtil.IsValidDomain(d)) v.Add("domains", $"'{d}' is not a valid host name (letters, digits, hyphens; a leading '*.' wildcard is allowed).");
@@ -121,9 +136,6 @@ public static partial class ModelValidation
                 v.Add("advancedRoutesJson", "Invalid JSON: " + ex.Message);
             }
         }
-
-        if (!v.IsValid) return v.ToResult();
-        return DomainConflict(h, store);
     }
 
     /// <summary>409 when an enabled host already serves one of the domains.</summary>
@@ -143,7 +155,7 @@ public static partial class ModelValidation
         return null;
     }
 
-    private static void ValidateUpstreams(Validator v, string field, List<Upstream> ups, bool required)
+    private static void ValidateUpstreams(FieldErrors v, string field, List<Upstream> ups, bool required)
     {
         if (required && ups.Count == 0) { v.Add(field, "At least one upstream (host and port) is required."); return; }
         for (var i = 0; i < ups.Count; i++)
@@ -157,7 +169,7 @@ public static partial class ModelValidation
             v.Add(field, "All upstreams must use the same scheme (http or https): Caddy uses one transport per proxy.");
     }
 
-    private static void ValidateHeaders(Validator v, string field, List<HeaderOp> ops)
+    private static void ValidateHeaders(FieldErrors v, string field, List<HeaderOp> ops)
     {
         for (var i = 0; i < ops.Count; i++)
         {
@@ -181,11 +193,23 @@ public static partial class ModelValidation
         if (!NetUtil.IsValidHost(s.UpstreamHost)) v.Add("upstreamHost", "Upstream host must be a host name or IP address.");
         if (!NetUtil.IsValidPort(s.UpstreamPort)) v.Add("upstreamPort", "Upstream port must be 1-65535.");
         if (!v.IsValid) return v.ToResult();
-        if (!s.Enabled) return null;
 
         var settings = store.GetSettings<CaddySettings>();
+        var ui = store.GetSettings<UiSettings>();
+        if (LocalEndpointGuard.Create(settings, ui).Check(s.UpstreamHost, s.UpstreamPort) is { } targetProblem)
+        {
+            v.Add("upstreamHost", targetProblem);
+            return v.ToResult();
+        }
+        if (!s.Enabled) return null;
+
         if (s.Protocol == StreamProtocol.Tcp && (s.ListenPort == settings.HttpPort || s.ListenPort == settings.HttpsPort))
             return ApiResults.Conflict($"TCP port {s.ListenPort} is used by Caddy's HTTP/HTTPS listener.");
+        if (s.Protocol == StreamProtocol.Tcp)
+        {
+            foreach (var (port, what) in LocalEndpointGuard.ProtectedPortsFor(settings, ui))
+                if (s.ListenPort == port) return ApiResults.Conflict($"TCP port {s.ListenPort} is used by {what}. Choose another listen port.");
+        }
         if (s.Protocol == StreamProtocol.Udp && settings.EnableHttp3 && s.ListenPort == settings.HttpsPort)
             return ApiResults.Conflict($"UDP port {s.ListenPort} is used by HTTP/3. Disable HTTP/3 or choose another port.");
         var other = store.Col<StreamHost>().FindAll().FirstOrDefault(x => x.Enabled && x.Id != s.Id && x.Protocol == s.Protocol && x.ListenPort == s.ListenPort);
@@ -196,9 +220,17 @@ public static partial class ModelValidation
 
     // ------------------------------------------------------------------ settings
 
-    public static IResult? Validate(CaddySettings s)
+    public static IResult? Validate(CaddySettings s, string? acmeIssuerJson = null, UiSettings? ui = null)
     {
         var v = new Validator();
+        JsonObject? issuerExtra = null;
+        if (!string.IsNullOrWhiteSpace(acmeIssuerJson))
+        {
+            issuerExtra = CaddyJson.ParseObject(acmeIssuerJson, out var issuerError);
+            if (issuerError is not null) v.Add("acmeIssuerJson", "The ACME issuer JSON " + issuerError + ".");
+            else if (issuerExtra!.ContainsKey("module")) v.Add("acmeIssuerJson", "The ACME issuer JSON may not set 'module' (the manager always uses the acme issuer).");
+        }
+        CaddyConfigGenerator.DnsProviderName(issuerExtra, out var hasDnsChallenge);
         if (!NetUtil.IsValidPort(s.HttpPort)) v.Add("httpPort", "HTTP port must be 1-65535.");
         if (!NetUtil.IsValidPort(s.HttpsPort)) v.Add("httpsPort", "HTTPS port must be 1-65535.");
         if (s.HttpPort == s.HttpsPort) v.Add("httpsPort", "HTTP and HTTPS ports must differ.");
@@ -215,8 +247,19 @@ public static partial class ModelValidation
             v.Add("eabKeyId", "External account binding needs both the key ID and the MAC key.");
         if (s.AcmeCa == AcmeCa.ZeroSsl && string.IsNullOrWhiteSpace(s.AcmeEmail) && string.IsNullOrWhiteSpace(s.EabKeyId))
             v.Add("acmeEmail", "ZeroSSL needs an e-mail address (or EAB credentials).");
-        if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge)
-            v.Add("disableTlsAlpnChallenge", "At least one ACME challenge (HTTP or TLS-ALPN) must stay enabled.");
+        if (s.DisableHttpChallenge && s.DisableTlsAlpnChallenge && !hasDnsChallenge)
+            v.Add("disableTlsAlpnChallenge", "At least one ACME challenge (HTTP or TLS-ALPN) must stay enabled unless a DNS challenge is configured in the ACME issuer JSON.");
+        if (ui is not null)
+        {
+            if (s.HttpPort == ui.Port || (ui.HttpsEnabled && s.HttpPort == ui.HttpsPort))
+                v.Add("httpPort", $"Port {s.HttpPort} is used by the Caddy Proxy Manager web UI (Settings > UI).");
+            if (s.HttpsPort == ui.Port || (ui.HttpsEnabled && s.HttpsPort == ui.HttpsPort))
+                v.Add("httpsPort", $"Port {s.HttpsPort} is used by the Caddy Proxy Manager web UI (Settings > UI).");
+            if (LocalEndpointGuard.TryParseListenPort(s.AdminListen, out var adminPort) && (adminPort == ui.Port || (ui.HttpsEnabled && adminPort == ui.HttpsPort)))
+                v.Add("adminListen", $"Port {adminPort} is used by the Caddy Proxy Manager web UI (Settings > UI).");
+        }
+        if (LocalEndpointGuard.TryParseListenPort(s.AdminListen, out var admin) && (admin == s.HttpPort || admin == s.HttpsPort))
+            v.Add("adminListen", $"The admin API port {admin} is also used for HTTP/HTTPS sites.");
         for (var i = 0; i < s.BindAddresses.Count; i++)
             if (!NetUtil.IsValidBindAddress(s.BindAddresses[i])) v.Add($"bindAddresses[{i}]", $"'{s.BindAddresses[i]}' is not an IP address.");
         for (var i = 0; i < s.TrustedProxies.Count; i++)
@@ -237,6 +280,31 @@ public static partial class ModelValidation
             catch (JsonException ex)
             {
                 v.Add("serverOptionsJson", "Invalid JSON: " + ex.Message);
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(s.ExtraAppsJson))
+        {
+            var apps = CaddyJson.ParseObject(s.ExtraAppsJson, out var appsError);
+            if (appsError is not null) v.Add("extraAppsJson", "The extra apps JSON " + appsError + ", keyed by app name.");
+            else
+            {
+                foreach (var (name, value) in apps!)
+                {
+                    if (CaddyConfigGenerator.ReservedApps.Contains(name, StringComparer.Ordinal))
+                        v.Add("extraAppsJson", $"The app '{name}' is generated by Caddy Proxy Manager and cannot be set here (reserved: {string.Join(", ", CaddyConfigGenerator.ReservedApps)}).");
+                    else if (value is not JsonObject)
+                        v.Add("extraAppsJson", $"The app '{name}' must be a JSON object.");
+                }
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(s.TlsConnectionPolicyJson))
+        {
+            var policy = CaddyJson.ParseObject(s.TlsConnectionPolicyJson, out var policyError);
+            if (policyError is not null) v.Add("tlsConnectionPolicyJson", "The TLS connection policy JSON " + policyError + ".");
+            else
+            {
+                foreach (var key in CaddyConfigGenerator.ReservedConnectionPolicyKeys.Where(policy!.ContainsKey))
+                    v.Add("tlsConnectionPolicyJson", $"'{key}' is managed by Caddy Proxy Manager and cannot be set in the TLS connection policy JSON.");
             }
         }
         return v.IsValid ? null : v.ToResult();

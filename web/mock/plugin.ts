@@ -9,8 +9,11 @@ import type {
   AccessList,
   AccessListInput,
   ApplyResult,
+  BackupSettings,
   CaddySettings,
+  Certificate,
   CertificateInfo,
+  LdapSettings,
   NotificationSettings,
   SiteHost,
   SiteHostFields,
@@ -26,8 +29,10 @@ import {
   GPO_SCRIPT,
   INTERNAL_ROOT_PEM,
   iso,
+  BASE_MODULES,
   JOB_STEPS,
   managerLog,
+  modulesOf,
   newId,
   readinessReport,
   summarize,
@@ -108,6 +113,8 @@ function requireRole(s: MockState, role: keyof typeof rank) {
   return u;
 }
 
+const isAdminSession = (s: MockState) => s.users.find((x) => x.id === s.sessionUserId)?.role === 'admin';
+
 const publicUser = (u: UserDto & { password?: string }): UserDto => {
   const { password: _p, ...rest } = u;
   return rest;
@@ -153,6 +160,7 @@ function buildConfig(s: MockState): string {
           srv0: {
             listen: [`:${cs.httpsPort}`],
             protocols: cs.enableHttp3 ? ['h1', 'h2', 'h3'] : ['h1', 'h2'],
+            ...(cs.tlsConnectionPolicyJson ? { tls_connection_policies: [{ ...(JSON.parse(cs.tlsConnectionPolicyJson) as object) }, {}] } : {}),
             routes: [...routes, { handle: [{ handler: 'static_response', status_code: 404 }] }],
             automatic_https: { skip: enabled.filter((h) => h.tls === 'none').flatMap((h) => h.domains) },
           },
@@ -162,13 +170,14 @@ function buildConfig(s: MockState): string {
         automation: {
           policies: [
             { subjects: enabled.filter((h) => h.tls === 'internal').flatMap((h) => h.domains), issuers: [{ module: 'internal' }] },
-            { issuers: [{ module: 'acme', email: cs.acmeEmail }] },
+            { issuers: [{ module: 'acme', email: cs.acmeEmail, ...(cs.acmeIssuerJson ? redactIssuer(JSON.parse(cs.acmeIssuerJson) as Record<string, unknown>, isAdminSession(s)) : {}) }] },
           ],
         },
         certificates: {
           load_files: s.certificates.map((c) => ({ certificate: c.certPath, key: c.keyPath, tags: [`cpm-${c.id}`] })),
         },
       },
+      ...(cs.extraAppsJson ? (JSON.parse(cs.extraAppsJson) as object) : {}),
       ...(s.streams.some((x) => x.enabled) && s.binary.installed?.plugins.includes('github.com/mholt/caddy-l4')
         ? {
             layer4: {
@@ -183,6 +192,12 @@ function buildConfig(s: MockState): string {
     },
   };
   return JSON.stringify(config, null, 2);
+}
+
+/** Viewers/operators see DNS provider secrets as "***" (SPEC round 2: redacted configs). */
+function redactIssuer(issuer: Record<string, unknown>, admin: boolean): Record<string, unknown> {
+  if (admin) return issuer;
+  return JSON.parse(JSON.stringify(issuer, (k, v: unknown) => (/token|secret|key|password/i.test(k) && typeof v === 'string' ? '***' : v))) as Record<string, unknown>;
 }
 
 const KNOWN_HANDLERS = ['subroute', 'reverse_proxy', 'static_response', 'file_server', 'headers', 'encode', 'rewrite', 'authentication', 'error', 'vars', 'map', 'request_body', 'templates', 'abort', 'copy_response', 'push', 'tracing', 'metrics', 'intercept', 'invoke', 'log_append', 'rate_limit'];
@@ -234,9 +249,25 @@ function transactional<T>(s: MockState, reason: string, mutate: () => T): { item
 
 const HOSTNAME = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 
+const FORBIDDEN_ROOTS = [/^[a-z]:\\?$/i, /^c:\\windows(\\|$)/i, /^c:\\program files( \(x86\))?(\\|$)/i, /^c:\\programdata\\caddyproxymanager(\\|$)/i];
+
 function validateHost(s: MockState, h: SiteHostFields, id?: string) {
   const errors: Record<string, string[]> = {};
   const add = (k: string, m: string) => (errors[k] ??= []).push(m);
+  const me = s.users.find((x) => x.id === s.sessionUserId);
+  const before = id ? s.hosts.find((x) => x.id === id) : undefined;
+  if (me?.role !== 'admin' && (h.advancedRoutesJson ?? null) !== (before?.advancedRoutesJson ?? null))
+    throw new HttpError(403, 'Forbidden', 'Only administrators can change custom Caddy routes (advancedRoutesJson).');
+  if (h.kind === 'static' && h.rootPath) {
+    const root = h.rootPath.trim().replace(/\//g, '\\');
+    if (FORBIDDEN_ROOTS.some((re) => re.test(root)))
+      add('RootPath', `Serving ${root} is not allowed: drive roots, the Windows and Program Files folders and the manager's data folder (including Caddy storage and the certificate store) are protected.`);
+    else if (root.startsWith('\\\\') && me?.role !== 'admin' && before?.rootPath !== h.rootPath) add('RootPath', 'Only administrators can serve files from a UNC path.');
+  }
+  (h.upstreams ?? []).forEach((u, i) => {
+    if (['127.0.0.1', 'localhost', '::1'].includes(u.host.toLowerCase()) && [2019, s.uiSettings.port, s.uiSettings.httpsPort].includes(u.port))
+      add(`Upstreams[${i}].Port`, `${u.host}:${u.port} is the Caddy admin endpoint or the management UI and cannot be used as an upstream.`);
+  });
   if (!h.domains?.length) add('Domains', 'At least one domain is required.');
   for (const d of h.domains ?? []) if (!HOSTNAME.test(d)) add('Domains', `'${d}' is not a valid host name.`);
   if (h.kind === 'proxy' && !h.upstreams?.length) add('Upstreams', 'At least one upstream is required.');
@@ -271,10 +302,130 @@ function certInfos(s: MockState): CertificateInfo[] {
     certPath: c.certPath,
     keyPath: c.keyPath,
     source: c.source,
+    notes: c.notes,
+    error: c.lastSyncError,
     usedByHostIds: s.hosts.filter((h) => h.tls === 'custom' && h.certificateId === c.id).map((h) => h.id),
   }));
   return [...custom, ...s.managedCerts];
 }
+
+/** Creates a certificate transactionally (shared by the path-based sources). */
+function addCert(s: MockState, patch: Partial<Certificate> & Pick<Certificate, 'name' | 'source' | 'subjects'>) {
+  const id = newId();
+  const res = transactional(s, `Certificate added: ${patch.name}`, () => {
+    const cert: Certificate = {
+      id,
+      certPath: `C:\\ProgramData\\CaddyProxyManager\\certificates\\${id}\\fullchain.pem`,
+      keyPath: `C:\\ProgramData\\CaddyProxyManager\\certificates\\${id}\\privkey.pem`,
+      issuer: 'CN=Example Corp Issuing CA 01',
+      notBefore: iso(),
+      notAfter: iso(-365 * 86_400_000),
+      thumbprint: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01',
+      createdAt: iso(),
+      updatedAt: iso(),
+      ...patch,
+    };
+    s.certificates.push(cert);
+    return cert;
+  });
+  audit(s, 'created', 'certificate', patch.name, `Source: ${patch.source}`);
+  return res;
+}
+
+type BinarySettingsBody = MockState['binarySettings'];
+
+/** GET /api/settings/caddy: secrets never returned; raw config values hidden from non-admins (SPEC round 2). */
+function caddySettingsOut(s: MockState) {
+  const out = stripSecret(stripSecret(s.caddySettings, 'eabMacKey'), 'acmeIssuerJson') as Partial<CaddySettings>;
+  if (!isAdminSession(s)) {
+    delete out.rawCaddyfile;
+    delete out.serverOptionsJson;
+    delete out.extraAppsJson;
+  }
+  return out;
+}
+
+/** Very small Caddyfile → host drafts converter for the mock (site blocks with one main directive). */
+function importCaddyfile(text: string) {
+  const drafts: SiteHostFields[] = [];
+  const unmapped: string[] = [];
+  const warnings: string[] = [];
+  const blocks = [...text.matchAll(/^([^\s#{][^{\n]*)\{([\s\S]*?)^\}/gm)];
+  const globalOpts = /^\s*\{[\s\S]*?^\}/m.exec(text);
+  if (globalOpts && text.trimStart().startsWith('{')) unmapped.push(globalOpts[0].trim());
+  for (const m of blocks) {
+    const domains = m[1].trim().split(/[\s,]+/).map((d) => d.replace(/^https?:\/\//, '').replace(/:\d+$/, '')).filter(Boolean);
+    const body = m[2];
+    const base = { ...BLANK_HOST, domains };
+    const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    const rp = lines.find((l) => l.startsWith('reverse_proxy'));
+    const redir = lines.find((l) => l.startsWith('redir'));
+    const fs = lines.find((l) => l.startsWith('file_server'));
+    const respond = lines.find((l) => l.startsWith('respond'));
+    const root = lines.find((l) => l.startsWith('root'));
+    const known = [rp, redir, fs, respond, root].filter(Boolean);
+    const extra = lines.filter((l) => !known.includes(l) && !l.startsWith('encode') && l !== '}' && !/^tls internal$/.test(l));
+    if (lines.some((l) => l === 'tls internal')) base.tls = 'internal';
+    if (rp) {
+      const ups = rp.split(/\s+/).slice(1).filter((x) => x !== '{');
+      drafts.push({
+        ...base,
+        kind: 'proxy',
+        upstreams: ups.map((u) => {
+          const https = u.startsWith('https://');
+          const hp = u.replace(/^https?:\/\//, '');
+          const [host, port] = hp.includes(':') ? [hp.slice(0, hp.lastIndexOf(':')), Number(hp.slice(hp.lastIndexOf(':') + 1))] : [hp, https ? 443 : 80];
+          return { scheme: https ? 'https' : 'http', host, port } as const;
+        }),
+      });
+    } else if (redir) {
+      const [, target = '', code = 'permanent'] = redir.split(/\s+/);
+      drafts.push({ ...base, kind: 'redirect', redirectTarget: target.replace('{uri}', ''), preservePath: target.includes('{uri}'), redirectCode: code === 'permanent' ? 301 : code === 'temporary' ? 302 : Number(code) || 302 });
+    } else if (fs) {
+      drafts.push({ ...base, kind: 'static', rootPath: root?.split(/\s+/).pop() ?? '', browse: fs.includes('browse') });
+    } else if (respond) {
+      const mm = /respond\s+"([^"]*)"\s*(\d{3})?/.exec(respond);
+      drafts.push({ ...base, kind: 'response', responseBody: mm?.[1] ?? '', responseStatus: Number(mm?.[2] ?? 200) });
+    } else {
+      unmapped.push(m[0].trim());
+      continue;
+    }
+    if (extra.length) {
+      warnings.push(`${domains[0]}: ${extra.length} directive(s) not converted (${extra.map((l) => l.split(/\s+/)[0]).join(', ')}).`);
+      unmapped.push(`${m[1].trim()} {\n\t${extra.join('\n\t')}\n}`);
+    }
+  }
+  if (drafts.length === 0 && unmapped.length === 0) warnings.push('No site blocks were found. Each site must look like: example.com { … }');
+  return { drafts, unmapped, warnings };
+}
+
+const BLANK_HOST: SiteHostFields = {
+  kind: 'proxy',
+  enabled: true,
+  domains: [],
+  tls: 'acme',
+  forceHttps: true,
+  hsts: false,
+  hstsSubdomains: false,
+  hstsMaxAgeSeconds: 31536000,
+  compression: true,
+  blockExploits: false,
+  accessLog: false,
+  responseHeaders: [],
+  upstreams: [],
+  loadBalancing: 'roundRobin',
+  healthCheck: { enabled: false, path: '/', intervalSeconds: 30, timeoutSeconds: 5, expectStatus: 0 },
+  upstreamTlsInsecure: false,
+  upstreamNtlm: false,
+  requestHeaders: [],
+  locations: [],
+  redirectCode: 301,
+  preservePath: true,
+  browse: false,
+  spaFallback: false,
+  responseStatus: 200,
+  responseContentType: 'text/plain; charset=utf-8',
+};
 
 const accessListOut = (s: MockState, l: MockState['accessLists'][number]): AccessList => ({
   ...l,
@@ -342,7 +493,22 @@ const routes: [string, string, Handler][] = [
   }],
   ['POST', '/api/auth/login', (c, s) => {
     const b = c.body as { email: string; password: string };
-    const u = s.users.find((x) => x.email.toLowerCase() === (b.email ?? '').toLowerCase() && !x.disabled);
+    let u = s.users.find((x) => x.email.toLowerCase() === (b.email ?? '').toLowerCase() && !x.disabled);
+    // Directory sign-in (mock): "CORP\\jdoe", "jdoe" or "jdoe@corp.example.com"; "nogroup" is in no mapped group.
+    if (!u && s.ldapSettings.enabled && b.password && b.password !== 'wrong') {
+      const name = (b.email ?? '').replace(/^.*\\/, '').replace(/@.*$/, '').toLowerCase();
+      if (name === 'nogroup') throw new HttpError(403, 'Not authorised', `The directory account ${b.email} is not a member of a group mapped to a role in Caddy Proxy Manager.`);
+      if (/^[a-z][a-z0-9._-]{1,30}$/.test(name)) {
+        const email = `${name}@corp.example.com`;
+        u = s.users.find((x) => x.email === email);
+        if (u?.disabled) throw new HttpError(401, 'Invalid credentials');
+        if (!u) {
+          u = { id: newId(), email, name: name.replace(/(^|[._-])(\w)/g, (_m, sep: string, ch: string) => (sep ? ' ' : '') + ch.toUpperCase()), role: 'viewer', disabled: false, createdAt: iso(), password: '', externalSource: 'ldap' };
+          s.users.push(u);
+          audit(s, 'provisioned', 'user', u.name, 'Directory account created at first sign-in');
+        }
+      }
+    }
     if (!u || !b.password || b.password === 'wrong') throw new HttpError(401, 'Invalid credentials');
     s.sessionUserId = u.id;
     u.lastLoginAt = iso();
@@ -384,6 +550,7 @@ const routes: [string, string, Handler][] = [
     if (!u) throw new HttpError(404, 'Not found', 'User was not found.');
     const b = c.body as UserDto & { password?: string };
     if (u.id === me.id && (b.role !== u.role || b.disabled)) throw new HttpError(400, 'Invalid request', 'You cannot demote or disable yourself.');
+    if (u.externalSource && b.password) throw new HttpError(400, 'Invalid request', 'Directory accounts have no local password.', { Password: ['Directory accounts sign in with their directory password.'] });
     Object.assign(u, { email: b.email, name: b.name, role: b.role, disabled: b.disabled }, b.password ? { password: b.password } : {});
     audit(s, 'updated', 'user', u.name);
     return ok(publicUser(u));
@@ -603,6 +770,69 @@ const routes: [string, string, Handler][] = [
     currentUser(s);
     return { text: INTERNAL_ROOT_PEM, contentType: 'application/x-pem-file', headers: { 'Content-Disposition': 'attachment; filename="caddy-local-root.crt"' } };
   }],
+  ['GET', '/api/certificates/windows-store', (c, s) => {
+    requireRole(s, 'admin');
+    const key = `${c.query.get('location') ?? 'LocalMachine'}/${c.query.get('store') ?? 'My'}`;
+    return ok(s.windowsStore[key] ?? []);
+  }],
+  ['POST', '/api/certificates/pfx-path', (c, s) => {
+    requireRole(s, 'admin');
+    const b = c.body as { name?: string; pfxPath: string; pfxPassword?: string };
+    const path = (b.pfxPath ?? '').trim();
+    if (!/\.(pfx|p12)$/i.test(path)) throw new HttpError(400, 'Invalid request', 'Only .pfx and .p12 files can be referenced.', { PfxPath: ['Only .pfx and .p12 files can be referenced.'] });
+    if (/programdata\\caddyproxymanager/i.test(path)) throw new HttpError(400, 'Invalid request', 'Files inside the manager data folder cannot be referenced.', { PfxPath: ['Files inside the manager data folder cannot be referenced.'] });
+    if (/missing/i.test(path)) throw new HttpError(400, 'Invalid request', `Cannot read ${path}.`, { PfxPath: [`Cannot read ${path}. Check the path and that this computer's account has read access.`] });
+    if (b.pfxPassword === 'wrong') throw new HttpError(400, 'Invalid request', 'The PFX password is incorrect.', { PfxPassword: ['The PFX password is incorrect or the file is damaged.'] });
+    const file = path.split(/[\\/]/).pop() ?? path;
+    const subject = file.replace(/(-chain)?\.(pfx|p12)$/i, '');
+    return ok(addCert(s, { name: b.name?.trim() || subject, source: 'pfxFile', sourcePath: path, subjects: [subject], lastSyncedAt: iso() }));
+  }],
+  ['POST', '/api/certificates/windows-store', (c, s) => {
+    requireRole(s, 'admin');
+    const b = c.body as { name?: string; storeLocation?: string; storeName?: string; thumbprint?: string; subject?: string };
+    if (!!b.thumbprint === !!b.subject) throw new HttpError(400, 'Invalid request', 'Specify exactly one of thumbprint or subject.', { Thumbprint: ['Specify exactly one of thumbprint or subject.'] });
+    const location = b.storeLocation ?? 'LocalMachine';
+    const storeName = b.storeName ?? 'My';
+    const list = s.windowsStore[`${location}/${storeName}`] ?? [];
+    const now = Date.now();
+    const match = b.thumbprint
+      ? list.find((x) => x.thumbprint === b.thumbprint)
+      : list
+          .filter((x) => x.hasPrivateKey && Date.parse(x.notAfter) > now && [x.subject.replace(/^CN=/, ''), ...x.dnsNames].some((n) => n.toLowerCase() === b.subject!.trim().toLowerCase()))
+          .sort((x, y) => Date.parse(y.notAfter) - Date.parse(x.notAfter))[0];
+    if (!match)
+      throw new HttpError(400, 'Invalid request', b.thumbprint ? `No certificate with thumbprint ${b.thumbprint} in ${location}\\${storeName}.` : `No currently valid certificate with a private key matches “${b.subject}” in ${location}\\${storeName}.`, b.thumbprint ? { Thumbprint: ['Certificate not found in the store.'] } : { Subject: [`No currently valid certificate with a private key matches “${b.subject}”.`] });
+    if (!match.hasPrivateKey) throw new HttpError(400, 'Invalid request', 'The certificate has no private key.', { Thumbprint: ['The certificate has no private key.'] });
+    if (!match.exportable) throw new HttpError(400, 'Invalid request', `The private key of ${match.subject} is not exportable. Re-issue it from a template that allows exporting the private key.`, { Thumbprint: ['The private key is not exportable.'] });
+    return ok(addCert(s, {
+      name: b.name?.trim() || match.dnsNames[0] || match.subject.replace(/^CN=/, ''),
+      source: 'windowsStore',
+      storeLocation: location,
+      storeName,
+      storeThumbprint: b.thumbprint,
+      storeSubject: b.subject?.trim(),
+      subjects: match.dnsNames.length ? match.dnsNames : [match.subject.replace(/^CN=/, '')],
+      issuer: match.issuer,
+      notBefore: match.notBefore,
+      notAfter: match.notAfter,
+      thumbprint: match.thumbprint,
+      lastSyncedAt: iso(),
+    }));
+  }],
+  ['POST', '/api/certificates/:id/sync', (c, s) => {
+    requireRole(s, 'operator');
+    const cert = s.certificates.find((x) => x.id === c.params.id);
+    if (!cert) throw new HttpError(404, 'Not found', 'Certificate was not found.');
+    if (cert.source === 'uploaded') throw new HttpError(400, 'Invalid request', 'Uploaded certificates have no source to sync from. Use Replace instead.');
+    const res = transactional(s, `Certificate synced: ${cert.name}`, () => {
+      cert.lastSyncedAt = iso();
+      cert.lastSyncError = cert.source === 'windowsStore' && cert.storeSubject?.startsWith('mail.') ? cert.lastSyncError : undefined;
+      cert.updatedAt = iso();
+      return cert;
+    });
+    audit(s, 'synced', 'certificate', cert.name);
+    return ok(res);
+  }],
   ['POST', '/api/certificates/:method', (c, s) => {
     requireRole(s, 'operator');
     let name = '';
@@ -621,6 +851,7 @@ const routes: [string, string, Handler][] = [
       name = b.name;
       if (b.keyPem.includes('MISMATCH')) throw new HttpError(400, 'Invalid request', 'The private key does not match the certificate.', { KeyPem: ['The private key does not match the certificate.'] });
     } else if (c.params.method === 'path') {
+      requireRole(s, 'admin');
       const b = c.body as { name: string; certPath: string; keyPath: string };
       name = b.name;
       source = 'filePath';
@@ -684,16 +915,35 @@ const routes: [string, string, Handler][] = [
   // ---- settings
   ['GET', '/api/settings/caddy', (_c, s) => {
     currentUser(s);
-    return ok(stripSecret(s.caddySettings, 'eabMacKey'));
+    return ok(caddySettingsOut(s));
   }],
   ['PUT', '/api/settings/caddy', (c, s) => {
     requireRole(s, 'admin');
-    const b = c.body as CaddySettings & { eabMacKey?: string | null };
-    const { eabMacKey, hasEabMacKey: _h, ...rest } = b;
+    const b = c.body as CaddySettings & { eabMacKey?: string | null; acmeIssuerJson?: string | null };
+    const { eabMacKey, acmeIssuerJson, hasEabMacKey: _h, hasAcmeIssuerJson: _a, ...rest } = b;
+    const errors: Record<string, string[]> = {};
+    for (const [k, v] of [['ExtraAppsJson', rest.extraAppsJson], ['TlsConnectionPolicyJson', rest.tlsConnectionPolicyJson], ['AcmeIssuerJson', acmeIssuerJson]] as const) {
+      if (!v) continue;
+      try {
+        const o: unknown = JSON.parse(v);
+        if (!o || typeof o !== 'object' || Array.isArray(o)) errors[k] = ['Must be a JSON object.'];
+        else if (k === 'ExtraAppsJson') {
+          const reserved = Object.keys(o).filter((a) => ['http', 'tls', 'pki', 'layer4'].includes(a));
+          if (reserved.length) errors[k] = [`The app(s) ${reserved.join(', ')} are generated by the manager and cannot be overridden.`];
+        }
+      } catch (e) {
+        errors[k] = [`Invalid JSON: ${(e as Error).message}`];
+      }
+    }
+    if (Object.keys(errors).length) throw new HttpError(400, 'Invalid request', 'One or more fields are invalid.', errors);
+    const provider = acmeIssuerJson ? (/"name"\s*:\s*"([^"]+)"/.exec(acmeIssuerJson)?.[1] ?? null) : null;
+    if (provider && !(s.binary.installed?.modules ?? []).includes(`dns.providers.${provider}`))
+      throw new HttpError(422, 'Caddy rejected the configuration', `loading new config: loading tls app module: provision tls: provisioning automation policy 1: loading TLS automation management module: position 0: loading module 'acme': provision tls.issuance.acme: loading DNS provider module: loading module '${provider}': unknown module: dns.providers.${provider}`);
     const res = transactional(s, 'Settings changed: Caddy', () => {
       Object.assign(s.caddySettings, rest);
       secret(s.caddySettings, 'eabMacKey', eabMacKey, 'hasEabMacKey');
-      return stripSecret(s.caddySettings, 'eabMacKey');
+      secret(s.caddySettings, 'acmeIssuerJson', acmeIssuerJson, 'hasAcmeIssuerJson');
+      return caddySettingsOut(s);
     });
     audit(s, 'updated', 'settings', 'Caddy');
     return ok(res);
@@ -704,22 +954,36 @@ const routes: [string, string, Handler][] = [
   }],
   ['PUT', '/api/settings/binary', (c, s) => {
     requireRole(s, 'admin');
-    Object.assign(s.binarySettings, c.body);
+    const b = c.body as BinarySettingsBody;
+    if (b.managerReleaseRepo && !/^[\w.-]+\/[\w.-]+$/.test(b.managerReleaseRepo))
+      throw new HttpError(400, 'Invalid request', 'Use owner/repository.', { ManagerReleaseRepo: ['Use the GitHub owner/repository form.'] });
+    Object.assign(s.binarySettings, b);
+    s.binary.managerUpdateAvailable = !!b.managerReleaseRepo;
+    if (!b.managerReleaseRepo) {
+      delete s.binary.managerLatestVersion;
+      delete s.binary.managerLatestUrl;
+    } else {
+      s.binary.managerLatestVersion = '1.1.0';
+      s.binary.managerLatestUrl = `https://github.com/${b.managerReleaseRepo}/releases/tag/v1.1.0`;
+    }
     audit(s, 'updated', 'settings', 'Updates');
     return ok(s.binarySettings);
   }],
   ['GET', '/api/settings/notifications', (_c, s) => {
     requireRole(s, 'admin');
-    return ok(stripSecret(s.notificationSettings, 'smtpPassword'));
+    return ok(stripSecret(stripSecret(s.notificationSettings, 'smtpPassword'), 'oAuthClientSecret'));
   }],
   ['PUT', '/api/settings/notifications', (c, s) => {
     requireRole(s, 'admin');
-    const b = c.body as NotificationSettings & { smtpPassword?: string | null };
-    const { smtpPassword, hasSmtpPassword: _h, ...rest } = b;
+    const b = c.body as NotificationSettings & { smtpPassword?: string | null; oAuthClientSecret?: string | null };
+    const { smtpPassword, oAuthClientSecret, hasSmtpPassword: _h, hasOAuthClientSecret: _o, ...rest } = b;
+    if (rest.smtpAuth === 'oAuth2ClientCredentials' && rest.oAuthClientId && !/^[0-9a-f-]{36}$/i.test(rest.oAuthClientId))
+      throw new HttpError(400, 'Invalid request', 'The client ID must be a GUID.', { OAuthClientId: ['The Application (client) ID must be a GUID.'] });
     Object.assign(s.notificationSettings, rest);
     secret(s.notificationSettings, 'smtpPassword', smtpPassword, 'hasSmtpPassword');
+    secret(s.notificationSettings, 'oAuthClientSecret', oAuthClientSecret, 'hasOAuthClientSecret');
     audit(s, 'updated', 'settings', 'Notifications');
-    return ok(stripSecret(s.notificationSettings, 'smtpPassword'));
+    return ok(stripSecret(stripSecret(s.notificationSettings, 'smtpPassword'), 'oAuthClientSecret'));
   }],
   ['POST', '/api/settings/notifications/test', (_c, s) => {
     requireRole(s, 'admin');
@@ -727,6 +991,8 @@ const routes: [string, string, Handler][] = [
     const errors: string[] = [];
     if (n.webhookEnabled && (n.webhookUrl ?? '').includes('fail')) errors.push(`Webhook: POST ${n.webhookUrl} returned 404 Not Found.`);
     if (n.smtpEnabled && n.smtpHost.includes('invalid')) errors.push(`SMTP: could not connect to ${n.smtpHost}:${n.smtpPort} (No such host is known).`);
+    if (n.smtpEnabled && n.smtpAuth === 'oAuth2ClientCredentials' && (n.oAuthTenantId ?? '').includes('fail'))
+      errors.push(`SMTP: Microsoft Entra ID token request failed: AADSTS700016: Application with identifier '${n.oAuthClientId}' was not found in the directory '${n.oAuthTenantId}'.`);
     return ok({ ok: errors.length === 0, errors });
   }],
   ['GET', '/api/settings/ui', (_c, s) => {
@@ -743,6 +1009,76 @@ const routes: [string, string, Handler][] = [
     const after = JSON.stringify([s.uiSettings.port, s.uiSettings.bindAddress, s.uiSettings.httpsEnabled, s.uiSettings.httpsPort, s.uiSettings.httpsPfxPath]);
     audit(s, 'updated', 'settings', 'Management UI');
     return ok({ item: stripSecret(s.uiSettings, 'httpsPfxPassword'), restartRequired: before !== after || httpsPfxPassword !== undefined });
+  }],
+
+  // ---- directory (LDAP)
+  ['GET', '/api/settings/ldap', (_c, s) => {
+    requireRole(s, 'admin');
+    return ok(stripSecret(s.ldapSettings, 'bindPassword'));
+  }],
+  ['PUT', '/api/settings/ldap', (c, s) => {
+    requireRole(s, 'admin');
+    const b = c.body as LdapSettings & { bindPassword?: string | null };
+    const { bindPassword, hasBindPassword: _h, ...rest } = b;
+    if (rest.enabled && !rest.userFilter.includes('{0}')) throw new HttpError(400, 'Invalid request', 'The user filter must contain {0}.', { UserFilter: ['The user filter must contain {0}.'] });
+    Object.assign(s.ldapSettings, rest);
+    secret(s.ldapSettings, 'bindPassword', bindPassword, 'hasBindPassword');
+    audit(s, 'updated', 'settings', 'Directory (LDAP)');
+    return ok(stripSecret(s.ldapSettings, 'bindPassword'));
+  }],
+  ['POST', '/api/settings/ldap/test', async (c, s) => {
+    requireRole(s, 'admin');
+    await sleep(700);
+    const { username, password } = c.body as { username: string; password: string };
+    const l = s.ldapSettings;
+    if (!l.enabled) return ok({ ok: false, error: 'Directory sign-in is disabled.' });
+    if (l.server.includes('unreachable')) return ok({ ok: false, error: `Cannot connect to ${l.server}:${l.port} (${l.security}): The LDAP server is unavailable.` });
+    const name = username.replace(/^.*\\/, '').replace(/@.*$/, '').toLowerCase();
+    if (password === 'wrong') return ok({ ok: false, error: `Bind as ${username} failed: 49 — invalid credentials (AcceptSecurityContext error, data 52e).` });
+    const groups = name === 'nogroup' ? ['CN=Domain Users,CN=Users,DC=corp,DC=example,DC=com'] : [l.adminGroupDn, 'CN=Domain Users,CN=Users,DC=corp,DC=example,DC=com', 'CN=VPN Users,OU=Groups,DC=corp,DC=example,DC=com'].filter(Boolean) as string[];
+    return ok({
+      ok: true,
+      role: name === 'nogroup' ? undefined : 'admin',
+      displayName: name.replace(/(^|[._-])(\w)/g, (_m, sep: string, ch: string) => (sep ? ' ' : '') + ch.toUpperCase()),
+      email: `${name}@corp.example.com`,
+      groups,
+    });
+  }],
+
+  // ---- scheduled backups
+  ['GET', '/api/settings/backup', (_c, s) => {
+    requireRole(s, 'admin');
+    return ok(stripSecret(s.backupSettings, 'password'));
+  }],
+  ['PUT', '/api/settings/backup', (c, s) => {
+    requireRole(s, 'admin');
+    const b = c.body as BackupSettings & { password?: string | null };
+    const { password, hasPassword: _h, ...rest } = b;
+    if (rest.directory && /programdata\\caddyproxymanager\\db/i.test(rest.directory)) throw new HttpError(400, 'Invalid request', 'Choose a folder outside the database folder.', { Directory: ['Choose a folder outside the database folder.'] });
+    Object.assign(s.backupSettings, rest);
+    secret(s.backupSettings, 'password', password, 'hasPassword');
+    audit(s, 'updated', 'settings', 'Backups');
+    return ok(stripSecret(s.backupSettings, 'password'));
+  }],
+  ['GET', '/api/backups', (_c, s) => {
+    requireRole(s, 'admin');
+    return ok(s.backups);
+  }],
+  ['POST', '/api/backups/run', async (_c, s) => {
+    requireRole(s, 'admin');
+    await sleep(900);
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const name = `cpm-backup-WEB-PROXY01-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.zip`;
+    s.backups.unshift({ name, size: 2_512_345, createdAt: iso() });
+    s.backups = s.backups.slice(0, s.backupSettings.keep);
+    audit(s, 'backup', 'system', name);
+    return ok({ name });
+  }],
+  ['GET', '/api/backups/:name', (c, s) => {
+    requireRole(s, 'admin');
+    if (!s.backups.some((b) => b.name === c.params.name)) throw new HttpError(404, 'Not found', `Backup ${c.params.name} was not found.`);
+    return { bytes: Buffer.from('PK\u0005\u0006' + '\u0000'.repeat(18), 'latin1'), contentType: 'application/zip', headers: { 'Content-Disposition': `attachment; filename="${c.params.name}"` } };
   }],
 
   // ---- config
@@ -782,6 +1118,23 @@ const routes: [string, string, Handler][] = [
     return ok({ json: JSON.stringify({ apps: { http: { servers: { srv0: { listen: [':443'], routes: sites.map((site) => ({ match: [{ host: site.split(/[\s,]+/).filter(Boolean) }], handle: [{ handler: 'subroute', routes: [] }], terminal: true })) } } } } }, null, 2), warnings });
   }],
 
+  ['POST', '/api/config/caddyfile/import', (c, s) => {
+    requireRole(s, 'admin');
+    const { caddyfile } = c.body as { caddyfile: string };
+    return ok(importCaddyfile(caddyfile ?? ''));
+  }],
+  ['POST', '/api/config/caddyfile/import/commit', (c, s) => {
+    requireRole(s, 'admin');
+    const { hosts } = c.body as { hosts: SiteHostFields[] };
+    if (!Array.isArray(hosts) || hosts.length === 0) throw new HttpError(400, 'Invalid request', 'Select at least one host to import.');
+    for (const h of hosts) validateHost(s, h);
+    const res = transactional(s, `Caddyfile import: ${hosts.length} host(s)`, () => {
+      for (const h of hosts) s.hosts.push({ ...h, id: newId(), createdAt: iso(), updatedAt: iso() } as SiteHost);
+    });
+    audit(s, 'imported', 'host', `${hosts.length} host(s)`, 'Imported from a Caddyfile');
+    return ok({ created: hosts.length, apply: res.apply });
+  }],
+
   // ---- caddy runtime
   ['GET', '/api/caddy/status', (_c, s) => {
     currentUser(s);
@@ -819,11 +1172,59 @@ const routes: [string, string, Handler][] = [
     const version = (c.body as { version?: string }).version ?? s.binary.latest?.version ?? 'v2.11.4';
     const plugins = [...s.binarySettings.plugins];
     const job = startJob(s, 'caddy-install', `Install Caddy ${version}`, JOB_STEPS(version, plugins), () => {
-      s.binary.installed = { ...(s.binary.installed ?? { path: s.status.binaryPath, modules: [] }), version, installedAt: iso(), plugins };
+      s.binary.previousVersion = s.binary.installed?.version;
+      s.binary.canRollback = !!s.binary.installed;
+      s.binary.installed = { ...(s.binary.installed ?? { path: s.status.binaryPath }), version, installedAt: iso(), plugins, modules: [...BASE_MODULES, ...plugins.flatMap(modulesOf)] };
       s.binary.updateAvailable = version !== s.binary.latest?.version;
       s.binary.pluginsOutOfSync = false;
       s.status = { ...s.status, binaryInstalled: true, version, state: 'running', adminReachable: true, startedAt: iso() };
       audit(s, 'installed', 'caddy', version);
+    });
+    return ok(jobSnapshot(job));
+  }],
+  ['POST', '/api/caddy/binary/upload', (c, s) => {
+    requireRole(s, 'admin');
+    const f = parseMultipart(c.raw, String(c.headers['content-type'] ?? ''));
+    const file = (f.file ?? '').replace(/^file:/, '');
+    if (!file) throw new HttpError(400, 'Invalid request', "Upload caddy.exe or a release archive in the form field 'file'.", { file: ['Choose caddy.exe or a release archive.'] });
+    if (!/\.(exe|zip|tar\.gz)$/i.test(file)) throw new HttpError(400, 'Invalid request', `${file} is not caddy.exe or a release archive.`, { file: ['Upload caddy.exe, a .zip or a .tar.gz release archive.'] });
+    if (f.sha512 && f.sha512.startsWith('00')) throw new HttpError(400, 'Invalid request', 'Checksum mismatch.', { sha512: [`SHA-512 of ${file} does not match the value you entered.`] });
+    if (s.jobs.some((j) => j.kind.startsWith('caddy-') && j.state === 'running')) throw new HttpError(409, 'Conflict', 'Another Caddy installation job is running.');
+    const version = /v?(\d+\.\d+\.\d+)/.exec(file)?.[1] ? `v${/v?(\d+\.\d+\.\d+)/.exec(file)![1]}` : 'v2.11.4';
+    const job = startJob(s, 'caddy-upload', `Install uploaded ${file}`, [
+      `Received ${file} (uploaded by ${currentUser(s).name})`,
+      f.sha512 ? 'SHA-512 checksum matches the value provided' : 'No checksum provided — skipping checksum verification',
+      /\.zip$|\.tar\.gz$/i.test(file) ? `Extracted caddy.exe from ${file}` : 'Using the uploaded executable',
+      ...JOB_STEPS(version, []).slice(3),
+    ], () => {
+      s.binary.previousVersion = s.binary.installed?.version;
+      s.binary.canRollback = true;
+      s.binary.installed = { ...(s.binary.installed ?? { path: s.status.binaryPath, modules: BASE_MODULES, plugins: [] }), version, installedAt: iso() };
+      s.binary.updateAvailable = version !== s.binary.latest?.version;
+      s.status = { ...s.status, binaryInstalled: true, version, state: 'running', adminReachable: true, startedAt: iso() };
+      audit(s, 'installed', 'caddy', version, `Offline upload: ${file}`);
+    });
+    return ok(jobSnapshot(job));
+  }],
+  ['POST', '/api/caddy/binary/rollback', (_c, s) => {
+    requireRole(s, 'admin');
+    if (!s.binary.canRollback || !s.binary.previousVersion) throw new HttpError(409, 'Conflict', 'There is no previous Caddy binary to roll back to.');
+    const target = s.binary.previousVersion;
+    const current = s.binary.installed?.version;
+    const job = startJob(s, 'caddy-rollback', `Roll back Caddy to ${target}`, [
+      `caddy.exe.previous version → ${target}`,
+      'caddy.exe.previous validate --config caddy.json → Valid configuration',
+      'Stopping service Caddy…',
+      `Swapped caddy.exe (${current}) and caddy.exe.previous (${target})`,
+      'Starting service Caddy…',
+      'Admin API responded after 1.2 s',
+      `Caddy ${target} is running`,
+    ], () => {
+      s.binary.previousVersion = current;
+      s.binary.installed = { ...(s.binary.installed ?? { path: s.status.binaryPath, modules: BASE_MODULES, plugins: [] }), version: target, installedAt: iso() };
+      s.binary.updateAvailable = target !== s.binary.latest?.version;
+      s.status = { ...s.status, version: target, state: 'running', adminReachable: true, startedAt: iso() };
+      audit(s, 'rolledBack', 'caddy', target);
     });
     return ok(jobSnapshot(job));
   }],
@@ -913,9 +1314,14 @@ const routes: [string, string, Handler][] = [
     requireRole(s, 'admin');
     return { bytes: Buffer.from('PK\u0005\u0006' + '\u0000'.repeat(18), 'latin1'), contentType: 'application/zip', headers: { 'Content-Disposition': 'attachment; filename="caddy-proxy-manager-backup.zip"' } };
   }],
-  ['POST', '/api/backup/restore', (_c, s) => {
+  ['POST', '/api/backup/restore', (c, s) => {
     requireRole(s, 'admin');
-    return ok({ restartRequired: true });
+    const f = parseMultipart(c.raw, String(c.headers['content-type'] ?? ''));
+    const file = (f.file ?? '').replace(/^file:/, '');
+    if (/encrypted|cpm-backup/i.test(file) && !f.password)
+      throw new HttpError(400, 'Invalid request', 'This backup is encrypted. Enter the backup password.', { password: ['This backup is encrypted. Enter the backup password.'] });
+    if (f.password === 'wrong') throw new HttpError(400, 'Invalid request', 'The backup password is incorrect.', { password: ['The backup password is incorrect.'] });
+    return ok({ restartRequired: true, message: 'The backup was validated and will be applied when the Caddy Proxy Manager service restarts.' });
   }],
 ];
 
