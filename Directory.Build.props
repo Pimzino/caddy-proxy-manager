@@ -8,7 +8,7 @@
     <Company>Caddy Proxy Manager</Company>
     <Product>Caddy Proxy Manager</Product>
     <DefaultItemExcludes>$(DefaultItemExcludes);**/._*</DefaultItemExcludes>
-    <DebugType Condition="'$(Configuration)' == 'Release'">embedded</DebugType>
+    <DebugType Condition="'$(Configuration)' == 'Release' and '$(MSBuildProjectExtension)' != '.wixproj'">embedded</DebugType>
     <NoWarn>$(NoWarn);CA1416;CS1591</NoWarn>
   </PropertyGroup>
 </Project>

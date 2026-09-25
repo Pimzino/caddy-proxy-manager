@@ -86,17 +86,20 @@ public sealed class TlsE2ETests
         // The fixed config through the service.
         var logAfterControl = c.ProcessLog().Length;
         await c.ApplyAsync();
-        var x = await c.HttpsUntilAsync("x.w.test", r => r.DnsNames.Contains("x.w.test"), TimeSpan.FromSeconds(20));
-        var y = await c.HttpsUntilAsync("y.c.test", r => r.DnsNames.Contains("y.c.test"), TimeSpan.FromSeconds(20));
+        // Caddy obtains these certificates in the background; a slow CI runner needed more than 20 s once (the
+        // behaviour under test is which certificate is served, not how fast it is issued).
+        var x = await c.HttpsUntilAsync("x.w.test", r => r.DnsNames.Contains("x.w.test"), TimeSpan.FromSeconds(60));
+        var y = await c.HttpsUntilAsync("y.c.test", r => r.DnsNames.Contains("y.c.test"), TimeSpan.FromSeconds(60));
         var z = await c.HttpsAsync("z.c.test");
         var a2Attempted = await Wait.For(() => Task.FromResult(Managed(c.ProcessLog()[logAfterControl..], "a2.w.test")), TimeSpan.FromSeconds(15));
         report["fixed"] = new JsonObject { ["x.w.test"] = x.ToJson(), ["y.c.test"] = y.ToJson(), ["z.c.test"] = z.ToJson(), ["a2.w.test attempted"] = a2Attempted };
         report["automate"] = fixedJson["apps"]!["tls"]!["certificates"]?["automate"]?.DeepClone();
 
-        Assert.Contains("x.w.test", x.DnsNames);                       // (1)
+        string LogTail() { var l = c.ProcessLog()[logAfterControl..]; return l.Length > 6000 ? l[^6000..] : l; }
+        Assert.True(x.DnsNames.Contains("x.w.test"), "x.w.test did not get its own certificate. Caddy log:\n" + LogTail()); // (1)
         Assert.Contains("Caddy Local Authority", x.Issuer);
         Assert.Equal("x-internal", x.Body);                            // (5)
-        Assert.Contains("y.c.test", y.DnsNames);                       // (2)
+        Assert.True(y.DnsNames.Contains("y.c.test"), "y.c.test did not get its own certificate. Caddy log:\n" + LogTail()); // (2)
         Assert.Contains("Caddy Local Authority", y.Issuer);
         Assert.Equal("y-internal", y.Body);
         Assert.Contains("*.c.test", z.DnsNames);                       // (3)
