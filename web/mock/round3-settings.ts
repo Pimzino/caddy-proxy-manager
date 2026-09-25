@@ -366,9 +366,8 @@ export function mockCluster() {
 }
 
 function clusterStatus(s: MockState): ClusterStatus {
+  // Local storage in a cluster is explained by the storage section of the Cluster tab (from storageBackend), not here.
   const warnings: string[] = [];
-  if (cluster.role === 'primary' && s.caddySettings.storageBackend === 'local')
-    warnings.push('Caddy storage is local: every server obtains and renews its own certificates. Use shared storage so the servers share certificates, ACME accounts and challenge data.');
   return {
     role: cluster.role,
     serverName: cluster.role === 'node' ? 'WEB-PROXY02' : 'WEB-PROXY01',

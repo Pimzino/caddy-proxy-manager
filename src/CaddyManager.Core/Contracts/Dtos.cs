@@ -400,7 +400,7 @@ public sealed record ClusterStatus
     public string? AppliedRevision { get; init; }
     public int NodeCount { get; init; }
     public StorageBackend StorageBackend { get; init; }
-    /// <summary>e.g. "Local storage: each server obtains its own certificates" when nodes exist.</summary>
+    /// <summary>Operational notes, e.g. a node that has not heard from its primary or whose last sync failed.</summary>
     public List<string> Warnings { get; init; } = new();
 }
 

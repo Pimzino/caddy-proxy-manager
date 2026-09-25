@@ -178,6 +178,7 @@ public sealed class Manager : IAsyncDisposable
     /// <summary>Set when the Config module in this build has no IConfigChangeFeed: the test raises Applied itself.</summary>
     public FakeConfigChangeFeed? FakeFeed { get; private set; }
     private Action<ClusterOptions>? _clusterOptions;
+    private Action<OpsOptions>? _opsOptions;
     private LiteStore? _store;
 
     private Manager(string name, string dataDir, int ui, int http, int https, int admin, CaptureLoggerProvider logs)
@@ -197,13 +198,14 @@ public sealed class Manager : IAsyncDisposable
 
     /// <summary>New data directory: seeds settings (ports, admin listen, display name) and an admin user, installs the dev Caddy binary.</summary>
     public static async Task<Manager> CreateAsync(string name, System.Security.Cryptography.X509Certificates.X509Certificate2? uiCertificate = null,
-        string? caddyBinary = null, Action<ClusterOptions>? clusterOptions = null)
+        string? caddyBinary = null, Action<ClusterOptions>? clusterOptions = null, Action<OpsOptions>? opsOptions = null)
     {
         var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cpm-cluster-e2e", name + "-" + Guid.NewGuid().ToString("N")[..8]);
         var m = new Manager(name, dir, Net.FreePort(), Net.FreePort(), Net.FreePort(), Net.FreePort(), new CaptureLoggerProvider(name))
         {
             UiCertificate = uiCertificate,
             _clusterOptions = clusterOptions,
+            _opsOptions = opsOptions,
         };
         m.Paths.EnsureCreated();
         using (var seed = new LiteStore(m.Paths))
@@ -243,7 +245,12 @@ public sealed class Manager : IAsyncDisposable
             .AddOpsModule()
             .AddTelemetryModule()
             .AddClusterModule();
-        builder.Services.Configure<OpsOptions>(o => o.EnableBackgroundServices = false);
+        // Ops background services (monitor, retention, scheduled backups) are off unless a test configures them.
+        builder.Services.Configure<OpsOptions>(o =>
+        {
+            o.EnableBackgroundServices = _opsOptions is not null;
+            _opsOptions?.Invoke(o);
+        });
         builder.Services.Configure<ClusterOptions>(o =>
         {
             o.HeartbeatInterval = TimeSpan.FromMilliseconds(500);

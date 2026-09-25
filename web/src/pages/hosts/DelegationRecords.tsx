@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { AlertTriangle, Check, CircleAlert, CircleDashed, SearchCheck } from 'lucide-react';
 import { errorMessage } from '@/api/client';
 import { useDelegationCheck } from '@/api/hooks';
@@ -146,10 +146,32 @@ export function DelegationRecordsPanel({
   );
 }
 
+/** A DNS name that wraps only after its dots. */
+export function DnsName({ name }: { name: string }) {
+  const labels = name.split('.');
+  return (
+    <>
+      {labels.map((l, i) => (
+        <Fragment key={i}>
+          {/* No break inside a label, not even after the hyphen of "_acme-challenge". */}
+          <span className="whitespace-nowrap">{l}</span>
+          {i < labels.length - 1 && (
+            <>
+              .<wbr />
+            </>
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function CopyableName({ value, label }: { value: string; label: string }) {
   return (
     <div className="flex items-center gap-1">
-      <span className="mono text-sm break-all text-fg">{value}</span>
+      <span className="mono text-sm wrap-anywhere text-fg">
+        <DnsName name={value} />
+      </span>
       <CopyButton iconOnly size="xs" variant="ghost" label={`${label} ${value}`} text={value} />
     </div>
   );
@@ -164,8 +186,12 @@ function StatusCell({ check }: { check?: DelegationCheck }) {
         {s.label}
       </Badge>
       {check.found.length > 0 && (
-        <p className="mono text-xs break-all text-fg-subtle" title="CNAME chain found">
-          → {check.found.join(' → ')}
+        <p className="mono text-xs wrap-anywhere text-fg-subtle" title="CNAME chain found">
+          {check.found.map((f, i) => (
+            <Fragment key={i}>
+              → <DnsName name={f} />{' '}
+            </Fragment>
+          ))}
         </p>
       )}
       {check.detail && <p className="text-xs text-fg-subtle">{check.detail}</p>}

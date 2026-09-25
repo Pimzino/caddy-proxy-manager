@@ -31,8 +31,10 @@ public static class TelemetryModule
         services.AddSingleton<ServerTelemetry>();
         services.AddSingleton<IServerTelemetry>(sp => sp.GetRequiredService<ServerTelemetry>());
 
-        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(ResourceSampler)));
-        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(StatsIngesterService)));
+        // AddSingleton, not AddHostedService: AddHostedService uses TryAddEnumerable, which treats factory registrations that
+        // return the same type (ConditionalHostedService) as duplicates and keeps only the first (BackgroundServicesE2ETests).
+        services.AddSingleton<IHostedService>(sp => new ConditionalHostedService(sp, typeof(ResourceSampler)));
+        services.AddSingleton<IHostedService>(sp => new ConditionalHostedService(sp, typeof(StatsIngesterService)));
         return services;
     }
 

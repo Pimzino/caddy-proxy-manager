@@ -102,10 +102,8 @@ public sealed class ClusterService : IClusterRole
         var s = Settings;
         var role = Role;
         var caddy = _store.GetSettings<CaddySettings>();
+        // Local storage in a cluster is explained next to the storage settings (Settings › Cluster), from StorageBackend.
         var warnings = new List<string>();
-        if (role != ClusterRole.Standalone && caddy.StorageBackend == StorageBackend.Local)
-            warnings.Add("Local storage: each server obtains its own certificates. Configure shared storage (Settings → Cluster) so the servers " +
-                         "share certificates, ACME accounts and challenge data as one Caddy cluster.");
         if (role == ClusterRole.Node)
         {
             var now = _time.GetUtcNow().UtcDateTime;

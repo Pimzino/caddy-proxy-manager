@@ -50,9 +50,11 @@ public static class OpsModule
         services.AddHostedService<OpsStartupService>();
         services.AddSingleton<MonitorService>();
         services.AddSingleton<RetentionService>();
-        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(MonitorService)));
-        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(RetentionService)));
-        services.AddHostedService(sp => new ConditionalHostedService(sp, typeof(ScheduledBackupService)));
+        // AddSingleton, not AddHostedService: AddHostedService uses TryAddEnumerable, which treats factory registrations that
+        // return the same type (ConditionalHostedService) as duplicates and keeps only the first (BackgroundServicesE2ETests).
+        services.AddSingleton<IHostedService>(sp => new ConditionalHostedService(sp, typeof(MonitorService)));
+        services.AddSingleton<IHostedService>(sp => new ConditionalHostedService(sp, typeof(RetentionService)));
+        services.AddSingleton<IHostedService>(sp => new ConditionalHostedService(sp, typeof(ScheduledBackupService)));
         return services;
     }
 

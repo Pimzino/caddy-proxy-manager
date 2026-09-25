@@ -1,12 +1,14 @@
 <#
 .SYNOPSIS
-    Downloads the external tools of the Config end-to-end tests into .dev/bin (gitignored):
+    Downloads the external tools of the end-to-end tests into .dev/bin (gitignored):
     - pebble(.exe): Let's Encrypt's test ACME CA, release $PebbleVersion, verified against the SHA-256 digest GitHub
       publishes for the release asset (the release has no checksums file);
     - caddy-rfc2136(.exe): Caddy CaddyVersion.Tested built by caddyserver.com with github.com/caddy-dns/rfc2136 and
-      github.com/caddy-dns/cloudflare (DNS-01 issuance test, secret-scrubbing test). The build server publishes no
-      checksum for custom builds, so the binary is verified by running it: `caddy version` must report the tested version
-      and `caddy list-modules` must list dns.providers.rfc2136 and dns.providers.cloudflare.
+      github.com/caddy-dns/cloudflare (DNS-01 issuance test, secret-scrubbing test);
+    - caddy-plugins(.exe): the same version with caddyserver/ntlm-transport, mholt/caddy-l4 and caddy-dns/cloudflare
+      (cluster tests: a configuration only the primary's build accepts).
+      The build server publishes no checksum for custom builds, so each binary is verified by running it: `caddy version`
+      must report the tested version and `caddy list-modules` must list the requested modules.
     The tests (tests/CaddyManager.Config.Tests/E2ETools.cs) download the same files themselves when they are missing
     (developer machines, macOS/Linux); CI runs this script first so a download problem fails loudly in its own step.
 .PARAMETER OutDir
@@ -73,24 +75,32 @@ Copy-Item -LiteralPath $pebbleBin.FullName -Destination $pebbleOut -Force
 if (-not $isWin) { chmod +x $pebbleOut }
 Write-Host "Pebble $PebbleVersion -> $pebbleOut"
 
-# ---------------------------------------------------------------- Caddy with caddy-dns/rfc2136 + caddy-dns/cloudflare
+# ---------------------------------------------------------------- Caddy builds with plugins
 $source = Get-Content -LiteralPath (Join-Path $root 'src/CaddyManager.Platform/Binary/CaddyVersion.cs') -Raw
 $m = [regex]::Match($source, 'public const string Tested = "(v\d+\.\d+\.\d+)";')
 if (-not $m.Success) { throw 'CaddyVersion.Tested was not found in CaddyVersion.cs.' }
 $tag = $m.Groups[1].Value
-$packages = @('github.com/caddy-dns/rfc2136', 'github.com/caddy-dns/cloudflare')
-$url = "https://caddyserver.com/api/download?os=$goos&arch=$goarch&version=$tag" + (($packages | ForEach-Object { "&p=$_" }) -join '')
-$caddyOut = Join-Path $OutDir "caddy-rfc2136$exe"
-# Staged under a name that still ends in .exe: Windows only runs executables by their extension.
-$staged = Join-Path $OutDir "caddy-rfc2136.staged$exe"
-# The build server compiles on demand: allow several minutes.
-Invoke-Retry { Invoke-WebRequest -Uri $url -OutFile $staged -Headers $download -TimeoutSec 600 } "Caddy build $url" | Out-Null
-if (-not $isWin) { chmod +x $staged }
-$reported = (& $staged version) -join ' '
-if (-not $reported.StartsWith("$tag ")) { throw "The custom Caddy build reports '$reported', expected $tag." }
-$modules = & $staged list-modules
-foreach ($mod in 'dns.providers.rfc2136', 'dns.providers.cloudflare') {
-    if (-not ($modules | Where-Object { $_.Trim() -eq $mod })) { throw "The custom Caddy build does not include $mod." }
+
+function Get-CaddyBuild([string] $name, [string[]] $packages, [string[]] $requiredModules) {
+    $url = "https://caddyserver.com/api/download?os=$goos&arch=$goarch&version=$tag" + (($packages | ForEach-Object { "&p=$_" }) -join '')
+    $out = Join-Path $OutDir "$name$exe"
+    # Staged under a name that still ends in .exe: Windows only runs executables by their extension.
+    $staged = Join-Path $OutDir "$name.staged$exe"
+    # The build server compiles on demand: allow several minutes.
+    Invoke-Retry { Invoke-WebRequest -Uri $url -OutFile $staged -Headers $download -TimeoutSec 600 } "Caddy build $url" | Out-Null
+    if (-not $isWin) { chmod +x $staged }
+    $reported = (& $staged version) -join ' '
+    if (-not $reported.StartsWith("$tag ")) { throw "The custom Caddy build $name reports '$reported', expected $tag." }
+    $modules = & $staged list-modules
+    foreach ($mod in $requiredModules) {
+        if (-not ($modules | Where-Object { $_.Trim() -eq $mod })) { throw "The custom Caddy build $name does not include $mod." }
+    }
+    Move-Item -LiteralPath $staged -Destination $out -Force
+    Write-Host "Caddy $reported with $($packages -join ', ') -> $out"
 }
-Move-Item -LiteralPath $staged -Destination $caddyOut -Force
-Write-Host "Caddy $reported with $($packages -join ', ') -> $caddyOut"
+
+# DNS-01 issuance and secret-scrubbing tests (Config).
+Get-CaddyBuild 'caddy-rfc2136' @('github.com/caddy-dns/rfc2136', 'github.com/caddy-dns/cloudflare') @('dns.providers.rfc2136', 'dns.providers.cloudflare')
+# Cluster tests: the primary runs a build the node's standard Caddy rejects (http_ntlm), like .dev/bin/caddy-plugins.
+Get-CaddyBuild 'caddy-plugins' @('github.com/caddyserver/ntlm-transport', 'github.com/mholt/caddy-l4', 'github.com/caddy-dns/cloudflare') `
+    @('http.reverse_proxy.transport.http_ntlm', 'layer4', 'dns.providers.cloudflare')

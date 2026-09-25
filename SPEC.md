@@ -511,13 +511,16 @@ credentials only need access to a separate validation zone (e.g. a Cloudflare to
   Default → the settings value (none when empty).
 - Generator: DNS policies are grouped by effective override domain (one automation policy per distinct value; hosts without
   delegation share one); `override_domain` is set per policy, never globally.
-- Validation (400): override names must be valid DNS names (no wildcard; `_` labels allowed); `dnsDelegation: custom`
-  requires `dnsOverrideDomain`; delegation on a host whose effective challenge is not DNS → field error `dnsDelegation`.
+- Validation (400): override names must be valid DNS names (no wildcard; `_` labels allowed), stored lower-case without a
+  trailing dot; `dnsDelegation: custom` requires `dnsOverrideDomain` (dropped otherwise). A host uses the DNS challenge when
+  its effective challenge is DNS, or when it has a wildcard domain and a provider is configured. Off/Custom on an ACME host
+  that does not use the DNS challenge → field error `dnsDelegation`; non-ACME hosts silently reset to Default.
 - `POST /api/dns/delegation-check` (viewer) `{ hostId?: string, domains?: string[], target?: string, publicResolvers?: bool }`
   → `DelegationCheckResult`. With `hostId` the host's domains and effective target are used; otherwise `domains` + `target`
   (default: settings DnsOverrideDomain). Queries CNAME at `_acme-challenge.<base>` following up to 8 CNAME hops, via
-  CaddySettings.DnsResolvers when set, the public resolvers 1.1.1.1:53 and 8.8.8.8:53 when `publicResolvers` (what the CA
-  sees), else the OS resolvers; 5 s timeout per domain; status per `DelegationStatus`. Case-insensitive, trailing dots
+  the public resolvers 1.1.1.1:53 and 8.8.8.8:53 when `publicResolvers` (what the CA sees; the explicit flag wins), else
+  CaddySettings.DnsResolvers when set, else the OS resolvers ("system"); 5 s timeout per domain; status per
+  `DelegationStatus`. Case-insensitive, trailing dots
   ignored. Answers are never cached.
 - UI: Settings > Caddy ACME section gets a "Challenge delegation (CNAME)" panel (default delegation name, plain-language
   explanation, a table of the CNAME records every DNS-challenge host needs with copy buttons, and "Check DNS"). Host editor TLS
