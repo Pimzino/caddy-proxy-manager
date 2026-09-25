@@ -122,6 +122,7 @@ jobs:
             'CaddyManager.Cluster.Tests.ClusterPushE2ETests.*'
             'CaddyManager.Cluster.Tests.ClusterHttpsPinE2ETests.*'
             'CaddyManager.Cluster.Tests.FullStackTrafficE2ETests.*'
+            'CaddyManager.Cluster.Tests.BackgroundServicesE2ETests.*'
           ) -RequiredArtifacts @(
             'http3-0rtt-ip-access-list.json'
             'http3-upstream-framing.json'
@@ -139,6 +140,7 @@ jobs:
             'cluster-push-e2e.json'
             'cluster-https-pin-e2e.json'
             'full-stack-traffic.json'
+            'background-services.json'
           )
 
       - name: Test summary
