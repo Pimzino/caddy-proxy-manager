@@ -381,6 +381,10 @@ public sealed record ServerSummary
     /// <summary>Replication state (nodes only).</summary>
     public ServerSyncState? Sync { get; init; }
     public DateTime? AddedAt { get; init; }
+    /// <summary>SHA-256 fingerprint of the node's HTTPS certificate pinned by the primary (https node URLs only).</summary>
+    public string? Fingerprint { get; init; }
+    /// <summary>When the node's current join token was issued.</summary>
+    public DateTime? TokenIssuedAt { get; init; }
 }
 
 public sealed record ClusterStatus
@@ -398,4 +402,39 @@ public sealed record ClusterStatus
     public StorageBackend StorageBackend { get; init; }
     /// <summary>e.g. "Local storage: each server obtains its own certificates" when nodes exist.</summary>
     public List<string> Warnings { get; init; } = new();
+}
+
+// ------------------------------------------------------------------ DNS challenge delegation check
+
+public enum DelegationStatus
+{
+    /// <summary>_acme-challenge.&lt;domain&gt; is a CNAME that resolves (directly or through a chain) to the expected name.</summary>
+    Ok,
+    /// <summary>No CNAME at _acme-challenge.&lt;domain&gt;.</summary>
+    Missing,
+    /// <summary>A CNAME exists but points elsewhere (or a TXT/other record sits there instead).</summary>
+    Wrong,
+    /// <summary>The lookup failed (timeout, SERVFAIL...).</summary>
+    Error,
+}
+
+public sealed record DelegationCheck
+{
+    public string Domain { get; init; } = "";
+    /// <summary>The record to create: _acme-challenge.&lt;domain without "*."&gt;.</summary>
+    public string RecordName { get; init; } = "";
+    /// <summary>The CNAME target it must point to (the effective override domain).</summary>
+    public string ExpectedTarget { get; init; } = "";
+    public DelegationStatus Status { get; init; }
+    /// <summary>CNAME chain found, in order (empty when none).</summary>
+    public List<string> Found { get; init; } = new();
+    public string? Detail { get; init; }
+}
+
+public sealed record DelegationCheckResult
+{
+    /// <summary>Resolvers queried ("system" when the OS resolvers were used).</summary>
+    public List<string> Resolvers { get; init; } = new();
+    public List<DelegationCheck> Checks { get; init; } = new();
+    public DateTime CheckedAt { get; init; }
 }

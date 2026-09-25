@@ -416,6 +416,7 @@ const BLANK_HOST: SiteHostFields = {
   enabled: true,
   domains: [],
   acmeChallenge: 'default',
+  dnsDelegation: 'default',
   tls: 'acme',
   forceHttps: true,
   hsts: false,

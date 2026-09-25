@@ -262,15 +262,17 @@ public sealed class ClusterWorker(
                 key: SyncKeyPrefix + updated.Id, alertRule: "configFailure");
 
         if (inSync || updated.PendingRevision == bundle.Revision) return;
-        if (updated.FailedRevision == bundle.Revision && updated.LastSyncAt is { } failedAt &&
-            time.GetUtcNow().UtcDateTime - failedAt < cluster.Options.FailedSyncRetry)
-            return; // the node rejected exactly this configuration recently: wait for a change, "Sync now" or the retry period
         await SyncAsync(updated, force: false, ct, bundle);
     }
 
     private async Task SyncAsync(ClusterNode node, bool force, CancellationToken ct, BundleSnapshot? bundle = null)
     {
         bundle ??= CurrentBundle();
+        // The node rejected exactly this configuration recently: wait for a real change, "Sync now" (force) or the retry
+        // period. Applies to heartbeat and change-feed pushes alike (the primary may apply an unchanged configuration again).
+        if (!force && cluster.FindNode(node.Id) is { } current && current.FailedRevision == bundle.Revision &&
+            current.LastSyncAt is { } failedAt && time.GetUtcNow().UtcDateTime - failedAt < cluster.Options.FailedSyncRetry)
+            return;
         cluster.UpdateNode(node.Id, n => n.DesiredRevision = bundle.Revision);
         SyncResult? result;
         try

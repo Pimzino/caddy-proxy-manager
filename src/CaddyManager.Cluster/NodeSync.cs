@@ -61,7 +61,12 @@ public sealed class NodeSync(
         var state = cluster.Settings;
         var primary = state.PrimaryName ?? "the primary";
         if (!force && state.AppliedRevision == revision && state.PendingRevision is null)
+        {
+            // What runs here is what the primary wants again (e.g. a rejected change was undone there): the last sync
+            // error no longer applies.
+            if (state.LastSyncError is not null) cluster.UpdateSettings(s => s.LastSyncError = null);
             return new SyncResult { AppliedRevision = revision, Apply = new ApplyResult { Success = true }, Warnings = ["Already applied."] };
+        }
         if (state.PendingRevision == revision && state.PendingJobId is { } running && services.GetService<IJobRunner>()?.Get(running) is { State: JobState.Running })
             return new SyncResult
             {

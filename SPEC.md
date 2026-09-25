@@ -500,3 +500,26 @@ Nav: **Overview** gains **Servers** (`/servers`, `/servers/:id`) and **Traffic**
 - Node mode: banner "Managed by <primary> — changes are made on the primary" and mutation controls of replicated resources
   disabled (read-only views).
 - Notifications: "Server offline" alert toggle.
+
+### Round 3b: guided DNS challenge delegation (CNAME) — no DNS write access to the production zone
+Users who do not want the manager writing to their real DNS zone delegate the challenge once:
+`_acme-challenge.<domain> CNAME <override name>` (wildcard `*.example.com` → `_acme-challenge.example.com`). The ACME CA
+follows the CNAME; Caddy writes the TXT at the override name (`challenges.dns.override_domain`), so the DNS provider
+credentials only need access to a separate validation zone (e.g. a Cloudflare token scoped to `validation.example.net`).
+- Core: `CaddySettings.DnsOverrideDomain` (default for all hosts), `SiteHost.DnsDelegation` (Default | Off | Custom) +
+  `SiteHost.DnsOverrideDomain` (Custom). Effective override of a DNS-challenge host: Custom → the host's name; Off → none;
+  Default → the settings value (none when empty).
+- Generator: DNS policies are grouped by effective override domain (one automation policy per distinct value; hosts without
+  delegation share one); `override_domain` is set per policy, never globally.
+- Validation (400): override names must be valid DNS names (no wildcard; `_` labels allowed); `dnsDelegation: custom`
+  requires `dnsOverrideDomain`; delegation on a host whose effective challenge is not DNS → field error `dnsDelegation`.
+- `POST /api/dns/delegation-check` (viewer) `{ hostId?: string, domains?: string[], target?: string, publicResolvers?: bool }`
+  → `DelegationCheckResult`. With `hostId` the host's domains and effective target are used; otherwise `domains` + `target`
+  (default: settings DnsOverrideDomain). Queries CNAME at `_acme-challenge.<base>` following up to 8 CNAME hops, via
+  CaddySettings.DnsResolvers when set, the public resolvers 1.1.1.1:53 and 8.8.8.8:53 when `publicResolvers` (what the CA
+  sees), else the OS resolvers; 5 s timeout per domain; status per `DelegationStatus`. Case-insensitive, trailing dots
+  ignored. Answers are never cached.
+- UI: Settings > Caddy ACME section gets a "Challenge delegation (CNAME)" panel (default delegation name, plain-language
+  explanation, a table of the CNAME records every DNS-challenge host needs with copy buttons, and "Check DNS"). Host editor TLS
+  tab (DNS challenge): Delegation select (Use default / Off / Custom name), the records for this host with copy buttons and
+  "Check DNS" showing per-domain status. Help text points to scoped tokens on a separate zone as the recommended setup.

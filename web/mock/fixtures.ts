@@ -97,6 +97,7 @@ const baseHost = (kind: SiteHostFields['kind']): SiteHostFields => ({
   enabled: true,
   domains: [],
   acmeChallenge: 'default',
+  dnsDelegation: 'default',
   tls: 'acme',
   forceHttps: true,
   hsts: false,

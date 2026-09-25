@@ -42,6 +42,17 @@ public enum HostAcmeChallenge
     Dns,
 }
 
+/// <summary>Per-host DNS challenge delegation (CNAME _acme-challenge.&lt;domain&gt; → a name in a separate validation zone).</summary>
+public enum HostDnsDelegation
+{
+    /// <summary>CaddySettings.DnsOverrideDomain (no delegation when that is empty).</summary>
+    Default,
+    /// <summary>No delegation: the TXT record is written in the domain's own zone.</summary>
+    Off,
+    /// <summary>SiteHost.DnsOverrideDomain.</summary>
+    Custom,
+}
+
 public enum LoadBalancingPolicy { RoundRobin, Random, LeastConn, IpHash, First, Cookie, UriHash }
 public enum UpstreamScheme { Http, Https }
 public enum HeaderAction { Set, Add, Delete }
@@ -93,6 +104,10 @@ public sealed class SiteHost : Entity
     public string? CertificateId { get; set; }
     /// <summary>ACME challenge for this host (Tls == Acme only).</summary>
     public HostAcmeChallenge AcmeChallenge { get; set; } = HostAcmeChallenge.Default;
+    /// <summary>DNS challenge delegation for this host (effective challenge Dns only).</summary>
+    public HostDnsDelegation DnsDelegation { get; set; } = HostDnsDelegation.Default;
+    /// <summary>Delegated challenge record name when DnsDelegation == Custom, e.g. "_acme-challenge.shop.validation.example.net".</summary>
+    public string? DnsOverrideDomain { get; set; }
     /// <summary>Redirect HTTP to HTTPS (only meaningful when Tls != None).</summary>
     public bool ForceHttps { get; set; } = true;
     public bool Hsts { get; set; }

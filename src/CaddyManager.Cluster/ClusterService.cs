@@ -371,6 +371,8 @@ public sealed class ClusterService : IClusterRole
                 : n.SyncWarnings,
         },
         AddedAt = n.CreatedAt,
+        Fingerprint = n.PinnedFingerprint,
+        TokenIssuedAt = n.TokenIssuedAt,
     };
 
     private static T? Parse<T>(string? json) where T : class

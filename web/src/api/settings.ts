@@ -15,7 +15,15 @@ import type {
 // Write-only secrets are left absent (= unchanged) unless the caller sets them.
 
 export function caddySettingsInput(s: CaddySettings): CaddySettingsInput {
-  const { hasEabMacKey: _h, hasAcmeIssuerJson: _a, ...rest } = s;
+  const {
+    hasEabMacKey: _h,
+    hasAcmeIssuerJson: _a,
+    dnsProviderSecretFields: _f,
+    hasRedisPassword: _p,
+    hasRedisEncryptionKey: _k,
+    hasStorageJson: _j,
+    ...rest
+  } = s;
   // The API omits null values; keep the field explicit so clearing it is sent as null.
   return { ...rest, publicHttpsPort: rest.publicHttpsPort ?? null };
 }

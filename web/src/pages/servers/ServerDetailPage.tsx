@@ -218,6 +218,8 @@ function FactsCard({ s, local, now }: { s: ServerSummary; local?: ServerSummary;
             },
             { label: 'Data folder', value: info.dataDir, mono: true },
             { label: 'Management URL', value: s.url ?? '—', mono: true, hidden: s.isLocal },
+            { label: 'Pinned certificate', value: <span className="break-all">{s.fingerprint}</span>, mono: true, hidden: !s.fingerprint },
+            { label: 'Join token issued', value: formatDateTime(s.tokenIssuedAt), hidden: !s.tokenIssuedAt },
             { label: 'Added', value: formatDateTime(s.addedAt), hidden: !s.addedAt },
             { label: 'Collected', value: <span title={formatDateTime(info.collectedAt)}>{formatRelative(info.collectedAt, now)}</span> },
           ]}

@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { AlertTriangle, Download, FileKey2, MoreHorizontal, Pencil, Plus, RefreshCw, RefreshCcwDot, ShieldCheck, Trash2 } from 'lucide-react';
 import { ApiError, downloadFile, errorMessage } from '@/api/client';
-import { useCertificates, useDeleteCertificate, useHosts, useIsManagedNode, useSyncCertificate, useUpdateCertificate } from '@/api/hooks';
+import { useCaddySettings, useCertificates, useDeleteCertificate, useHosts, useIsManagedNode, useSyncCertificate, useUpdateCertificate } from '@/api/hooks';
 import type { CertificateInfo, CertificateKind } from '@/api/types';
 import { useAuth } from '@/auth';
 import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
@@ -118,6 +118,8 @@ export default function CertificatesPage() {
   const canOperate = roleCanOperate && !managed;
   const certs = useCertificates();
   const hosts = useHosts();
+  const caddySettings = useCaddySettings();
+  const storage = caddySettings.data?.storageBackend;
   const del = useDeleteCertificate();
   const sync = useSyncCertificate();
   const feedback = useFeedback();
@@ -206,6 +208,11 @@ export default function CertificatesPage() {
           </>
         }
       />
+      {(storage === 'redis' || storage === 'custom') && (
+        <Callout tone="info" title={`Caddy keeps certificates in ${storage === 'redis' ? 'Redis' : 'custom'} storage`} className="mb-4">
+          ACME and internal certificates are stored outside this server, so only your own certificates are listed here.
+        </Callout>
+      )}
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
           <SearchInput value={q} onChange={setQ} placeholder="Search name, subject, issuer…" />

@@ -30,6 +30,7 @@ function JobDialogInner({ jobId, onClose, title }: { jobId: string; onClose: () 
       void qc.invalidateQueries({ queryKey: qk.dashboard });
       void qc.invalidateQueries({ queryKey: qk.streamSupport });
       void qc.invalidateQueries({ queryKey: qk.settings('binary') });
+      void qc.invalidateQueries({ queryKey: qk.dnsProviders });
     }
   }, [state, qc]);
 

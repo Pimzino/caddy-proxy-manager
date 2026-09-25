@@ -4,8 +4,8 @@
 // Resource samples and traffic are pure functions of (server, time): sin waves + hashed noise keyed by the
 // 2-second sample slot or the traffic bucket, so repeated polls agree with each other and `?since=` polling
 // returns a new point every 2 s. Environment switches:
-//   MOCK_CLUSTER=standalone  → this server has no nodes yet (empty/standalone state)
-//   MOCK_CLUSTER=node        → this server is a managed node (only itself is listed; adding servers → 409)
+//   MOCK_CLUSTER_ROLE=standalone → this server has no nodes yet (empty/standalone state)
+//   MOCK_CLUSTER_ROLE=node       → this server is a managed node (only itself is listed; adding servers → 409)
 import type {
   AddServerResult,
   AuditEntry,
@@ -106,7 +106,7 @@ function fakeFingerprint(seed: string): string {
 }
 
 function initialServers(now: number): MockServer[] {
-  const mode = process.env.MOCK_CLUSTER;
+  const mode = process.env.MOCK_CLUSTER_ROLE;
   const local: MockServer = {
     id: 'local',
     name: 'WEB-PROXY01',
@@ -396,7 +396,7 @@ export function round3ServersRoutes(h: MockHelpers): MockRoute[] {
   const { HttpError, ok, noContent } = h;
   const servers = initialServers(Date.now());
   const jobs = new Map<string, ServerJob>();
-  const isNode = process.env.MOCK_CLUSTER === 'node';
+  const isNode = process.env.MOCK_CLUSTER_ROLE === 'node';
 
   const role = (s: MockState) => {
     const u = s.users.find((x) => x.id === s.sessionUserId && !x.disabled);

@@ -6,10 +6,9 @@ import { isIpv4, isIpv6, type FieldErrors } from '@/lib/validation';
 // Round 3 helpers shared by the Caddy tab (ACME challenge / DNS) and the Cluster tab (shared storage): both edit the
 // one CaddySettings document through PUT /api/settings/caddy.
 
-/** GET shape → editable form: also drops the Round 3 output-only fields (dnsProviderSecretFields, has*). */
+/** GET shape → editable form (caddySettingsInput) with the Round 3 nullable fields sent explicitly so clearing them works. */
 export function caddyFormInput(s: CaddySettings): CaddySettingsInput {
-  const base = caddySettingsInput(s) as CaddySettingsInput & Partial<Record<'dnsProviderSecretFields' | 'hasRedisPassword' | 'hasRedisEncryptionKey' | 'hasStorageJson', unknown>>;
-  const { dnsProviderSecretFields: _f, hasRedisPassword: _p, hasRedisEncryptionKey: _k, hasStorageJson: _j, ...rest } = base;
+  const rest = caddySettingsInput(s);
   return {
     ...rest,
     dnsProvider: rest.dnsProvider ?? null,
