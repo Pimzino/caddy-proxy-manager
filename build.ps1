@@ -134,7 +134,7 @@ if (-not (Test-Path (Join-Path $root 'web/dist/index.html'))) {
 # ------------------------------------------------------------------ 2. tests
 if (-not $SkipTests) {
     Invoke-Step "Tests ($TestFilter)" {
-        dotnet test (Join-Path $root 'CaddyManager.sln') -c $Configuration --filter $TestFilter --nologo
+        dotnet test (Join-Path $root 'CaddyManager.sln') -c $Configuration -m:1 --filter $TestFilter --nologo
     }
 }
 

@@ -61,7 +61,8 @@ jobs:
 
       - name: .NET tests
         shell: pwsh
-        run: dotnet test CaddyManager.sln -c Release --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
+        # -m:1 runs the test projects one after another: several suites start real Caddy processes on dynamic ports.
+        run: dotnet test CaddyManager.sln -c Release -m:1 --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
 
       - name: Test summary
         if: always()

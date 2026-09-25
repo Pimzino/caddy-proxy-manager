@@ -174,13 +174,22 @@ public static class CaddyBinary
 
 public static class Net
 {
+    private static readonly HashSet<int> Handed = new();
+
+    /// <summary>A free loopback port that this test run has not handed out before.</summary>
     public static int FreeTcpPort()
     {
-        var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
+        lock (Handed)
+        {
+            while (true)
+            {
+                var l = new TcpListener(IPAddress.Loopback, 0);
+                l.Start();
+                var port = ((IPEndPoint)l.LocalEndpoint).Port;
+                l.Stop();
+                if (Handed.Add(port)) return port;
+            }
+        }
     }
 }
 
