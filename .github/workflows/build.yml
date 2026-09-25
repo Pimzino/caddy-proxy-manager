@@ -36,6 +36,23 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Python + aioquic for the HTTP/3 0-RTT end-to-end test (TlsE2ETests): .NET's QUIC client (msquic) cannot send 0-RTT
+      # early data, so the test drives Caddy with aioquic and skips itself without CPM_AIOQUIC_PYTHON. aioquic 1.3.0 ships
+      # abi3 win_amd64 wheels (https://pypi.org/project/aioquic/1.3.0/#files); it is the version the test was verified with.
+      # setup-python v7: https://github.com/actions/setup-python/releases/tag/v7.0.0 (output python-path).
+      - uses: actions/setup-python@v7
+        id: py
+        with:
+          python-version: '3.13'
+
+      - name: Install aioquic (HTTP/3 0-RTT test client)
+        shell: pwsh
+        run: |
+          & '${{ steps.py.outputs.python-path }}' -m pip install --disable-pip-version-check --no-input 'aioquic==1.3.0'
+          if ($LASTEXITCODE -ne 0) { throw 'pip install aioquic failed.' }
+          & '${{ steps.py.outputs.python-path }}' -c "import aioquic, sys; print('aioquic', aioquic.__version__, 'on Python', sys.version)"
+          if ($LASTEXITCODE -ne 0) { throw 'aioquic does not import.' }
+
       - name: Web UI — install, typecheck, lint, build
         working-directory: web
         run: |
@@ -44,28 +61,55 @@ jobs:
           npm run lint
           npm run build
 
-      # The Config/Platform suites run real-Caddy integration tests when .dev/bin/caddy.exe exists.
+      # The Config/Platform suites run real-Caddy integration tests when .dev/bin/caddy.exe exists. They must run against
+      # the Caddy release the product is verified with (CaddyVersion.Tested), not whatever is "latest" today: Caddy changes
+      # behaviour between minor versions (v2.11.0 changed the Host header sent to HTTPS upstreams). The job "caddy-latest"
+      # below runs the same suites against the newest release, without blocking the build.
       - name: Download Caddy for integration tests
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/caddyserver/caddy/releases/latest' -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
-          $ver = $rel.tag_name.TrimStart('v')
-          $asset = $rel.assets | Where-Object name -eq "caddy_${ver}_windows_amd64.zip"
-          New-Item -ItemType Directory -Force -Path .dev/bin | Out-Null
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP/caddy.zip"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/caddy.zip" -DestinationPath "$env:RUNNER_TEMP/caddy" -Force
-          Copy-Item "$env:RUNNER_TEMP/caddy/caddy.exe" .dev/bin/caddy.exe
-          & .dev/bin/caddy.exe version
+        run: ./.github/scripts/get-caddy.ps1 -Which tested
 
       - name: .NET tests
         shell: pwsh
         # -m:1 runs the test projects one after another: several suites start real Caddy processes on dynamic ports.
+        # The runner is elevated: the Windows-only suites (real SCM, firewall, Event Log, DPAPI, WinHTTP) run here.
         env:
           # End-to-end tests write verifiable artifacts here (e.g. the HTTP/3 upstream framing report).
           CPM_E2E_ARTIFACTS: ${{ github.workspace }}/TestResults/e2e
+          # Runs the HTTP/3 0-RTT test (allow_0rtt=false and the QUIC listener release before loading). The HTTP/3 tests
+          # use the msquic that .NET ships on Windows (QuicConnection.IsSupported: Windows 11 / Server 2022 or later).
+          CPM_AIOQUIC_PYTHON: ${{ steps.py.outputs.python-path }}
         run: dotnet test CaddyManager.sln -c Release -m:1 --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
+
+      # The E2E tests skip themselves when a prerequisite is missing (aioquic, msquic, Windows, elevation). On this runner
+      # every one of them must really run: fail the build when a required test was skipped or is missing, or a required
+      # artifact was not written. Writes TestResults/e2e/e2e-required.json (uploaded below) and a job-summary table.
+      - name: Required end-to-end tests ran
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          ./.github/scripts/assert-e2e-ran.ps1 -ResultsDirectory TestResults -ArtifactsDirectory TestResults/e2e -RequiredTests @(
+            'CaddyManager.Config.Tests.TlsE2ETests.Http3_resumed_requests_on_ip_restricted_hosts_never_get_425'
+            'CaddyManager.Config.Tests.Http3UpstreamE2ETests.*'
+            'CaddyManager.Config.Tests.WindowsCertificateStoreE2ETests.*'
+            'CaddyManager.Platform.Tests.CaddyServiceStartPendingE2ETests.*'
+            'CaddyManager.Platform.Tests.WindowsPlatformE2ETests.*'
+            'CaddyManager.Platform.Tests.WindowsServiceManagerTests.*'
+            'CaddyManager.Platform.Tests.ReadinessWindowsTests.*'
+            'CaddyManager.Platform.Tests.CaddyPinE2ETests.*'
+            'CaddyManager.Platform.Tests.GetCaddyScriptE2ETests.*'
+            'CaddyManager.Platform.Tests.AssertE2eRanScriptE2ETests.*'
+            'CaddyManager.Ops.Tests.WindowsOpsE2ETests.*'
+          ) -RequiredArtifacts @(
+            'http3-0rtt-ip-access-list.json'
+            'http3-upstream-framing.json'
+            'windows-certificate-store-export.json'
+            'caddy-service-start-pending.json'
+            'caddy-service-real-cycles.json'
+            'caddy-pin.json'
+          )
 
       - name: Test summary
         if: always()
@@ -92,6 +136,60 @@ jobs:
           path: |
             TestResults/*.trx
             TestResults/e2e/**
+          retention-days: 14
+
+  # Early warning: the same test suites against the newest Caddy release. Failures here mean a new Caddy version changes
+  # behaviour the product relies on: read its release notes before bumping CaddyVersion.Tested. Does not block the build.
+  caddy-latest:
+    name: Tests against the latest Caddy (informational)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-python@v7
+        id: py
+        with:
+          python-version: '3.13'
+
+      - name: Install aioquic (HTTP/3 0-RTT test client)
+        shell: pwsh
+        run: |
+          & '${{ steps.py.outputs.python-path }}' -m pip install --disable-pip-version-check --no-input 'aioquic==1.3.0'
+          if ($LASTEXITCODE -ne 0) { throw 'pip install aioquic failed.' }
+
+      - name: Download the latest Caddy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/get-caddy.ps1 -Which latest
+
+      - name: Config and Platform tests
+        shell: pwsh
+        env:
+          # CaddyPinE2ETests skips its "binary == CaddyVersion.Tested" assertion in this job.
+          CPM_CADDY_CHANNEL: latest
+          CPM_AIOQUIC_PYTHON: ${{ steps.py.outputs.python-path }}
+          CPM_E2E_ARTIFACTS: ${{ github.workspace }}/TestResults/e2e
+        run: |
+          dotnet test tests/CaddyManager.Config.Tests -c Release -m:1 --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
+          $config = $LASTEXITCODE
+          dotnet test tests/CaddyManager.Platform.Tests -c Release -m:1 --filter "Category!=Network&Category!=WindowsE2E&Category!=WindowsService" --logger "trx" --results-directory TestResults --nologo
+          if ($config -ne 0 -or $LASTEXITCODE -ne 0) { throw 'Tests fail against the latest Caddy release.' }
+
+      - name: Upload test results (latest Caddy)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-caddy-latest
+          path: |
+            TestResults/*.trx
+            TestResults/e2e/**
+          if-no-files-found: ignore
           retention-days: 14
 
   build:
@@ -178,6 +276,27 @@ jobs:
             if ($sig.Status -ne 'Valid') { throw "CaddyManager.exe signature status: $($sig.Status) $($sig.StatusMessage)" }
             Write-Host "Signed by: $($sig.SignerCertificate.Subject)"
           }
+
+      # Installs the MSI on the (elevated, throw-away) runner and checks what Windows actually configured: launch
+      # condition, custom action sequencing, delayed start, recovery actions + failure flag, firewall exception, shortcut,
+      # crash recovery, repair keeping UI_PORT, and a clean uninstall.
+      - name: MSI install / uninstall test
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -LiteralPath artifacts -Filter '*.msi' | Select-Object -First 1
+          if (-not $msi) { throw 'No MSI in artifacts/.' }
+          ./installer/test-msi.ps1 -Msi $msi.FullName -UiPort 8181
+
+      - name: Upload MSI logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: msi-logs
+          path: |
+            ${{ runner.temp }}/cpm-*.log
+            ${{ runner.temp }}/cpm-msi-test.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

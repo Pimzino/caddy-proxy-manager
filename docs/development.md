@@ -39,8 +39,40 @@ dotnet test CaddyManager.sln --filter "Category!=Network"
 cd web && npm run typecheck && npm run lint && npm run build
 ```
 
-Config and Platform tests use a real Caddy binary (`.dev/bin/caddy` or `CM_TEST_CADDY`) when present; Windows-only
-tests run on the `windows-latest` CI runner.
+Config and Platform tests use a real Caddy binary (`.dev/bin/caddy` or `CM_TEST_CADDY`) when present. Use the
+release the product is verified with, `CaddyVersion.Tested` in `src/CaddyManager.Platform/Binary/CaddyVersion.cs`
+(CI downloads exactly that tag with `.github/scripts/get-caddy.ps1`, which fails when the release has no
+`caddy_<ver>_checksums.txt` or the zip does not match its SHA-512 entry, and `CaddyPinE2ETests` fails if the binary
+differs; `GetCaddyScriptE2ETests` runs the script with `pwsh` against a local mock of the GitHub API). The informational *caddy-latest* CI job runs the same suites against the newest Caddy release; read its
+release notes before bumping the constant. On macOS, run tests with `DYLD_LIBRARY_PATH=/opt/homebrew/lib` for the
+QUIC/HTTP/3 tests.
+
+End-to-end tests (real Caddy, real sockets, real processes) write a JSON artifact per test to `CPM_E2E_ARTIFACTS`
+(CI uploads `TestResults/e2e`) or `e2e-artifacts/` next to the test binaries. Windows-only suites
+(`Category=WindowsE2E`, `WindowsService`) run on the elevated `windows-latest` runner: throw-away services against
+the real Service Control Manager, firewall rules in a unique group, the WinHTTP proxy, the Event Log source, DPAPI,
+PowerShell facts. They restore what they change. `CaddyServiceStartPendingE2ETests` reproduces Caddy's
+START_PENDING race (caddy PR #8012) with a stub service (`caddy-stub` in `ServiceProbe.cs`) and runs 10 start/stop
+cycles of the real Caddy binary as a throw-away service; `CaddyReadyNudgeE2ETests` checks the "re-post the unchanged
+config" nudge against real Caddy on every OS. `installer/test-msi.ps1` installs, restarts, repairs and uninstalls
+the built MSI on the runner (artifact `cpm-msi-test.json`). What only a real server can show (domain, GPO, Microsoft
+365, reboot) is in [vm-test-checklist.md](vm-test-checklist.md).
+
+The HTTP/3 0-RTT test (`TlsE2ETests.Http3_resumed_requests_on_ip_restricted_hosts_never_get_425`) needs a QUIC client
+that can send early data, which .NET's msquic client cannot do. It drives Caddy with Python
+[aioquic](https://pypi.org/project/aioquic/) and skips itself unless `CPM_AIOQUIC_PYTHON` points at a Python that has it:
+
+```bash
+python3 -m venv .dev/h3venv && .dev/h3venv/bin/pip install aioquic==1.3.0
+CPM_AIOQUIC_PYTHON=$PWD/.dev/h3venv/bin/python dotnet test tests/CaddyManager.Config.Tests --filter "FullyQualifiedName~Http3_"
+```
+
+CI installs Python (`actions/setup-python`) and `aioquic==1.3.0` and sets the variable. A skipped test is correct on a
+developer machine, but on the runner it would pass without testing anything. After the tests,
+`.github/scripts/assert-e2e-ran.ps1` reads the TRX files and fails the build when a required end-to-end test (0-RTT,
+HTTP/3, the Windows suites, the START_PENDING tests) was skipped, is missing or failed, or when a required artifact was
+not written. It writes `TestResults/e2e/e2e-required.json` and a table in the job summary. When you add or rename such a
+test, update the list in `.github/workflows/build.yml`.
 
 ## Build the Windows release
 

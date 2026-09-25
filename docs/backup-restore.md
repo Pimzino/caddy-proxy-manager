@@ -6,9 +6,16 @@ current `caddy.json`. Treat backups as secrets.
 
 ## Scheduled backups
 
-**Settings › Backups**: enable, hour of day, directory (local or UNC — the computer account `DOMAIN\SERVER$` needs
-write access to a share), number to keep, and an optional password (AES-256 encrypted zip; open with 7-Zip — Windows
-Explorer cannot open AES zips). Failures raise an alert (under the *Configuration failure* alert rule). *Run backup now* creates one immediately.
+**Settings › Backups**: enable, hour of day, directory (local or UNC), number to keep, and an optional password
+(WinZip AES-256 encrypted zip; open with 7-Zip, WinZip, WinRAR or libarchive's `bsdtar --passphrase` — the classic
+Windows Explorer ZIP folder cannot open AES zips).
+
+UNC targets: the service runs as LocalSystem, which reaches shares as the **computer account** (`DOMAIN\SERVER$`,
+[LocalSystem account](https://learn.microsoft.com/en-us/windows/win32/services/localsystem-account)). Grant that
+account *Modify* on the share and the folder; a failed backup names the exact account. A server that is not
+domain-joined has no network identity another server can grant access to. Files on a share keep the share's
+permissions (the manager only restricts local backup folders), so **set a backup password for UNC targets**: backups
+contain the database with the DPAPI-protected secrets (see [security.md](security.md)). Failures raise an alert (under the *Configuration failure* alert rule). *Run backup now* creates one immediately.
 
 ## On demand
 

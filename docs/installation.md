@@ -3,7 +3,8 @@
 ## Requirements
 
 - 64-bit Windows: Windows Server 2019, 2022 or 2025 — **Desktop Experience or Server Core** — or Windows 10 (1809+)
-  / Windows 11. Nothing runs on the server's desktop: the UI is used from a browser on any machine, so Server Core
+  / Windows 11. The MSI checks the real build number (17763 or later) and refuses older systems such as Server 2016 or
+  2012 R2 (Windows Installer's `VersionNT` is 603 on all of them, so it cannot be used for this). Nothing runs on the server's desktop: the UI is used from a browser on any machine, so Server Core
   works exactly like a full install (install with `msiexec … /qn` or `install.ps1`).
 - Local administrator rights to install.
 - Inbound TCP 80 and 443 reachable from clients (plus UDP 443 only if you turn on HTTP/3); TCP 81 (UI) from admin networks.
@@ -68,12 +69,19 @@ Extract the zip, then in an **elevated** PowerShell in that folder:
   `checksums.txt`. The upload goes through the same pipeline as online updates (version check, config validation,
   swap, health check, automatic rollback).
 - Behind a proxy instead: **Settings › Updates › Outbound proxy**; enable *Use the proxy for Caddy* so ACME works too.
+  Webhook alerts and the Microsoft 365 token request use it as well; SMTP does not (it needs direct access to the mail
+  server), and Windows' own certificate revocation downloads use the WinHTTP proxy (`netsh winhttp set proxy`).
 
 ## Upgrade
 
 Run the newer MSI (or re-run `install.ps1` with the newer zip). Data, settings and certificates in
 `C:\ProgramData\CaddyProxyManager` are kept. The UI shows *Manager vX available* when **Settings › Updates ›
 Manager release repository** is set.
+
+Pre-release builds from CI (`1.0.0-ci.<run>`) all carry MSI version 1.0.0 and replace each other in **either**
+direction (the MSI allows same-version upgrades, and Windows Installer ignores anything after the third version
+field): installing an older CI build over a newer one silently downgrades. Release versions always increase the
+third field.
 
 Caddy itself is updated from the UI (**Caddy › Service & Updates**); the previous binary is kept for one-click rollback.
 
@@ -87,6 +95,45 @@ Caddy itself is updated from the UI (**Caddy › Service & Updates**); the previ
 | TCP 81 | Manager UI | configurable; optional HTTPS listener (default 8443) |
 | 127.0.0.1:2019 | Caddy admin API | loopback only — see [security.md](security.md) |
 | stream ports | Caddy (caddy-l4) | one per TCP/UDP stream |
+
+### Other HTTP/HTTPS ports, NAT and port forwarding
+
+**Settings › Caddy** has three ports. *HTTP port* and *HTTPS port* are the ports Caddy listens on, on this server.
+*Public HTTPS port* is the port **clients** use for HTTPS. Set it only when a router or firewall forwards a different
+public port to the server, for example public 443 forwarded to 8443 on the server. Leave it empty when clients
+connect to the HTTPS port directly. It changes only where HTTP→HTTPS redirects send clients. It does not change what
+Caddy listens on, the firewall rules or the UI port.
+
+Where the HTTP→HTTPS redirect (*Force HTTPS*) sends a client:
+
+| Settings | Redirect target |
+|---|---|
+| *Public HTTPS port* set | `https://<host>/` when it is 443, otherwise `https://<host>:<public port>/` |
+| *Public HTTPS port* empty, HTTPS port 443 | `https://<host>/` |
+| *Public HTTPS port* empty, another HTTPS port | `https://<host>:<HTTPS port>/` |
+
+Set *Public HTTPS port* whenever clients reach HTTPS on a different port than Caddy listens on, for example public
+443 forwarded to 8443 on the server.
+
+Certificates from a public CA (Let's Encrypt, ZeroSSL) need **public** TCP 80 forwarded to the HTTP port (HTTP-01
+challenge) or **public** TCP 443 forwarded to the HTTPS port (TLS-ALPN-01). The CA always connects to 80 and 443
+([challenge types](https://letsencrypt.org/docs/challenge-types/)). The DNS challenge needs no inbound port.
+
+HTTP/3: Caddy advertises HTTP/3 in the `Alt-Svc` header with the **UDP port it listens on** (the HTTPS port), not the
+public port. Behind port forwarding, forward the same UDP port number (for example UDP 8443 → 8443), or leave HTTP/3
+off. Otherwise browsers try the advertised port, fail, and silently stay on HTTP/2.
+
+### HTTP/3 and 0-RTT
+
+HTTP/3 is off by default. When you turn it on (**Settings › Caddy › HTTP/3**), the manager keeps QUIC **0-RTT**
+(early data) disabled. A request sent as early data can be replayed. It also arrives before the client's address is
+confirmed, so on hosts with an IP access list Caddy answers it with `425 Too Early`, and some clients never retry.
+Resumed connections still work; they only lose the round trip that 0-RTT would save.
+
+Caddy keeps its QUIC listener across configuration reloads, with the 0-RTT setting it was created with. So the first
+time a newer manager applies its configuration to a Caddy that runs HTTP/3 with 0-RTT (a configuration from an earlier
+version), it first loads the configuration without HTTP/3 and then the full one. HTTP/3 clients reconnect once and
+use HTTP/2 for that moment.
 
 ## Uninstall
 
