@@ -89,7 +89,15 @@ public partial class PowerShellRunner(ILogger<PowerShellRunner> logger)
             throw new PlatformNotSupportedException("PowerShell checks are only available on Windows.");
         var result = await ProcessRunner.RunAsync(ExecutableOverride ?? Executable,
             ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"],
-            new ProcessOptions { StdIn = BuildStdin(script), Timeout = timeout ?? DefaultTimeout }, ct);
+            new ProcessOptions
+            {
+                StdIn = BuildStdin(script), Timeout = timeout ?? DefaultTimeout,
+                // A PSModulePath inherited from PowerShell 7 (e.g. the manager started from a pwsh prompt or a CI step)
+                // points Windows PowerShell 5.1 at PowerShell 7 module folders, so built-in modules such as NetSecurity
+                // or the Cert: provider fail to load. Without the variable, 5.1 builds its own default.
+                // https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+                RemoveEnvironment = ["PSModulePath"],
+            }, ct);
         if (!string.IsNullOrWhiteSpace(result.StdErr))
             logger.LogDebug("PowerShell stderr: {StdErr}", result.StdErr.Trim());
         return ParseOutput(result.StdOut, result.StdErr, result.ExitCode);

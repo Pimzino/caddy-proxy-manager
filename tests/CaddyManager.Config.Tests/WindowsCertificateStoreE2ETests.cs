@@ -112,7 +112,11 @@ public sealed class WindowsCertificateStoreE2ETests
 
     private static string PowerShell(string command)
     {
-        var psi = new ProcessStartInfo("powershell.exe") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"))
+            { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        // The CI step runs under PowerShell 7; its PSModulePath makes Windows PowerShell 5.1 miss the Cert: provider.
+        // https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+        psi.Environment.Remove("PSModulePath");
         foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference='Stop'; " + command }) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEnd();

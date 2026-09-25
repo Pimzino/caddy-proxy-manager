@@ -16,6 +16,8 @@ public sealed record ProcessOptions
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(2);
     public string? WorkingDirectory { get; init; }
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
+    /// <summary>Variables removed from the inherited environment before start.</summary>
+    public IReadOnlyCollection<string>? RemoveEnvironment { get; init; }
     /// <summary>Encoding used to decode stdout/stderr (UTF-8 when null).</summary>
     public Encoding? OutputEncoding { get; init; }
 }
@@ -71,6 +73,8 @@ public static class ProcessRunner
         };
         if (options.StdIn is not null) psi.StandardInputEncoding = Utf8NoBom;
         foreach (var a in args) psi.ArgumentList.Add(a);
+        if (options.RemoveEnvironment is not null)
+            foreach (var k in options.RemoveEnvironment) psi.Environment.Remove(k);
         if (options.Environment is not null)
             foreach (var (k, v) in options.Environment) psi.Environment[k] = v;
 

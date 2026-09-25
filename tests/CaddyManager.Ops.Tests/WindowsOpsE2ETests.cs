@@ -23,6 +23,7 @@ public class WindowsOpsE2ETests
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
         };
+        psi.Environment.Remove("PSModulePath"); // inherited from the PowerShell 7 CI step; 5.1 builds its own (about_PSModulePath)
         foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command }) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEndAsync();
