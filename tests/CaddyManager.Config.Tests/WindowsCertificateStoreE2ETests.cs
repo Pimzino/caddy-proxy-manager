@@ -87,7 +87,7 @@ public sealed class WindowsCertificateStoreE2ETests
                 else
                 {
                     var ex = Assert.Throws<CertificateImportException>(() => source.Export(WindowsStoreNames.LocalMachine, WindowsStoreNames.DefaultStore, thumb));
-                    Assert.Equal(WindowsCertificateStoreSource.NotExportableMessage, ex.Message); // (3)
+                    Assert.StartsWith(WindowsCertificateStoreSource.NotExportableMessage, ex.Message); // (3) guidance first; Windows' own reason may follow
                     row["exportError"] = ex.Message;
                 }
                 results.Add(row);

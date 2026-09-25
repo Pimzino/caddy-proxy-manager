@@ -176,7 +176,12 @@ public static class Net
 {
     private static readonly HashSet<int> Handed = new();
 
-    /// <summary>A free loopback port that this test run has not handed out before.</summary>
+    /// <summary>
+    /// A free port that this test run has not handed out before, usable for TCP and — because Caddy's HTTP/3 listener
+    /// binds the HTTPS port on UDP for all interfaces — for UDP too. On Windows a port free for TCP can sit in a UDP
+    /// excluded port range (Hyper-V/WinNAT, `netsh int ipv4 show excludedportrange protocol=udp`), and binding it
+    /// fails with WSAEACCES.
+    /// </summary>
     public static int FreeTcpPort()
     {
         lock (Handed)
@@ -187,9 +192,20 @@ public static class Net
                 l.Start();
                 var port = ((IPEndPoint)l.LocalEndpoint).Port;
                 l.Stop();
-                if (Handed.Add(port)) return port;
+                if (!Handed.Add(port) || !UdpBindable(port)) continue;
+                return port;
             }
         }
+    }
+
+    private static bool UdpBindable(int port)
+    {
+        try
+        {
+            using var u = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Any, port));
+            return true;
+        }
+        catch (System.Net.Sockets.SocketException) { return false; }
     }
 }
 
