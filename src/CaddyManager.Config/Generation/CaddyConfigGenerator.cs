@@ -37,7 +37,7 @@ public static class CaddyConfigGenerator
     public const string ZeroSslDirectory = "https://acme.zerossl.com/v2/DV90";
 
     // Common exploit-probe patterns (SQL injection, path traversal, script injection), minus rules that
-    // break ordinary applications such as "?next=/path").
+    // break ordinary applications (such as "?next=/path").
     internal const string ExploitPathPattern =
         @"(?i)(\.\./|\.\.\\|%2e%2e(%2f|%5c|/)|/\.(git|svn|hg|env)(/|$)|/etc/passwd|/proc/self/environ|/wp-config\.php)";
     internal const string ExploitQueryPattern =

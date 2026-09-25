@@ -10,9 +10,9 @@
 [![License: MIT](https://img.shields.io/github/license/Pimzino/caddy-proxy-manager)](LICENSE)
 [![Open issues](https://img.shields.io/github/issues/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/issues)
 
-A Windows-native reverse proxy manager: for **[Caddy](https://caddyserver.com)**,
-built to run natively on **Windows** as a proper Windows service — Windows Server 2019, 2022 and 2025
-(Desktop Experience or Server Core) and Windows 10/11, 64-bit.
+A web-based reverse proxy manager for **[Caddy](https://caddyserver.com)**, built to run natively on **Windows** as a
+proper Windows service — Windows Server 2019, 2022 and 2025 (Desktop Experience or Server Core) and Windows 10/11,
+64-bit.
 
 One self-contained executable installs, updates and supervises Caddy, generates Caddy's configuration from a
 clean admin console, manages certificates (automatic ACME, Caddy's internal CA, or your own), checks that the
