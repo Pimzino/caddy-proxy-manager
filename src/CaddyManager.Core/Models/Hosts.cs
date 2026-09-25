@@ -102,6 +102,11 @@ public sealed class SiteHost : Entity
     public HealthCheck HealthCheck { get; set; } = new();
     /// <summary>Skip TLS verification to HTTPS upstreams (self-signed backends).</summary>
     public bool UpstreamTlsInsecure { get; set; }
+    /// <summary>
+    /// Upstream uses Windows Integrated Authentication (NTLM/Negotiate — IIS, SharePoint, SSRS, Exchange).
+    /// Uses Caddy's http_ntlm transport (plugin github.com/caddyserver/ntlm-transport) for connection affinity.
+    /// </summary>
+    public bool UpstreamNtlm { get; set; }
     /// <summary>null/"" = keep the client's Host header (Caddy default); "{upstream}" = upstream host:port; otherwise literal value.</summary>
     public string? UpstreamHostHeader { get; set; }
     public List<HeaderOp> RequestHeaders { get; set; } = new();
@@ -176,6 +181,13 @@ public enum CertificateSource
     Uploaded,
     /// <summary>References cert/key files that already exist on disk or a share (renewed externally; auto reloaded on change).</summary>
     FilePath,
+    /// <summary>References a .pfx/.p12 on disk or a share (e.g. win-acme output); converted to PEM in the store and re-converted on change.</summary>
+    PfxFile,
+    /// <summary>
+    /// Exported from the Windows certificate store (LocalMachine\My by default) by thumbprint or by subject/SAN match
+    /// (newest valid cert wins — follows AD CS autoenrollment / certreq renewals). Re-synced periodically.
+    /// </summary>
+    WindowsStore,
 }
 
 public sealed class Certificate : Entity
@@ -193,4 +205,24 @@ public sealed class Certificate : Entity
     public DateTime NotAfter { get; set; }
     public string Thumbprint { get; set; } = "";
     public string? Notes { get; set; }
+
+    // ---- PfxFile source
+    /// <summary>Path of the referenced .pfx/.p12 (PfxFile source). CertPath/KeyPath point at the converted PEMs in the store.</summary>
+    public string? SourcePath { get; set; }
+    /// <summary>PFX password, protected with ISecretProtector.</summary>
+    public string? PfxPasswordProtected { get; set; }
+
+    // ---- WindowsStore source
+    /// <summary>"LocalMachine" (default) or "CurrentUser".</summary>
+    public string StoreLocation { get; set; } = "LocalMachine";
+    /// <summary>Store name, default "My" (Personal).</summary>
+    public string StoreName { get; set; } = "My";
+    /// <summary>Pin to one certificate by thumbprint (no automatic renewal following).</summary>
+    public string? StoreThumbprint { get; set; }
+    /// <summary>Follow renewals: newest currently-valid cert with a private key whose subject CN or SAN matches this name.</summary>
+    public string? StoreSubject { get; set; }
+
+    // ---- Sync status (PfxFile / WindowsStore / FilePath)
+    public DateTime? LastSyncedAt { get; set; }
+    public string? LastSyncError { get; set; }
 }

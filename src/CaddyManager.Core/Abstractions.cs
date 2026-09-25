@@ -106,6 +106,12 @@ public interface ICaddyBinaryManager
     /// Returns a job.
     /// </summary>
     JobInfo StartInstallOrUpdate(string? version = null);
+    /// <summary>Offline/air-gapped install: a caddy.exe (or release zip) already uploaded to a staging path goes through the same verified swap pipeline.</summary>
+    JobInfo StartInstallFromFile(string stagedFile, string? expectedSha512 = null) => throw new NotSupportedException();
+    /// <summary>Swap back to the previous binary (caddy.exe.previous) through the same verified pipeline.</summary>
+    JobInfo StartRollback() => throw new NotSupportedException();
+    /// <summary>True when a previous binary exists for rollback.</summary>
+    bool CanRollback => false;
     /// <summary>Run the caddy binary with args (e.g. "validate", "version"). Returns exit code + combined output.</summary>
     Task<(int ExitCode, string Output)> RunCaddyAsync(IEnumerable<string> args, string? stdin = null, CancellationToken ct = default);
     Task<List<PluginPackage>> GetPluginCatalogAsync(string? query = null, CancellationToken ct = default);
