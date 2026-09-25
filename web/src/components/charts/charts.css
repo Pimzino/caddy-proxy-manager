@@ -1,0 +1,48 @@
+/* ---------------------------------------------------------------- Chart palette
+   Data colours for the hand-written SVG charts (components/charts). Values are the dataviz reference
+   palette, validated with its validate_palette.js against the app's chart surfaces (--surface:
+   #ffffff light, #111822 dark):
+   - two series (--viz-1, --viz-2): every check passes in both modes;
+   - status classes 2xx/3xx/4xx/5xx (--viz-1, --viz-3, --viz-4, --viz-5): passes in both modes (worst
+     adjacent CVD ΔE 9.1 light / 8.4 dark); in light mode aqua/yellow/magenta sit below 3:1 contrast,
+     so those charts always carry a legend with values and a table view (relief rule).
+   Text never uses these colours; a swatch or line key beside the text carries identity. */
+:root {
+  --viz-1: #2a78d6; /* blue */
+  --viz-2: #eb6834; /* orange */
+  --viz-3: #1baf7a; /* aqua */
+  --viz-4: #eda100; /* yellow */
+  --viz-5: #e87ba4; /* magenta */
+  --viz-other: #a3adba; /* de-emphasis / "other" */
+  --viz-grid: var(--border);
+  --viz-axis: var(--border-strong);
+  --viz-surface: var(--surface);
+}
+
+.dark {
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --viz-5: #d55181;
+  --viz-other: #5b6676;
+}
+
+.viz-tick {
+  fill: var(--fg-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.viz-label {
+  fill: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (forced-colors: active) {
+  .viz-mark {
+    stroke: CanvasText;
+  }
+}

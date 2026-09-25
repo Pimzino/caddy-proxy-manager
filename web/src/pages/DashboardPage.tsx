@@ -5,9 +5,11 @@ import {
   ArrowLeftRight,
   ArrowUpCircle,
   Braces,
+  ChartLine,
   ChevronRight,
   ClipboardCheck,
   HeartPulse,
+  Network,
   Play,
   Plus,
   ScrollText,
@@ -15,10 +17,11 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { errorMessage } from '@/api/client';
-import { useCaddyAction, useDashboard, useRunReadiness } from '@/api/hooks';
+import { useCaddyAction, useCluster, useDashboard, useRunReadiness, useServers, useTraffic } from '@/api/hooks';
 import type { Dashboard } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
+import { Sparkline, formatBytesShort, formatCount, formatRatio } from '@/components/charts';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
 import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
 import { Button, Callout, Card, EmptyState, PageHeader, Skeleton, StatusDot, useToast, type Tone } from '@/components/ui';
@@ -241,6 +244,9 @@ function DashboardBody({ d }: { d: Dashboard }) {
             )}
           </p>
         </StatCard>
+
+        <TrafficCard />
+        <ServersCard />
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -321,6 +327,113 @@ function DashboardBody({ d }: { d: Dashboard }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Requests of the last 24 h on this server, with a sparkline of the hourly series. */
+function TrafficCard() {
+  const traffic = useTraffic('local', 'day');
+  const d = traffic.data;
+  const t = d?.enabled ? d.totals : undefined;
+  const errors = t ? t.status4xx + t.status5xx : 0;
+  const serverErrorRate = t && t.requests ? t.status5xx / t.requests : 0;
+  const errorRate = t && t.requests ? errors / t.requests : 0;
+  const tone: Tone = !t ? 'neutral' : serverErrorRate >= 0.05 ? 'danger' : errorRate >= 0.1 ? 'warning' : 'accent';
+  return (
+    <StatCard icon={<ChartLine size={15} />} title="Traffic (24 h)" to="/traffic" tone={tone}>
+      {traffic.isPending ? (
+        <Skeleton className="h-12 w-full" />
+      ) : !d ? (
+        <>
+          <p className="text-lg font-semibold text-fg-muted">Unavailable</p>
+          <p className="mt-1 text-sm text-fg-subtle">Statistics could not be loaded.</p>
+        </>
+      ) : !t ? (
+        <>
+          <p className="text-lg font-semibold text-fg-muted">Statistics disabled</p>
+          <p className="mt-1 text-sm text-fg-subtle">Turn on traffic statistics in Settings › Caddy.</p>
+        </>
+      ) : (
+        <div className="flex items-end gap-4">
+          <div className="min-w-0 shrink-0">
+            <p className="text-lg font-semibold text-fg" title={`${formatNumber(t.requests)} requests`}>
+              {formatCount(t.requests)} <span className="text-sm font-normal text-fg-subtle">requests</span>
+            </p>
+            <p className="mt-1 text-sm text-fg-subtle">
+              {formatCount(t.uniqueClients)} clients · {formatBytesShort(t.bytesOut)} out
+              {t.requests > 0 && (
+                <>
+                  {' · '}
+                  <span className={serverErrorRate >= 0.05 ? 'font-medium text-danger' : undefined}>{formatRatio(errorRate)} errors</span>
+                </>
+              )}
+            </p>
+          </div>
+          {d.series.length > 1 && (
+            <div className="min-w-0 flex-1">
+              <Sparkline
+                values={d.series.map((p) => p.requests)}
+                x={d.series.map((p) => Date.parse(p.at))}
+                height={40}
+                focusable={false}
+                formatValue={(v) => `${formatCount(v)} requests`}
+                formatX={(ms) => formatDateTime(new Date(ms).toISOString())}
+                ariaLabel="Requests per hour over the last 24 hours"
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </StatCard>
+  );
+}
+
+/** Cluster overview: this server alone, or how many of the managed servers are online. */
+function ServersCard() {
+  const servers = useServers();
+  const cluster = useCluster();
+  const list = servers.data ?? [];
+  const nodes = list.filter((s) => !s.isLocal);
+  const down = list.filter((s) => s.status === 'offline' || s.status === 'error');
+  const outOfSync = nodes.filter((s) => s.status === 'online' && s.sync && !s.sync.inSync);
+  const isNode = cluster.data?.role === 'node';
+  const tone: Tone = down.length ? 'danger' : outOfSync.length ? 'warning' : nodes.length ? 'success' : 'neutral';
+  return (
+    <StatCard icon={<Network size={15} />} title="Servers" to="/servers" tone={tone}>
+      {servers.isPending ? (
+        <Skeleton className="h-12 w-full" />
+      ) : servers.isError ? (
+        <>
+          <p className="text-lg font-semibold text-fg-muted">Unavailable</p>
+          <p className="mt-1 text-sm text-fg-subtle">The server list could not be loaded.</p>
+        </>
+      ) : isNode ? (
+        <>
+          <p className="text-lg font-semibold text-fg">Cluster node</p>
+          <p className="mt-1 text-sm text-fg-subtle">Managed by {cluster.data?.primaryName ?? 'the primary'}</p>
+        </>
+      ) : nodes.length === 0 ? (
+        <>
+          <p className="text-lg font-semibold text-fg">Standalone</p>
+          <p className="mt-1 text-sm text-fg-subtle">Add servers to manage them from here as one cluster.</p>
+        </>
+      ) : (
+        <>
+          <p className="text-lg font-semibold text-fg tabular-nums">
+            {list.length - down.length}/{list.length} <span className="text-sm font-normal text-fg-subtle">online</span>
+          </p>
+          <p className="mt-1 truncate text-sm">
+            {down.length > 0 ? (
+              <span className="font-medium text-danger">{down.map((s) => s.name).join(', ')} not responding</span>
+            ) : outOfSync.length > 0 ? (
+              <span className="font-medium text-warning">{pluralize(outOfSync.length, 'node')} out of sync</span>
+            ) : (
+              <span className="text-fg-subtle">Primary with {pluralize(nodes.length, 'node')}, all in sync</span>
+            )}
+          </p>
+        </>
+      )}
+    </StatCard>
   );
 }
 
