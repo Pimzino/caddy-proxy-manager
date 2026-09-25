@@ -43,7 +43,7 @@ public class OAuthTokenProviderTests
         var handler = new FakeHttpHandler((_, _) =>
             FakeHttpHandler.Json(HttpStatusCode.OK, $"{{\"token_type\":\"Bearer\",\"expires_in\":3599,\"access_token\":\"tok-{Interlocked.Increment(ref n)}\"}}"));
         var clock = new ManualTimeProvider(DateTimeOffset.Parse("2026-09-25T10:00:00Z"));
-        var provider = new OAuthTokenProvider(new SingleClientFactory(handler), clock);
+        var provider = new OAuthTokenProvider(new NotificationHttp(new SingleClientFactory(handler), null), clock);
 
         Assert.Equal("tok-1", await provider.GetTokenAsync(Tenant, ClientId, "s3cret", default));
         Assert.Equal("tok-1", await provider.GetTokenAsync(Tenant, ClientId, "s3cret", default));
@@ -74,7 +74,7 @@ public class OAuthTokenProviderTests
     {
         var handler = new FakeHttpHandler((_, _) => FakeHttpHandler.Json(HttpStatusCode.Unauthorized,
             "{\"error\":\"invalid_client\",\"error_description\":\"AADSTS7000215: Invalid client secret provided.\\r\\nTrace ID: abc\\r\\nCorrelation ID: def\"}"));
-        var provider = new OAuthTokenProvider(new SingleClientFactory(handler), TimeProvider.System);
+        var provider = new OAuthTokenProvider(new NotificationHttp(new SingleClientFactory(handler), null), TimeProvider.System);
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => provider.GetTokenAsync(Tenant, ClientId, "bad", default));
         Assert.Contains("HTTP 401", ex.Message);
         Assert.Contains("invalid_client", ex.Message);

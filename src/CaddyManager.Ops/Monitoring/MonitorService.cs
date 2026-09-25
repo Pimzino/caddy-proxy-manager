@@ -215,8 +215,17 @@ internal sealed class MonitorService(
             events.Raise(EventSeverity.Warning, "upstream", $"Upstream {u.Address} is unhealthy",
                 $"Failed requests: {u.Fails}, active requests: {u.NumRequests}", key, "upstreamUnhealthy");
         }
+        // GetUpstreamsAsync only lists upstreams a health check measures: one that disappeared (its check or host was
+        // removed) is no longer monitored, which is not the same as "healthy again".
+        var monitored = new HashSet<string>(upstreams.Select(u => "upstream:" + u.Address), StringComparer.Ordinal);
         foreach (var key in alerts.ActiveKeys("upstream:").Where(k => !unhealthy.Contains(k)))
-            events.Raise(EventSeverity.Recovered, "upstream", $"Upstream {key["upstream:".Length..]} is healthy again", null, key, "upstreamUnhealthy");
+        {
+            var address = key["upstream:".Length..];
+            events.Raise(EventSeverity.Recovered, "upstream",
+                monitored.Contains(key) ? $"Upstream {address} is healthy again" : $"Upstream {address} is no longer monitored",
+                monitored.Contains(key) ? null : "Its health check or proxy host was removed or changed, so its health is unknown.",
+                key, "upstreamUnhealthy");
+        }
     }
 
     // ------------------------------------------------------------------ certificates

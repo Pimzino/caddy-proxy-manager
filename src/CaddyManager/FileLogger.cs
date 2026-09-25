@@ -29,7 +29,13 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
 
-    internal void Enqueue(string line) => _queue.TryAdd(line);
+    internal void Enqueue(string line)
+    {
+        // After Dispose (host shutdown, or ProcessExit on Environment.Exit) late log lines are dropped: BlockingCollection
+        // throws InvalidOperationException for additions once CompleteAdding was called.
+        try { _queue.TryAdd(line); }
+        catch (InvalidOperationException) { }
+    }
 
     private void Write()
     {
@@ -92,6 +98,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public void Dispose()
     {
+        if (_queue.IsAddingCompleted) return;
         _queue.CompleteAdding();
         // Let the writer drain and flush what is queued (shutdown messages).
         _writer.Join(TimeSpan.FromSeconds(3));

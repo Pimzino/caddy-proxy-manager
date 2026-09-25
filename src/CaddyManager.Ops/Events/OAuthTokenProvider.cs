@@ -9,8 +9,9 @@ namespace CaddyManager.Ops.Events;
 /// Microsoft Entra ID (Azure AD) client-credentials tokens for SMTP AUTH XOAUTH2 with Exchange Online.
 /// POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token (grant_type=client_credentials,
 /// scope=https://outlook.office365.com/.default). Tokens are cached until shortly before they expire.
+/// The request goes through the outbound proxy configured in Settings → Updates (<see cref="NotificationHttp"/>).
 /// </summary>
-internal sealed partial class OAuthTokenProvider(IHttpClientFactory httpFactory, TimeProvider time)
+internal sealed partial class OAuthTokenProvider(NotificationHttp http, TimeProvider time)
 {
     public const string Scope = "https://outlook.office365.com/.default";
     /// <summary>Authority base URL (tests point it at a fake).</summary>
@@ -37,7 +38,7 @@ internal sealed partial class OAuthTokenProvider(IHttpClientFactory httpFactory,
             var now = time.GetUtcNow();
             if (_cached is { } c && c.Key == key && c.ExpiresAt - RefreshMargin > now) return c.Token;
 
-            var http = httpFactory.CreateClient("default");
+            var client = http.Client;
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{Authority.TrimEnd('/')}/{Uri.EscapeDataString(tenant)}/oauth2/v2.0/token")
             {
                 Content = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -50,7 +51,7 @@ internal sealed partial class OAuthTokenProvider(IHttpClientFactory httpFactory,
             };
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
-            using var resp = await http.SendAsync(request, timeout.Token);
+            using var resp = await client.SendAsync(request, timeout.Token);
             var body = await resp.Content.ReadAsStringAsync(timeout.Token);
 
             JsonElement json = default;

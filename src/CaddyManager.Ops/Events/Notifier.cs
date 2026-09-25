@@ -26,7 +26,7 @@ internal sealed record Notification(
 internal sealed class Notifier(
     IStore store,
     ISecretProtector secrets,
-    IHttpClientFactory httpFactory,
+    NotificationHttp http,
     OAuthTokenProvider oauth,
     ILogger<Notifier> logger) : INotifier
 {
@@ -110,13 +110,7 @@ internal sealed class Notifier(
         using var client = new SmtpClient { Timeout = (int)ChannelTimeout.TotalMilliseconds };
         if (s.AllowInvalidCertificate)
             client.ServerCertificateValidationCallback = (_, _, _, _) => true;
-        var security = s.SmtpSecurity switch
-        {
-            SmtpSecurity.None => SecureSocketOptions.None,
-            SmtpSecurity.StartTls => SecureSocketOptions.StartTls,
-            SmtpSecurity.SslOnConnect => SecureSocketOptions.SslOnConnect,
-            _ => SecureSocketOptions.Auto,
-        };
+        var security = SocketOptions(s);
         // Fetch the OAuth token before connecting so an Entra ID problem is reported as such.
         string? token = null;
         if (s.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials)
@@ -129,29 +123,99 @@ internal sealed class Notifier(
         }
 
         await client.ConnectAsync(s.SmtpHost.Trim(), s.SmtpPort, security, timeout.Token);
+        try
+        {
+            await AuthenticateAndSendAsync(client, message, s, token, timeout.Token);
+        }
+        catch (AuthenticationException ex) when (s.SmtpAuth == SmtpAuthMode.Password && IsExchangeOnline(s.SmtpHost))
+        {
+            throw new InvalidOperationException($"{ex.Message.TrimEnd('.')}. {BasicAuthRetirementHint}", ex);
+        }
+        catch (SmtpCommandException ex) when (s.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials && SendsAsOtherMailbox(s)
+                                              && ex.ErrorCode is SmtpErrorCode.SenderNotAccepted or SmtpErrorCode.MessageNotAccepted)
+        {
+            var from = MailboxAddress.Parse(s.SmtpFrom.Trim()).Address;
+            throw new InvalidOperationException(
+                $"{ex.Message.TrimEnd('.')}. The sender address {from} differs from the authenticated mailbox {s.SmtpUsername!.Trim()}: " +
+                $"with OAuth2 client credentials Exchange Online also needs SendAs for the app's service principal " +
+                $"(Add-RecipientPermission -Identity {from} -Trustee <service principal> -AccessRights SendAs), or use the mailbox itself as sender.", ex);
+        }
+        await client.DisconnectAsync(true, timeout.Token);
+    }
+
+    /// <summary>
+    /// Microsoft 365 retires Basic authentication (password) for SMTP AUTH; OAuth2 client credentials keep working:
+    /// https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online
+    /// </summary>
+    internal const string BasicAuthRetirementHint =
+        "Microsoft 365 is retiring Basic authentication (user name + password) for SMTP AUTH (disabled by default for existing tenants " +
+        "from the end of December 2026). Switch 'Authentication' to 'Microsoft 365 OAuth2 (client credentials)' in Settings → Notifications " +
+        "(see docs/notifications.md).";
+
+    /// <summary>True for Exchange Online SMTP endpoints (smtp.office365.com, *.mail.protection.outlook.com, smtp-mail.outlook.com).</summary>
+    internal static bool IsExchangeOnline(string? host)
+    {
+        var h = (host ?? "").Trim().TrimEnd('.').ToLowerInvariant();
+        return h.EndsWith(".office365.com", StringComparison.Ordinal) || h.EndsWith(".outlook.com", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when the From address is not the mailbox the OAuth2 token authenticates. Exchange Online then needs SendAs:
+    /// "If you're trying to use Client Credential Grant Flow with SendAs, you need to grant SendAs permissions to the sender"
+    /// (https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
+    /// </summary>
+    internal static bool SendsAsOtherMailbox(NotificationSettings s)
+    {
+        if (string.IsNullOrWhiteSpace(s.SmtpFrom) || string.IsNullOrWhiteSpace(s.SmtpUsername)) return false;
+        if (!MailboxAddress.TryParse(s.SmtpFrom.Trim(), out var from)) return false;
+        return !string.Equals(from.Address, s.SmtpUsername.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// MailKit's SecureSocketOptions.Auto continues without encryption when the server does not offer TLS
+    /// ("If the server does not support SSL or TLS, then the connection will continue without any encryption":
+    /// https://mimekit.net/docs/html/T_MailKit_Security_SecureSocketOptions.htm), which would expose the SMTP password or the
+    /// OAuth2 bearer token to a STARTTLS-stripping attacker. When credentials are sent, "Auto" therefore requires TLS:
+    /// implicit TLS on port 465, STARTTLS (fails if not offered) otherwise.
+    /// </summary>
+    internal static SecureSocketOptions SocketOptions(NotificationSettings s) => s.SmtpSecurity switch
+    {
+        SmtpSecurity.None => SecureSocketOptions.None,
+        SmtpSecurity.StartTls => SecureSocketOptions.StartTls,
+        SmtpSecurity.SslOnConnect => SecureSocketOptions.SslOnConnect,
+        _ when SendsCredentials(s) => s.SmtpPort == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls,
+        _ => SecureSocketOptions.Auto,
+    };
+
+    internal static bool SendsCredentials(NotificationSettings s) =>
+        s.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials ||
+        (s.SmtpAuth == SmtpAuthMode.Password && !string.IsNullOrWhiteSpace(s.SmtpUsername));
+
+    private async Task AuthenticateAndSendAsync(SmtpClient client, MimeMessage message, NotificationSettings s, string? token, CancellationToken ct)
+    {
         switch (s.SmtpAuth)
         {
             case SmtpAuthMode.OAuth2ClientCredentials:
                 try
                 {
-                    await client.AuthenticateAsync(new SaslMechanismOAuth2(s.SmtpUsername!.Trim(), token!), timeout.Token);
+                    await client.AuthenticateAsync(new SaslMechanismOAuth2(s.SmtpUsername!.Trim(), token!), ct);
                 }
                 catch (AuthenticationException ex)
                 {
                     oauth.Invalidate();
                     throw new InvalidOperationException(
                         $"The SMTP server rejected the OAuth2 token for {s.SmtpUsername!.Trim()} ({ex.Message.TrimEnd('.')}). In Exchange Online: register the app's " +
-                        "service principal (New-ServicePrincipal), grant it FullAccess to the mailbox (Add-MailboxPermission) and make sure SMTP AUTH is " +
+                        "service principal (New-ServicePrincipal -AppId <application ID> -ObjectId <object ID of the Enterprise application, not of the " +
+                        "app registration>), grant it FullAccess to the mailbox (Add-MailboxPermission) and make sure SMTP AUTH is " +
                         "enabled for the mailbox (Set-CASMailbox -SmtpClientAuthenticationDisabled $false).", ex);
                 }
                 break;
             case SmtpAuthMode.Password when !string.IsNullOrWhiteSpace(s.SmtpUsername):
                 var password = string.IsNullOrEmpty(s.SmtpPasswordProtected) ? "" : secrets.Unprotect(s.SmtpPasswordProtected);
-                await client.AuthenticateAsync(s.SmtpUsername.Trim(), password, timeout.Token);
+                await client.AuthenticateAsync(s.SmtpUsername.Trim(), password, ct);
                 break;
         }
-        await client.SendAsync(message, timeout.Token);
-        await client.DisconnectAsync(true, timeout.Token);
+        await client.SendAsync(message, ct);
     }
 
     private async Task SendWebhookAsync(Notification n, string url, WebhookFormat format, string server, string? uiUrl, CancellationToken ct)
@@ -159,8 +223,8 @@ internal sealed class Notifier(
         var payload = WebhookPayloads.Build(format, n, server, uiUrl);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ChannelTimeout);
-        var http = httpFactory.CreateClient("default");
-        using var resp = await http.PostAsJsonAsync(url, payload, timeout.Token);
+        // Through the outbound proxy of Settings → Updates when one is set (NotificationHttp).
+        using var resp = await http.Client.PostAsJsonAsync(url, payload, timeout.Token);
         if (!resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadAsStringAsync(timeout.Token);

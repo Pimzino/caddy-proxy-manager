@@ -15,10 +15,13 @@ internal interface IEventLogWriter
 
 /// <summary>
 /// Registers the "Caddy Proxy Manager" source in the Windows Application log with a message file that exists.
-/// .NET's EventLog.CreateEventSource points EventMessageFile at System.Diagnostics.EventLog.Messages.dll next to
-/// the runtime, which does not exist for a single-file executable — Event Viewer then shows "The description for
-/// Event ID ... cannot be found". The .NET Framework 4 EventLogMessages.dll (present on every Windows Server)
-/// provides the same "%1" message for every event ID.
+/// .NET 10's EventLog.CreateEventSource (EventLog.GetDllPath, runtime release/10.0) already prefers the .NET Framework 4
+/// EventLogMessages.dll (installed by default on every supported Windows, including Server Core) and only falls back to
+/// System.Diagnostics.EventLog.Messages.dll beside the app, which does not exist for a single-file executable. A source
+/// registered with such a missing file (older builds, or a machine without .NET Framework 4) makes Event Viewer show
+/// "The description for Event ID ... cannot be found"; <see cref="Ensure"/> repairs that registration. The Framework
+/// EventLogMessages.dll provides the same "%1" message for every event ID.
+/// https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.EventLog/src/System/Diagnostics/EventLog.cs
 /// </summary>
 public static class EventLogSource
 {

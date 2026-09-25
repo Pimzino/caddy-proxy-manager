@@ -35,6 +35,7 @@ public static class OpsModule
         // Audit, events and notifications.
         services.AddSingleton<IAuditLog, AuditLog>();
         services.AddSingleton<IEventLogWriter, WindowsEventLogWriter>();
+        services.AddSingleton<NotificationHttp>();
         services.AddSingleton<OAuthTokenProvider>();
         services.AddSingleton<INotifier, Notifier>();
         services.AddSingleton<EventSink>();

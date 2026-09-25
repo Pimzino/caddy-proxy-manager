@@ -18,6 +18,10 @@ public sealed class SmtpTestServer : IAsyncDisposable
     public ConcurrentQueue<string> AuthAttempts { get; } = new();
     /// <summary>When set, only this bearer token is accepted.</summary>
     public string? AcceptToken { get; set; }
+    /// <summary>When set, the end of DATA is answered with this reply (e.g. Exchange Online's "554 5.2.252 SendAsDenied").</summary>
+    public string? DataReply { get; set; }
+    /// <summary>Every command line received (verbs only for AUTH), in order.</summary>
+    public ConcurrentQueue<string> Commands { get; } = new();
 
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly CancellationTokenSource _cts = new();
@@ -57,6 +61,7 @@ public sealed class SmtpTestServer : IAsyncDisposable
             var line = await reader.ReadLineAsync();
             if (line is null) return;
             var cmd = line.Length >= 4 ? line[..4].ToUpperInvariant() : line.ToUpperInvariant();
+            Commands.Enqueue(cmd == "AUTH" ? "AUTH" : line);
             switch (cmd)
             {
                 case "EHLO":
@@ -89,8 +94,14 @@ public sealed class SmtpTestServer : IAsyncDisposable
                     var sb = new StringBuilder();
                     while (await reader.ReadLineAsync() is { } dataLine && dataLine != ".")
                         sb.AppendLine(dataLine.StartsWith("..") ? dataLine[1..] : dataLine);
-                    Messages.Enqueue(new Received(from, to.ToList(), sb.ToString()));
+                    var recipients = to.ToList();
                     to.Clear();
+                    if (DataReply is not null)
+                    {
+                        await writer.WriteLineAsync(DataReply);
+                        break;
+                    }
+                    Messages.Enqueue(new Received(from, recipients, sb.ToString()));
                     await writer.WriteLineAsync("250 OK queued");
                     break;
                 case "RSET":

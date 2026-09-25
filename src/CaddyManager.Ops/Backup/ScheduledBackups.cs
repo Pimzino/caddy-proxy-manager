@@ -260,7 +260,7 @@ internal sealed partial class ScheduledBackups(
         {
             if (dir.StartsWith(@"\\", StringComparison.Ordinal))
                 msg += $" The service runs as LocalSystem and reaches network shares as the computer account " +
-                       $"({Environment.UserDomainName}\\{Environment.MachineName}$): grant that account Modify on both the share and the folder.";
+                       $"({ComputerAccount.Name()}): grant that account Modify on both the share and the folder.";
             else if (ex is UnauthorizedAccessException)
                 msg += " Grant SYSTEM Modify permission on the folder.";
         }

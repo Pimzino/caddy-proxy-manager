@@ -33,7 +33,11 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 
 // Runs as a Windows service (LocalSystem) when started by the SCM; console otherwise.
 builder.Host.UseWindowsService(o => o.ServiceName = AppPaths.ManagerServiceName);
-builder.Logging.AddProvider(new FileLoggerProvider(paths.ManagerLogDir));
+var fileLog = new FileLoggerProvider(paths.ManagerLogDir);
+builder.Logging.AddProvider(fileLog);
+// POST /api/system/restart ends the process with Environment.Exit (see PlatformEndpoints), which skips the host shutdown
+// but raises ProcessExit: flush the queued log lines there (Dispose is idempotent and waits at most 3 s).
+AppDomain.CurrentDomain.ProcessExit += (_, _) => fileLog.Dispose();
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 // Windows Event Log (Application): warnings and errors under the product's source, whose message file is repaired
@@ -65,6 +69,13 @@ catch (Exception ex)
 }
 var listener = UiListener.Plan(paths, ui, Environment.GetEnvironmentVariable("CM_UI_PORT"), new SecretProtector(paths));
 startupWarnings.AddRange(listener.Warnings);
+// The UI certificate is loaded with MachineKeySet (SChannel cannot use ephemeral keys: dotnet/runtime#23749), which writes
+// a key file under %ProgramData%\Microsoft\Crypto that .NET deletes only when the certificate is disposed. Kestrel keeps it
+// for the process lifetime and finalizers do not run at exit, so without this every start (and every Restart from the UI,
+// which ends with Environment.Exit) would leave one orphaned key file. ProcessExit is raised on a normal exit and on
+// Environment.Exit (WindowsPlatformE2ETests.UiCertificateKeyFileIsRemovedOnExit).
+if (listener.Certificate is { } uiCertificate)
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => uiCertificate.Dispose();
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.AddServerHeader = false;
