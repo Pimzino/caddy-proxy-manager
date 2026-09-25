@@ -1,5 +1,15 @@
 # Caddy Proxy Manager
 
+[![Build & tests](https://github.com/Pimzino/caddy-proxy-manager/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Pimzino/caddy-proxy-manager/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Pimzino/caddy-proxy-manager?sort=semver&display_name=tag&label=release)](https://github.com/Pimzino/caddy-proxy-manager/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Pimzino/caddy-proxy-manager/total?label=downloads)](https://github.com/Pimzino/caddy-proxy-manager/releases)
+[![Caddy](https://img.shields.io/github/v/release/caddyserver/caddy?label=caddy%20(latest)&color=1F88C0)](https://github.com/caddyserver/caddy/releases/latest)
+[![Windows Server 2025](https://img.shields.io/badge/Windows%20Server-2025-0078D4?logo=windows&logoColor=white)](docs/installation.md)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![Last commit](https://img.shields.io/github/last-commit/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/commits/main)
+[![License: MIT](https://img.shields.io/github/license/Pimzino/caddy-proxy-manager)](LICENSE)
+[![Open issues](https://img.shields.io/github/issues/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/issues)
+
 A Windows-native reverse proxy manager: for **[Caddy](https://caddyserver.com)**,
 built to run on **Windows Server 2025** as a proper Windows service.
 
@@ -73,3 +83,15 @@ The manager downloads the latest Caddy on first start. On servers without Intern
 See [docs/development.md](docs/development.md). In short, on Windows: `.\build.ps1` produces
 `artifacts\CaddyProxyManager-<ver>-x64.msi` and a zip; CI (`.github/workflows/build.yml`) does the same on
 `windows-latest`.
+
+## License
+
+Caddy Proxy Manager is released under the [MIT License](LICENSE). Bundled third-party components and their
+licenses are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+[Caddy](https://caddyserver.com) itself is **not** bundled: the manager downloads the official Caddy binary
+(Apache License 2.0) from Caddy's GitHub releases or caddyserver.com when you install or update it. Plugins you
+choose are licensed by their respective authors.
+
+This is an independent community project. It is not affiliated with, sponsored by or endorsed by the Caddy project
+or its maintainers; "Caddy" is used only to describe what this software manages and remains a trademark of its owner.

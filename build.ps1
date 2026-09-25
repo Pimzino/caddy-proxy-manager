@@ -10,7 +10,7 @@
       3. publish     dotnet publish src/CaddyManager   -> artifacts/publish/CaddyManager.exe
                      (Authenticode-signed when a signing certificate is given)
       4. MSI         dotnet build installer/*.wixproj  -> artifacts/CaddyProxyManager-<ver>-x64.msi  (Windows only; signed too)
-      5. zip         CaddyManager.exe, install.ps1, uninstall.ps1, README.md, docs/*.md
+      5. zip         CaddyManager.exe, install.ps1, uninstall.ps1, LICENSE, THIRD-PARTY-NOTICES.md, README.md, docs/*.md
                                                        -> artifacts/CaddyProxyManager-<ver>-win-x64.zip
     plus artifacts/SHA256SUMS.txt.
 
@@ -185,6 +185,9 @@ if (-not $SkipZip) {
         Copy-Item -LiteralPath $zipExe -Destination $staging
         Copy-Item -LiteralPath (Join-Path $root 'installer/install.ps1') -Destination $staging
         Copy-Item -LiteralPath (Join-Path $root 'installer/uninstall.ps1') -Destination $staging
+        foreach ($legal in 'LICENSE', 'THIRD-PARTY-NOTICES.md') {
+            Copy-Item -LiteralPath (Join-Path $root $legal) -Destination $staging
+        }
         $readme = Join-Path $root 'README.md'
         if (Test-Path -LiteralPath $readme) { Copy-Item -LiteralPath $readme -Destination $staging }
         else { Write-Warning 'README.md was not found at the repository root; the zip is built without it.' }

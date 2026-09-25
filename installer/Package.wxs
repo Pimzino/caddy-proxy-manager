@@ -133,6 +133,12 @@
       </Component>
 
       <!-- The publish output is the single CaddyManager.exe (settings live in the database, not in appsettings.json). -->
+      <!-- License of this project and notices of bundled third-party components (the fonts' OFL requires it). -->
+      <Component Id="LicenseFiles">
+        <File Id="LicenseFile" Source="$(var.RepoRoot)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+        <File Id="ThirdPartyNotices" Source="$(var.RepoRoot)\THIRD-PARTY-NOTICES.md" />
+      </Component>
+
       <Component Id="RememberUiPort">
         <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiPort" Type="string" Value="[CPM_FIREWALL_PORT]" KeyPath="yes" />
         <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiBind" Type="string" Value="[CPM_UI_BIND]" />

@@ -163,7 +163,7 @@ jobs:
           if (-not $zip) { throw 'No zip in artifacts/.' }
           $entries = [IO.Compression.ZipFile]::OpenRead($zip.FullName).Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
           $entries | ForEach-Object { Write-Host "  $_" }
-          foreach ($required in 'CaddyManager.exe', 'install.ps1', 'uninstall.ps1', 'README.md') {
+          foreach ($required in 'CaddyManager.exe', 'install.ps1', 'uninstall.ps1', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md') {
             if ($entries -notcontains $required) { throw "$($zip.Name) does not contain $required." }
           }
           if (-not ($entries | Where-Object { $_ -like 'docs/*.md' })) { throw "$($zip.Name) does not contain docs/*.md." }
