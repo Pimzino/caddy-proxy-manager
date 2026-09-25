@@ -167,8 +167,10 @@ internal static partial class PlatformEndpoints
             }
         });
 
-        g.MapPut("/plugins", async (PluginsRequest body, CaddyBinaryManager bin, IStore store, IAuditLog audit, CancellationToken ct) =>
+        g.MapPut("/plugins", async (PluginsRequest body, CaddyBinaryManager bin, IStore store, IAuditLog audit, HttpContext http, CancellationToken ct) =>
         {
+            // Desired plugins are replicated from the cluster primary to managed nodes (SPEC "Cluster module").
+            if (ApiResults.RejectIfManagedNode(http.RequestServices) is { } managed) return managed;
             var (plugins, error) = await ValidatePluginsAsync(body.Plugins ?? [], bin, ct);
             if (error is not null) return error;
             var s = store.GetSettings<BinarySettings>();
