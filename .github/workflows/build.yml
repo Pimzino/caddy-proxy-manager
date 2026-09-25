@@ -116,6 +116,12 @@ jobs:
             'CaddyManager.Platform.Tests.GetCaddyScriptE2ETests.*'
             'CaddyManager.Platform.Tests.AssertE2eRanScriptE2ETests.*'
             'CaddyManager.Ops.Tests.WindowsOpsE2ETests.*'
+            'CaddyManager.Telemetry.Tests.TrafficIngestE2ETests.*'
+            'CaddyManager.Telemetry.Tests.ResourceSamplerE2ETests.*'
+            'CaddyManager.Cluster.Tests.ClusterE2ETests.*'
+            'CaddyManager.Cluster.Tests.ClusterPushE2ETests.*'
+            'CaddyManager.Cluster.Tests.ClusterHttpsPinE2ETests.*'
+            'CaddyManager.Cluster.Tests.FullStackTrafficE2ETests.*'
           ) -RequiredArtifacts @(
             'http3-0rtt-ip-access-list.json'
             'http3-upstream-framing.json'
@@ -127,6 +133,12 @@ jobs:
             'caddy-service-start-pending.json'
             'caddy-service-real-cycles.json'
             'caddy-pin.json'
+            'traffic-ingest.json'
+            'resource-samples.json'
+            'cluster-e2e.json'
+            'cluster-push-e2e.json'
+            'cluster-https-pin-e2e.json'
+            'full-stack-traffic.json'
           )
 
       - name: Test summary

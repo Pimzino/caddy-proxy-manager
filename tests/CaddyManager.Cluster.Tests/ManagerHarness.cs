@@ -103,35 +103,6 @@ public static class Wait
     private sealed record Box<T>(T Value);
 }
 
-/// <summary>Stand-in for the Telemetry module while it is a stub: deterministic samples/traffic that carry this server's marker.</summary>
-public sealed class FakeTelemetry(string marker) : IServerTelemetry
-{
-    public string Marker { get; } = marker;
-    private readonly DateTime _start = DateTime.UtcNow;
-
-    public Task<ServerInfo> GetInfoAsync(CancellationToken ct = default) => Task.FromResult(new ServerInfo
-    {
-        Hostname = Marker, Os = "fake-telemetry", ManagerVersion = "test", CollectedAt = DateTime.UtcNow, ProcessorCount = 4,
-    });
-
-    public IReadOnlyList<ResourceSample> GetSamples(DateTime? since = null)
-    {
-        var now = DateTime.UtcNow;
-        var samples = Enumerable.Range(0, 3).Select(i => new ResourceSample
-        {
-            At = now.AddSeconds(-4 + 2 * i), CpuPercent = 10 + i, MemoryUsedBytes = 1000 + i, MemoryTotalBytes = Marker.Length * 1_000_000L,
-            Disks = [new DiskUsage { Name = "/", Label = "Data (" + Marker + ")", TotalBytes = 100, FreeBytes = 50 }],
-        });
-        return samples.Where(s => since is null || s.At > since).ToList();
-    }
-
-    public Task<TrafficReport> GetTrafficAsync(TrafficQuery query, CancellationToken ct = default) => Task.FromResult(new TrafficReport
-    {
-        Range = query.Range, Host = query.Host, From = _start, To = DateTime.UtcNow, Totals = new TrafficTotals { Requests = 42 },
-        Notes = ["fake-telemetry:" + Marker],
-    });
-}
-
 /// <summary>Stand-in for the Config module's IConfigChangeFeed while this build's Config module does not provide one.</summary>
 public sealed class FakeConfigChangeFeed : IConfigChangeFeed
 {
@@ -201,7 +172,8 @@ public sealed class Manager : IAsyncDisposable
     public WebApplication App { get; private set; } = null!;
     public HttpClient Api { get; private set; } = null!;
     public CaptureLoggerProvider Logs { get; }
-    public bool UsesFakeTelemetry { get; private set; }
+    /// <summary>Type of the registered IServerTelemetry (the Telemetry module's ServerTelemetry).</summary>
+    public string? TelemetryImplementation { get; private set; }
     public bool UsesTestMaterialStore { get; private set; }
     /// <summary>Set when the Config module in this build has no IConfigChangeFeed: the test raises Applied itself.</summary>
     public FakeConfigChangeFeed? FakeFeed { get; private set; }
@@ -264,7 +236,6 @@ public sealed class Manager : IAsyncDisposable
         });
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(Logs);
-        var fakeTelemetry = new FakeTelemetry(Name);
         builder.Services
             .AddCore(Paths, _store)
             .AddConfigModule()
@@ -281,10 +252,19 @@ public sealed class Manager : IAsyncDisposable
             o.OfflineThreshold = 3;
             _clusterOptions?.Invoke(o);
         });
+        // The real Telemetry module (sampler + stats-log ingester running) with short timers: a sample every 500 ms, the
+        // stats log tailed every 200 ms and flushed every 500 ms, server facts re-read after 1 s.
+        builder.Services.Configure<TelemetryOptions>(o =>
+        {
+            o.SampleInterval = TimeSpan.FromMilliseconds(500);
+            o.CaddyStatusCacheDuration = TimeSpan.FromMilliseconds(500);
+            o.InfoCacheDuration = TimeSpan.FromSeconds(1);
+            o.IngestInterval = TimeSpan.FromMilliseconds(200);
+            o.FlushInterval = TimeSpan.FromMilliseconds(500);
+        });
         var fakeFeed = new FakeConfigChangeFeed();
         builder.Services.TryAddSingleton<IConfigChangeFeed>(fakeFeed);
-        // Telemetry and ICertificateMaterialStore are built in parallel by other modules: use stand-ins only while absent.
-        builder.Services.TryAddSingleton<IServerTelemetry>(fakeTelemetry);
+        // ICertificateMaterialStore is provided by the Config module; the stand-in is used only when it is absent.
         builder.Services.TryAddSingleton<ICertificateMaterialStore>(sp => new TestCertificateMaterialStore(sp.GetRequiredService<CertificateFileStore>()));
         builder.Services.ConfigureHttpJsonOptions(o => JsonDefaults.Configure(o.SerializerOptions));
         builder.Services.AddProblemDetails();
@@ -301,7 +281,7 @@ public sealed class Manager : IAsyncDisposable
         app.MapTelemetryEndpoints();
         app.MapClusterEndpoints();
         App = app;
-        UsesFakeTelemetry = ReferenceEquals(app.Services.GetService<IServerTelemetry>(), fakeTelemetry);
+        TelemetryImplementation = app.Services.GetService<IServerTelemetry>()?.GetType().FullName;
         UsesTestMaterialStore = app.Services.GetService<ICertificateMaterialStore>() is TestCertificateMaterialStore;
         FakeFeed = ReferenceEquals(app.Services.GetService<IConfigChangeFeed>(), fakeFeed) ? fakeFeed : null;
         await app.StartAsync();

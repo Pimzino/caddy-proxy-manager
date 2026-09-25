@@ -18,9 +18,10 @@ using Microsoft.Extensions.Options;
 namespace CaddyManager.Telemetry.Tests;
 
 /// <summary>
-/// End to end: a real Caddy v2.11.4 writes the stats access log through the cpm_stats sink (roll_size_mb 1 so it rotates
-/// several times), a known mix of requests goes through it, and the ingester — stopped, restarted and "crashed" while
-/// traffic keeps flowing — must end up with exactly the numbers the client sent. Artifact: traffic-ingest.json.
+/// End to end: a real Caddy v2.11.4 runs the configuration the Config module generates for three proxy hosts and writes
+/// the stats access log through the generated cpm_stats sink (roll_size_mb lowered to 1 so it rotates several times), a
+/// known mix of requests goes through it, and the ingester — stopped, restarted and "crashed" while traffic keeps
+/// flowing — must end up with exactly the numbers the client sent. Artifact: traffic-ingest.json.
 /// </summary>
 public sealed class TrafficIngestE2ETests
 {
@@ -30,7 +31,7 @@ public sealed class TrafficIngestE2ETests
 
     private sealed record Planned(string HostHeader, string HostKey, HttpMethod Method, string Path, int BodyBytes, string Client, int Status, int ResponseBytes);
 
-    /// <summary>Deterministic request mix: 404/500 via static_response, uploads through reverse_proxy, three hosts.</summary>
+    /// <summary>Deterministic request mix over three proxy hosts: the upstream answers 404/500/uploads/pages by path.</summary>
     private static Planned Plan(int i, int port)
     {
         var client = $"10.0.{i % DistinctClients / 200}.{i % DistinctClients % 200 + 1}";
@@ -57,13 +58,23 @@ public sealed class TrafficIngestE2ETests
         {
             await using var upstream = await Upstream.StartAsync();
             var port = Net.FreeTcpPort();
-            var routes = new JsonArray(
-                StatsConfig.StaticRoute(404, "not found", host: "a.test", path: "/missing"),
-                StatsConfig.StaticRoute(500, "boom", path: "/fail"),
-                StatsConfig.ProxyRoute("/upload", upstream.Port),
-                StatsConfig.StaticRoute(200, "hello-world"));
-            var config = StatsConfig.Build(env.Paths, port, routes, rollSizeMb: 1, trustLoopbackProxy: true);
-            using var caddy = new CaddyProcess(env.Paths, config);
+            // The requests come from 127.0.0.1 with X-Forwarded-For: trusting loopback (a product setting) makes Caddy log
+            // that address as request.client_ip. The generator adds trusted_proxies (static, strict); client_ip_headers is
+            // left to Caddy's default, X-Forwarded-For
+            // (https://caddyserver.com/docs/json/apps/http/servers/client_ip_headers/, v2.11.4).
+            GeneratedConfig.Settings(env, port, s => s.TrustedProxies = ["127.0.0.1/32"]);
+            foreach (var domain in new[] { "a.test", "b.test", "::1" }) GeneratedConfig.AddProxyHost(env, upstream.Port, domain);
+            var generated = GeneratedConfig.Generate(env);
+            Assert.Empty(generated.Warnings);
+            var sink = GeneratedConfig.StatsSink(generated.Config);
+            // Only test-specific change: the product rolls the stats log at 10 MB; 1 MB makes the 12,000 requests below
+            // rotate it several times, including while no ingester runs and across the "crash".
+            Assert.Equal(10, sink["writer"]!["roll_size_mb"]!.GetValue<int>());
+            sink["writer"]!["roll_size_mb"] = 1;
+            report["sinkSource"] = "generator";
+            report["configTweaks"] = new JsonArray("logging.logs.cpm_stats.writer.roll_size_mb: 10 -> 1 (force rotations)");
+            report["statsSink"] = sink.DeepClone();
+            using var caddy = new CaddyProcess(env.Paths, generated.Config.ToJsonString());
             await caddy.WaitForPortAsync(port, TimeSpan.FromSeconds(20));
 
             var plan = Enumerable.Range(0, Requests).Select(i => Plan(i, port)).ToList();
@@ -355,7 +366,10 @@ public sealed class TrafficIngestE2ETests
         return new Expectation(bytesIn, bytesOut, s2, s4, s5, hosts, codes, json);
     }
 
-    /// <summary>Upstream for /upload: reads the whole request body and answers exactly 42 bytes.</summary>
+    /// <summary>
+    /// Upstream of the three proxy hosts: /missing → 404 "not found", /fail → 500 "boom", /upload reads the whole request
+    /// body and answers exactly 42 bytes, anything else → 200 "hello-world".
+    /// </summary>
     private sealed class Upstream : IAsyncDisposable
     {
         private readonly WebApplication _app;
@@ -378,9 +392,17 @@ public sealed class TrafficIngestE2ETests
             {
                 using var ms = new MemoryStream();
                 await ctx.Request.Body.CopyToAsync(ms);
+                var (status, body) = ctx.Request.Path.Value switch
+                {
+                    "/missing" => (404, "not found"),
+                    "/fail" => (500, "boom"),
+                    "/upload" => (200, new string('y', UploadResponseBytes)),
+                    _ => (200, "hello-world"),
+                };
+                ctx.Response.StatusCode = status;
                 ctx.Response.ContentType = "text/plain";
-                ctx.Response.ContentLength = UploadResponseBytes;
-                await ctx.Response.Body.WriteAsync(Encoding.ASCII.GetBytes(new string('y', UploadResponseBytes)));
+                ctx.Response.ContentLength = body.Length;
+                await ctx.Response.Body.WriteAsync(Encoding.ASCII.GetBytes(body));
             });
             await app.StartAsync();
             return new Upstream(app, port);

@@ -4,9 +4,13 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CaddyManager.Config;
+using CaddyManager.Config.Generation;
+using CaddyManager.Config.Services;
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Infrastructure;
+using CaddyManager.Core.Models;
 using CaddyManager.Telemetry;
 using CaddyManager.Telemetry.Traffic;
 using Microsoft.Extensions.DependencyInjection;
@@ -237,103 +241,67 @@ public sealed class CaddyProcess : IDisposable
 }
 
 /// <summary>
-/// Caddy JSON with the traffic statistics sink exactly as SPEC "Traffic statistics logging" defines `cpm_stats`
-/// (include http.log.access, file writer, roll_keep 5, roll_compression none, mode 0600, filter encoder deleting
-/// request>headers, resp_headers and request>tls; logs.default excludes http.log.access; servers have `logs`).
-/// Hand-written because the Config builder implements the generator in parallel — after the merge these tests should take
-/// the sink from CaddyConfigGenerator instead (only roll_size_mb differs: the tests use 1 MB to force rotations).
+/// The Caddy configuration exactly as the product generates it: Caddy settings and hosts are written to the store and the
+/// Config module's CaddyConfigService.Generate() turns them into Caddy JSON, including the traffic statistics sink
+/// `cpm_stats` (SPEC "Traffic statistics logging"). A test changes the generated JSON only where it must and says why.
 /// </summary>
-public static class StatsConfig
+public static class GeneratedConfig
 {
-    public static JsonObject StatsSink(AppPaths paths, int rollSizeMb) => new()
+    /// <summary>
+    /// Caddy settings for a test instance: HTTP on <paramref name="httpPort"/> bound to loopback only, the admin API on a
+    /// free loopback port, an unused HTTPS port (the tests create plain-HTTP hosts only, so no HTTPS server is generated).
+    /// </summary>
+    public static CaddySettings Settings(TempEnv env, int httpPort, Action<CaddySettings>? configure = null)
     {
-        ["writer"] = new JsonObject
-        {
-            ["output"] = "file",
-            ["filename"] = paths.StatsLogFile,
-            ["mode"] = "0600",
-            ["roll_size_mb"] = rollSizeMb,
-            ["roll_keep"] = 5,
-            ["roll_compression"] = "none",
-        },
-        ["encoder"] = new JsonObject
-        {
-            ["format"] = "filter",
-            ["wrap"] = new JsonObject { ["format"] = "json" },
-            ["fields"] = new JsonObject
-            {
-                ["request>headers"] = new JsonObject { ["filter"] = "delete" },
-                ["resp_headers"] = new JsonObject { ["filter"] = "delete" },
-                ["request>tls"] = new JsonObject { ["filter"] = "delete" },
-            },
-        },
-        ["include"] = new JsonArray("http.log.access"),
-    };
-
-    /// <summary>Full config: admin on a free loopback port, the stats sink, and one HTTP server with the given routes.</summary>
-    public static string Build(AppPaths paths, int httpPort, JsonArray routes, int rollSizeMb = 10, bool trustLoopbackProxy = false)
-    {
-        var server = new JsonObject
-        {
-            ["listen"] = new JsonArray($"127.0.0.1:{httpPort}"),
-            ["automatic_https"] = new JsonObject { ["disable"] = true },
-            ["logs"] = new JsonObject(),
-            ["routes"] = routes,
-        };
-        if (trustLoopbackProxy)
-        {
-            // Mirrors the generator's trusted proxies (static ranges + strict) so X-Forwarded-For sets request.client_ip.
-            server["trusted_proxies"] = new JsonObject { ["source"] = "static", ["ranges"] = new JsonArray("127.0.0.1/32") };
-            server["trusted_proxies_strict"] = 1;
-            server["client_ip_headers"] = new JsonArray("X-Forwarded-For");
-        }
-        var config = new JsonObject
-        {
-            ["admin"] = new JsonObject { ["listen"] = $"127.0.0.1:{Net.FreeTcpPort()}" },
-            ["logging"] = new JsonObject
-            {
-                ["logs"] = new JsonObject
-                {
-                    ["default"] = new JsonObject
-                    {
-                        ["writer"] = new JsonObject { ["output"] = "file", ["filename"] = paths.CaddyProcessLog },
-                        ["exclude"] = new JsonArray("http.log.access"),
-                    },
-                    ["cpm_stats"] = StatsSink(paths, rollSizeMb),
-                },
-            },
-            ["apps"] = new JsonObject
-            {
-                ["http"] = new JsonObject { ["servers"] = new JsonObject { ["srv0"] = server } },
-            },
-        };
-        return config.ToJsonString();
+        var s = env.Store.GetSettings<CaddySettings>();
+        s.HttpPort = httpPort;
+        s.HttpsPort = Net.FreeTcpPort();
+        s.AdminListen = $"127.0.0.1:{Net.FreeTcpPort()}";
+        s.BindAddresses = ["127.0.0.1"];
+        s.EnableHttp3 = false;
+        configure?.Invoke(s);
+        env.Store.SaveSettings(s);
+        return s;
     }
 
-    public static JsonObject StaticRoute(int status, string body, string? host = null, string? path = null)
+    /// <summary>Plain-HTTP proxy host to 127.0.0.1:<paramref name="upstreamPort"/>, the model's defaults otherwise.</summary>
+    public static SiteHost AddProxyHost(TempEnv env, int upstreamPort, params string[] domains)
     {
-        var route = new JsonObject
+        var host = new SiteHost
         {
-            ["handle"] = new JsonArray(new JsonObject { ["handler"] = "static_response", ["status_code"] = status, ["body"] = body }),
-            ["terminal"] = true,
+            Kind = HostKind.Proxy, Domains = domains.ToList(), Tls = TlsMode.None,
+            Upstreams = [new Upstream { Scheme = UpstreamScheme.Http, Host = "127.0.0.1", Port = upstreamPort }],
         };
-        var match = new JsonObject();
-        if (host is not null) match["host"] = new JsonArray(host);
-        if (path is not null) match["path"] = new JsonArray(path);
-        if (match.Count > 0) route["match"] = new JsonArray(match);
-        return route;
+        env.Store.Col<SiteHost>().Insert(host);
+        return host;
     }
 
-    public static JsonObject ProxyRoute(string path, int upstreamPort) => new()
+    /// <summary>Plain-HTTP fixed-response host.</summary>
+    public static SiteHost AddResponseHost(TempEnv env, int status, string body, params string[] domains)
     {
-        ["match"] = new JsonArray(new JsonObject { ["path"] = new JsonArray(path) }),
-        ["handle"] = new JsonArray(new JsonObject
+        var host = new SiteHost
         {
-            ["handler"] = "reverse_proxy",
-            ["upstreams"] = new JsonArray(new JsonObject { ["dial"] = $"127.0.0.1:{upstreamPort}" }),
-        }),
-        ["terminal"] = true,
-    };
+            Kind = HostKind.Response, Domains = domains.ToList(), Tls = TlsMode.None, ResponseStatus = status, ResponseBody = body,
+        };
+        env.Store.Col<SiteHost>().Insert(host);
+        return host;
+    }
+
+    /// <summary>CaddyConfigService.Generate() over the store (no Caddy binary manager: installed modules unknown).</summary>
+    public static ConfigGeneratorResult Generate(TempEnv env)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+        services.AddCore(env.Paths, env.Store);
+        services.AddConfigModule();
+        // The store is registered as an instance: disposing the provider leaves it open.
+        using var sp = services.BuildServiceProvider();
+        return sp.GetRequiredService<CaddyConfigService>().Generate();
+    }
+
+    /// <summary>The generated traffic statistics sink (logging.logs.cpm_stats).</summary>
+    public static JsonObject StatsSink(JsonObject config) =>
+        (JsonObject)config["logging"]!["logs"]![CaddyConfigGenerator.StatsLogName]!;
 }
 
 public sealed class FakeCaddyHost : ICaddyHost

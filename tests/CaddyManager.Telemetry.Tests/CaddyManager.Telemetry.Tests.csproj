@@ -13,6 +13,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CaddyManager.Core\CaddyManager.Core.csproj" />
+    <!-- The live tests run Caddy with the configuration the Config module generates (stats sink included). -->
+    <ProjectReference Include="..\..\src\CaddyManager.Config\CaddyManager.Config.csproj" />
     <ProjectReference Include="..\..\src\CaddyManager.Telemetry\CaddyManager.Telemetry.csproj" />
   </ItemGroup>
   <ItemGroup>

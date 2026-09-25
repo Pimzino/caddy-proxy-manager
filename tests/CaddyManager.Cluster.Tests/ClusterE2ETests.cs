@@ -47,10 +47,13 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 var n = Manager.CreateAsync("node-b");
                 primary = await p;
                 node = await n;
+                // Both run the real Telemetry module (no stand-in): what the primary shows for the node comes from the node.
+                Assert.Equal(typeof(CaddyManager.Telemetry.ServerTelemetry).FullName, primary.TelemetryImplementation);
+                Assert.Equal(typeof(CaddyManager.Telemetry.ServerTelemetry).FullName, node.TelemetryImplementation);
                 return new JsonObject
                 {
                     ["primary"] = Describe(primary), ["node"] = Describe(node), ["upstreamPort"] = upstream.Port,
-                    ["fakeTelemetry"] = primary.UsesFakeTelemetry, ["testCertificateMaterialStore"] = primary.UsesTestMaterialStore,
+                    ["telemetry"] = primary.TelemetryImplementation, ["testCertificateMaterialStore"] = primary.UsesTestMaterialStore,
                 };
             });
             var P = primary!;
@@ -158,11 +161,29 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                            kind = "response", domains = new[] { "stray.cluster.test" }, tls = "none", responseStatus = 200, responseBody = "stray",
                        }))
                 {
-                    // Config's guard (ApiResults.RejectIfManagedNode) is implemented by the Config module; until it is merged the
-                    // host is accepted locally and the next sync must remove it again (replace semantics). Both are recorded.
-                    result["postHostStatus"] = (int)host.StatusCode;
-                    Assert.True(host.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.OK, $"POST /api/hosts on the node: {(int)host.StatusCode}");
+                    var problem = await host.JsonAsync();
+                    Assert.Equal(HttpStatusCode.Conflict, host.StatusCode);
+                    Assert.Equal("Managed by the cluster primary", problem.GetProperty("title").GetString());
+                    Assert.Contains("primary-a", problem.GetProperty("detail").GetString());
+                    result["postHost"] = 409;
                 }
+                // Caddy settings: a replicated field (trusted proxies) is the primary's, also when sent together with a
+                // node-local one; the node-local-only change is exercised (200) in the next step.
+                foreach (var (name, body) in new (string, object)[]
+                         {
+                             ("putSettingsReplicatedField", new { trustedProxies = new[] { "10.9.9.0/24" } }),
+                             ("putSettingsReplicatedAndNodeLocal", new { httpPort = Net.FreePort(), trustedProxies = new[] { "10.9.9.0/24" } }),
+                         })
+                {
+                    using var put = await N.Api.PutAsJsonAsync("api/settings/caddy", body);
+                    var problem = await put.JsonAsync();
+                    Assert.True(put.StatusCode == HttpStatusCode.Conflict, $"{name}: expected 409, got {(int)put.StatusCode} {problem}");
+                    Assert.Equal("Managed by the cluster primary", problem.GetProperty("title").GetString());
+                    result[name] = 409;
+                }
+                var unchanged = await N.Api.GetFromJsonAsync<JsonElement>("api/settings/caddy");
+                Assert.Empty(unchanged.GetProperty("trustedProxies").EnumerateArray());
+                Assert.Equal(N.HttpPort, unchanged.GetProperty("httpPort").GetInt32());
                 using (var join = await N.Api.PostAsJsonAsync("api/cluster/join", new { token }))
                     Assert.Equal(HttpStatusCode.Conflict, join.StatusCode);
                 using (var add = await N.Api.PostAsJsonAsync("api/servers", new { name = "x", url = "http://127.0.0.1:1" }))
@@ -198,7 +219,7 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 Assert.Equal(P.HttpPort, primarySettings.GetProperty("httpPort").GetInt32());
                 return new JsonObject
                 {
-                    ["nodeHttpPort"] = newPort, ["statusBeforeSync"] = code, ["statusAfterForcedSync"] = after, ["body"] = body,
+                    ["putNodeLocalOnly"] = 200, ["nodeHttpPort"] = newPort, ["statusBeforeSync"] = code, ["statusAfterForcedSync"] = after, ["body"] = body,
                     ["nodeHosts"] = nodeHosts.GetArrayLength(), ["primaryHosts"] = primaryHosts, ["revision"] = Rev(forced),
                 };
             });
@@ -306,30 +327,60 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
             });
 
             // ---- proxied telemetry and remote Caddy control
-            await Step("server details, samples, traffic, Caddy restart and jobs are proxied to the node", async () =>
+            await Step("server details, samples, traffic, Caddy restart and jobs are proxied to the node (the node's real telemetry)", async () =>
             {
+                // Requests only the node's Caddy receives, for a name no host serves (the default site answers 404).
+                const string probeHost = "telemetry-probe.cluster.test";
+                const int probes = 7;
+                var nodePort = await NodeHttpPort(N);
+                for (var i = 0; i < probes; i++) Assert.Equal(404, (await HttpGet(nodePort, probeHost, "/probe/" + i)).Code);
+
                 var detail = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}");
                 Assert.Equal("online", detail.GetProperty("status").GetString());
-                var samples = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/samples");
+                // Server facts are the node's: its data directory and the host name the node reports for itself.
+                var info = detail.GetProperty("info");
+                var nodeOwn = (await N.Api.GetFromJsonAsync<JsonElement>("api/servers/local")).GetProperty("info");
+                Assert.Equal(N.DataDir, info.GetProperty("dataDir").GetString());
+                Assert.False(string.IsNullOrEmpty(info.GetProperty("hostname").GetString()));
+                Assert.Equal(nodeOwn.GetProperty("hostname").GetString(), info.GetProperty("hostname").GetString());
+                Assert.Equal("running", info.GetProperty("caddyState").GetString());
+
+                // Samples come from the node's sampler: its data disk is labelled with the node's data directory.
+                var samples = await Wait.ForValueAsync(async () =>
+                {
+                    var s = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/samples");
+                    return (s.GetArrayLength() >= 2, s);
+                }, TimeSpan.FromSeconds(10), () => "node samples");
+                var nodeDataLabel = $"Data ({N.DataDir})";
+                Assert.All(samples.EnumerateArray(), s =>
+                    Assert.Contains(s.GetProperty("disks").EnumerateArray(), d => d.GetProperty("label").GetString()!.Contains(nodeDataLabel)));
+                Assert.Contains(samples.EnumerateArray(), s => s.TryGetProperty("caddyMemoryBytes", out var m) && m.ValueKind == JsonValueKind.Number && m.GetInt64() > 0);
+                var since = samples[samples.GetArrayLength() - 2].GetProperty("at").GetDateTime().ToUniversalTime();
+                var recent = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/samples?since={Uri.EscapeDataString(since.ToString("O"))}");
+                Assert.NotEqual(0, recent.GetArrayLength());
+                Assert.All(recent.EnumerateArray(), s => Assert.True(s.GetProperty("at").GetDateTime().ToUniversalTime() > since, "since filters samples on the node"));
+
+                // Traffic comes from the node's stats log: exactly the probes, which the primary's Caddy never saw.
+                var remote = await Wait.ForValueAsync(async () =>
+                {
+                    var t = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/traffic?range=hour&host={probeHost}");
+                    return (t.GetProperty("totals").GetProperty("requests").GetInt64() == probes, t);
+                }, TimeSpan.FromSeconds(30), () => $"{probes} probe requests in the node's traffic");
+                Assert.Equal(probes, remote.GetProperty("totals").GetProperty("status4xx").GetInt64());
+                Assert.Equal(probeHost, remote.GetProperty("host").GetString());
+                var nodeView = await N.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={probeHost}");
+                Assert.Equal(nodeView.GetProperty("totals").GetRawText(), remote.GetProperty("totals").GetRawText());
+                var primaryOwn = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={probeHost}");
+                Assert.Equal(0, primaryOwn.GetProperty("totals").GetProperty("requests").GetInt64());
                 var traffic = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/traffic?range=week");
                 Assert.Equal("week", traffic.GetProperty("range").GetString());
-                var since = DateTime.UtcNow.AddSeconds(-1).ToString("O");
-                var recent = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/samples?since={Uri.EscapeDataString(since)}");
-                if (N.UsesFakeTelemetry)
-                {
-                    Assert.Equal("node-b", detail.GetProperty("info").GetProperty("hostname").GetString());
-                    Assert.Equal(3, samples.GetArrayLength());
-                    Assert.All(samples.EnumerateArray(), s => Assert.Equal("node-b".Length * 1_000_000L, s.GetProperty("memoryTotalBytes").GetInt64()));
-                    Assert.True(recent.GetArrayLength() < 3, "since filters samples on the node");
-                    Assert.Contains("fake-telemetry:node-b", traffic.GetProperty("notes").EnumerateArray().Select(n => n.GetString()));
-                    var local = await P.Api.GetFromJsonAsync<JsonElement>("api/servers/local/traffic?range=hour");
-                    Assert.Contains("fake-telemetry:primary-a", local.GetProperty("notes").EnumerateArray().Select(n => n.GetString()));
-                }
+                Assert.True(traffic.GetProperty("totals").GetProperty("requests").GetInt64() >= probes);
                 using (var bad = await P.Api.GetAsync($"api/servers/{nodeId}/traffic?range=year"))
                     Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
                 var list = await P.Api.GetFromJsonAsync<JsonElement>("api/servers");
                 Assert.Equal("local", list[0].GetProperty("id").GetString());
                 Assert.True(list[0].GetProperty("isLocal").GetBoolean());
+                Assert.Equal(P.DataDir, list[0].GetProperty("info").GetProperty("dataDir").GetString());
                 Assert.Equal(nodeId, list[1].GetProperty("id").GetString());
 
                 var restartWatch = Stopwatch.StartNew();
@@ -341,8 +392,15 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 Assert.Contains("Job was not found", (await job.JsonAsync()).GetProperty("detail").GetString());
                 return new JsonObject
                 {
-                    ["telemetry"] = N.UsesFakeTelemetry ? "fake (Telemetry module not in this build)" : "real",
-                    ["samples"] = samples.GetArrayLength(), ["samplesSince1s"] = recent.GetArrayLength(),
+                    ["telemetry"] = N.TelemetryImplementation,
+                    ["nodeInfo"] = new JsonObject
+                    {
+                        ["hostname"] = info.GetProperty("hostname").GetString(), ["dataDir"] = info.GetProperty("dataDir").GetString(),
+                        ["caddyVersion"] = info.TryGetProperty("caddyVersion", out var cv) ? cv.GetString() : null,
+                    },
+                    ["samples"] = samples.GetArrayLength(), ["samplesSince"] = recent.GetArrayLength(), ["sampleDiskLabel"] = nodeDataLabel,
+                    ["probeHost"] = probeHost, ["probeRequests"] = probes, ["remoteTrafficHour"] = JsonNode.Parse(remote.GetProperty("totals").GetRawText()),
+                    ["primaryOwnTrafficForProbeHost"] = primaryOwn.GetProperty("totals").GetProperty("requests").GetInt64(),
                     ["trafficRange"] = traffic.GetProperty("range").GetString(), ["remoteRestartMs"] = restartWatch.ElapsedMilliseconds,
                     ["httpAfterRestart"] = code, ["unknownJob"] = 502,
                 };

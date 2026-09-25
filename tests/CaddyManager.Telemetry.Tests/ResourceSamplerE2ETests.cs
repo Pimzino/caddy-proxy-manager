@@ -26,13 +26,13 @@ public sealed class ResourceSamplerE2ETests
         var report = E2EArtifacts.Report(nameof(SamplesRealCaddyUnderLoad_AndDropsCaddyValuesAfterStop));
         using var env = new TempEnv();
         var port = Net.FreeTcpPort();
-        var settings = env.Store.GetSettings<CaddySettings>();
-        settings.HttpPort = port;
-        settings.HttpsPort = Net.FreeTcpPort();
-        env.Store.SaveSettings(settings);
-
-        var config = StatsConfig.Build(env.Paths, port, new JsonArray(StatsConfig.StaticRoute(200, new string('x', 2048))));
-        using var caddy = new CaddyProcess(env.Paths, config);
+        // The generated configuration as is: one fixed-response host for the held connections (held.test) and the load
+        // (addressed as 127.0.0.1); every request is logged by the generated stats sink.
+        GeneratedConfig.Settings(env, port);
+        GeneratedConfig.AddResponseHost(env, 200, new string('x', 2048), "held.test", "127.0.0.1");
+        var generated = GeneratedConfig.Generate(env);
+        Assert.Empty(generated.Warnings);
+        using var caddy = new CaddyProcess(env.Paths, generated.Config.ToJsonString());
         await caddy.WaitForPortAsync(port, TimeSpan.FromSeconds(20));
 
         var host = new FakeCaddyHost
