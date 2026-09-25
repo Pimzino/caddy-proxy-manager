@@ -134,9 +134,12 @@
 
       <!-- The publish output is the single CaddyManager.exe (settings live in the database, not in appsettings.json). -->
       <!-- License of this project and notices of bundled third-party components (the fonts' OFL requires it). -->
-      <Component Id="LicenseFiles">
+      <!-- One unversioned file per component so WiX can generate stable component GUIDs. -->
+      <Component Id="LicenseFile">
         <File Id="LicenseFile" Source="$(var.RepoRoot)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
-        <File Id="ThirdPartyNotices" Source="$(var.RepoRoot)\THIRD-PARTY-NOTICES.md" />
+      </Component>
+      <Component Id="ThirdPartyNotices">
+        <File Id="ThirdPartyNotices" Source="$(var.RepoRoot)\THIRD-PARTY-NOTICES.md" KeyPath="yes" />
       </Component>
 
       <Component Id="RememberUiPort">
