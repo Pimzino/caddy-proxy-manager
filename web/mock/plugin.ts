@@ -41,7 +41,7 @@ import {
   type MockState,
 } from './fixtures.ts';
 import { round3ServersRoutes } from './round3-servers.ts';
-import { applyRound3CaddySettings, managedNodeGuard, round3SettingsRoutes, stripRound3Secrets } from './round3-settings.ts';
+import { applyRound3CaddySettings, DELEGATION_NAME, managedNodeGuard, round3SettingsRoutes, stripRound3Secrets } from './round3-settings.ts';
 
 export class HttpError extends Error {
   readonly status: number;
@@ -286,6 +286,15 @@ function validateHost(s: MockState, h: SiteHostFields, id?: string) {
   if (h.tls === 'custom' && !s.certificates.some((c) => c.id === h.certificateId)) add('CertificateId', 'Certificate not found.');
   if (h.tls === 'acme' && h.acmeChallenge === 'dns' && !s.caddySettings.dnsProvider)
     add('AcmeChallenge', 'The DNS challenge needs a DNS provider. Configure one in Settings › Caddy first.');
+  // Round 3b: delegation only on hosts whose effective challenge is DNS; a custom delegation needs a valid name.
+  const challenge = h.acmeChallenge === 'default' ? s.caddySettings.defaultAcmeChallenge : h.acmeChallenge;
+  if ((h.dnsDelegation ?? 'default') !== 'default' && !(h.tls === 'acme' && challenge === 'dns'))
+    add('DnsDelegation', 'Challenge delegation applies only to hosts that use the DNS challenge.');
+  if (h.dnsDelegation === 'custom') {
+    const name = h.dnsOverrideDomain?.trim() ?? '';
+    if (!name) add('DnsOverrideDomain', 'A custom delegation needs a delegation name.');
+    else if (!DELEGATION_NAME.test(name)) add('DnsOverrideDomain', 'The delegation name must be a valid DNS name without a wildcard.');
+  }
   if (h.advancedRoutesJson) {
     try {
       if (!Array.isArray(JSON.parse(h.advancedRoutesJson))) add('AdvancedRoutesJson', 'Must be a JSON array.');

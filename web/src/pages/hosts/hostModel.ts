@@ -9,6 +9,7 @@ import {
   jsonArrayError,
   type FieldErrors,
 } from '@/lib/validation';
+import { effectiveChallenge, isDelegationName, type DelegationSettings } from './dnsDelegation';
 
 export const HOST_KINDS: HostKind[] = ['proxy', 'redirect', 'static', 'response'];
 
@@ -133,11 +134,25 @@ export function toFields(h: SiteHost): SiteHostFields {
     responseHeaders: rest.responseHeaders ?? [],
     domains: rest.domains ?? [],
     acmeChallenge: rest.acmeChallenge ?? 'default',
+    dnsDelegation: rest.dnsDelegation ?? 'default',
   };
 }
 
-/** Normalises the form before sending (trims, empty strings → null for optional values). */
-export function toPayload(h: SiteHostFields): SiteHostFields {
+/**
+ * True when delegation settings apply to the host: ACME with the DNS challenge as its effective challenge. Unknown settings
+ * (not loaded) count a "default" challenge as DNS so nothing is dropped.
+ */
+export function delegationApplies(h: Pick<SiteHostFields, 'tls' | 'acmeChallenge'>, settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>): boolean {
+  if (h.tls !== 'acme') return false;
+  return settings ? effectiveChallenge(h, settings) === 'dns' : h.acmeChallenge !== 'http';
+}
+
+/**
+ * Normalises the form before sending (trims, empty strings → null for optional values). With the Caddy settings, delegation
+ * is reset on hosts whose effective challenge is not DNS (the server rejects it there).
+ */
+export function toPayload(h: SiteHostFields, settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>): SiteHostFields {
+  const delegation = delegationApplies(h, settings);
   const trimOrNull = (s: string | null | undefined) => (s && s.trim() ? s.trim() : null);
   const cleanUpstreams = (list: Upstream[]) =>
     list.map((u) => ({ ...u, host: u.host.trim().replace(/^\[(.*)\]$/, '$1') }));
@@ -161,6 +176,8 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     upstreamNtlm: h.kind === 'proxy' ? !!h.upstreamNtlm : false,
     // The challenge only matters for ACME; other modes store the default so a later provider removal cannot invalidate them.
     acmeChallenge: h.tls === 'acme' ? h.acmeChallenge : 'default',
+    dnsDelegation: delegation ? h.dnsDelegation : 'default',
+    dnsOverrideDomain: delegation && h.dnsDelegation === 'custom' ? trimOrNull(h.dnsOverrideDomain) : null,
     forceHttps: h.tls === 'none' ? false : h.forceHttps,
     hsts: h.tls === 'none' ? false : h.hsts,
   };
@@ -189,6 +206,8 @@ function validateHeaders(list: HeaderOp[], prefix: string, errors: FieldErrors) 
 export interface HostValidationContext {
   /** Settings › Caddy has a DNS provider (false = not configured; undefined = settings not loaded yet). */
   dnsProviderConfigured?: boolean;
+  /** Settings › Caddy (undefined = not loaded yet): decides whether the delegation fields apply. */
+  settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>;
 }
 
 export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {}): FieldErrors {
@@ -231,6 +250,11 @@ export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {})
   if (h.tls === 'custom' && !h.certificateId) e.certificateId = 'Choose a certificate, or pick another TLS mode.';
   if (h.tls === 'acme' && h.acmeChallenge === 'dns' && ctx.dnsProviderConfigured === false)
     e.acmeChallenge = 'The DNS challenge needs a DNS provider. Configure one in Settings › Caddy, or choose another challenge.';
+  if (delegationApplies(h, ctx.settings) && h.dnsDelegation === 'custom') {
+    const name = h.dnsOverrideDomain?.trim();
+    if (!name) e.dnsOverrideDomain = 'Enter the delegation name, or choose “Use default” or “Off”.';
+    else if (!isDelegationName(name)) e.dnsOverrideDomain = 'Enter a DNS name such as _acme-challenge.validation.example.net (no wildcard).';
+  }
   if (h.tls !== 'none' && h.hsts && !(h.hstsMaxAgeSeconds >= 0)) e.hstsMaxAgeSeconds = 'Enter a max-age in seconds.';
   validateHeaders(h.responseHeaders, 'responseHeaders', e);
   const jsonErr = jsonArrayError(h.advancedRoutesJson);
@@ -244,6 +268,8 @@ const TAB_OF_FIELD: Record<string, HostTab> = {
   tls: 'tls',
   certificateId: 'tls',
   acmeChallenge: 'tls',
+  dnsDelegation: 'tls',
+  dnsOverrideDomain: 'tls',
   forceHttps: 'tls',
   hsts: 'tls',
   hstsSubdomains: 'tls',

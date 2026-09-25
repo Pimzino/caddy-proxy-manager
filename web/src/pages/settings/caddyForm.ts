@@ -2,6 +2,7 @@ import { caddySettingsInput } from '@/api/settings';
 import type { CaddySettings, CaddySettingsInput, DnsProviderInfo } from '@/api/types';
 import { secretPayload } from '@/components/SecretInput';
 import { isIpv4, isIpv6, type FieldErrors } from '@/lib/validation';
+import { isDelegationName } from '../hosts/dnsDelegation';
 
 // Round 3 helpers shared by the Caddy tab (ACME challenge / DNS) and the Cluster tab (shared storage): both edit the
 // one CaddySettings document through PUT /api/settings/caddy.
@@ -128,7 +129,7 @@ export function validateDns(f: CaddySettingsInput, settings: CaddySettings, prov
   if (t != null && !Number.isNaN(t) && t !== -1 && !(Number.isInteger(t) && t >= 1)) e.dnsPropagationTimeoutSeconds = 'Enter whole seconds (1 or more), or leave empty for the default.';
   if (!isWholeSeconds(f.dnsTtlSeconds, 0)) e.dnsTtlSeconds = 'Enter whole seconds, or leave empty for the provider default.';
   const od = f.dnsOverrideDomain?.trim();
-  if (od && !HOSTNAME.test(od)) e.dnsOverrideDomain = 'Enter a DNS name such as _acme-challenge.delegated.example.net.';
+  if (od && !isDelegationName(od)) e.dnsOverrideDomain = 'Enter a DNS name such as _acme-challenge.validation.example.net (no wildcard).';
   return e;
 }
 

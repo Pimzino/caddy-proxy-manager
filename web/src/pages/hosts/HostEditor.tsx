@@ -37,10 +37,13 @@ import {
   NTLM_PLUGIN,
   REDIRECT_CODES,
   tabOfField,
+  toFields,
   toPayload,
   validateHost,
   type HostTab,
 } from './hostModel';
+import { DelegationRecordsPanel, type DelegationCheckRequest } from './DelegationRecords';
+import { checkRequests, dnsChallengeDomains, hostDelegationRecords, isDelegationName, usesDnsChallenge } from './dnsDelegation';
 import { UpstreamList } from './UpstreamList';
 
 export interface HostEditorProps {
@@ -76,7 +79,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
   const [hostHeaderMode, setHostHeaderMode] = useState<HostHeaderMode>(hostHeaderModeOf(initial.upstreamHostHeader));
   const save = useSaveHost();
   const caddySettings = useCaddySettings();
-  const validationCtx = { dnsProviderConfigured: caddySettings.data ? !!caddySettings.data.dnsProvider : undefined };
+  const validationCtx = { dnsProviderConfigured: caddySettings.data ? !!caddySettings.data.dnsProvider : undefined, settings: caddySettings.data };
   const feedback = useFeedback();
   const confirm = useConfirm();
   const { isAdmin } = useAuth();
@@ -86,7 +89,11 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
   const droppedRoutes = lockedRoutes && !host && !!initial.advancedRoutesJson?.trim();
 
   const dnsProviderConfigured = validationCtx.dnsProviderConfigured;
-  const clientErrors = useMemo(() => (submitted ? validateHost(form, { dnsProviderConfigured }) : {}), [form, submitted, dnsProviderConfigured]);
+  const settingsData = caddySettings.data;
+  const clientErrors = useMemo(
+    () => (submitted ? validateHost(form, { dnsProviderConfigured, settings: settingsData }) : {}),
+    [form, submitted, dnsProviderConfigured, settingsData],
+  );
   const errors: FieldErrors = { ...serverErrors, ...clientErrors };
   const errorCount = (t: HostTab) => Object.keys(errors).filter((k) => tabOfField(k) === t).length;
   const unmapped = Object.entries(serverErrors).filter(([k]) => tabOfField(k) === null);
@@ -124,7 +131,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
       if (first && !keys.some((k) => tabOfField(k) === tab)) setTab(first);
       return;
     }
-    const payload = toPayload(form);
+    const payload = toPayload(form, caddySettings.data);
     if (lockedRoutes) payload.advancedRoutesJson = host ? (host.advancedRoutesJson ?? null) : null;
     save.mutate(
       { id: host?.id, host: payload },
@@ -162,6 +169,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
     );
   };
 
+  const locked = !!readOnly || save.isPending;
   const formId = `${idBase}-form`;
   const title = readOnly
     ? `View ${meta.singular}`
@@ -211,43 +219,49 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
             ]}
           />
         </div>
-        <fieldset disabled={readOnly || save.isPending} className="min-w-0 px-5 py-5">
-          {(unmapped.length > 0 || generalError) && (
-            <Callout tone="danger" className="mb-4" title="The server rejected this host">
-              <ul className="list-disc pl-4">
-                {unmapped.map(([k, m]) => (
-                  <li key={k}>{m}</li>
-                ))}
-                {generalError && <li>{generalError}</li>}
-              </ul>
-            </Callout>
-          )}
-          <TabPanel idBase={idBase} value="details" active={tab === 'details'}>
-            <DetailsTab
-              form={form}
-              set={set}
-              errors={errors}
-              kind={kind}
-              hostHeaderMode={hostHeaderMode}
-              setHostHeaderMode={setHostHeaderMode}
-            />
-          </TabPanel>
+        {/* The TLS tab sits outside the disabled fieldsets and locks its own inputs, so the delegation records' Copy and
+            Check DNS work in read-only views too. */}
+        <div className="min-w-0 px-5 py-5">
+          <fieldset disabled={locked} className="contents">
+            {(unmapped.length > 0 || generalError) && (
+              <Callout tone="danger" className="mb-4" title="The server rejected this host">
+                <ul className="list-disc pl-4">
+                  {unmapped.map(([k, m]) => (
+                    <li key={k}>{m}</li>
+                  ))}
+                  {generalError && <li>{generalError}</li>}
+                </ul>
+              </Callout>
+            )}
+            <TabPanel idBase={idBase} value="details" active={tab === 'details'}>
+              <DetailsTab
+                form={form}
+                set={set}
+                errors={errors}
+                kind={kind}
+                hostHeaderMode={hostHeaderMode}
+                setHostHeaderMode={setHostHeaderMode}
+              />
+            </TabPanel>
+          </fieldset>
           <TabPanel idBase={idBase} value="tls" active={tab === 'tls'}>
-            <TlsTab form={form} set={set} errors={errors} />
+            <TlsTab form={form} set={set} errors={errors} locked={locked} host={host} />
           </TabPanel>
-          <TabPanel idBase={idBase} value="access" active={tab === 'access'}>
-            <AccessTab form={form} set={set} errors={errors} />
-          </TabPanel>
-          <TabPanel idBase={idBase} value="headers" active={tab === 'headers'}>
-            <HeadersTab form={form} set={set} errors={errors} kind={kind} />
-          </TabPanel>
-          <TabPanel idBase={idBase} value="locations" active={tab === 'locations'}>
-            <LocationsTab form={form} set={set} errors={errors} />
-          </TabPanel>
-          <TabPanel idBase={idBase} value="advanced" active={tab === 'advanced'}>
-            <AdvancedTab form={form} set={set} errors={errors} locked={lockedRoutes} droppedRoutes={droppedRoutes} />
-          </TabPanel>
-        </fieldset>
+          <fieldset disabled={locked} className="contents">
+            <TabPanel idBase={idBase} value="access" active={tab === 'access'}>
+              <AccessTab form={form} set={set} errors={errors} />
+            </TabPanel>
+            <TabPanel idBase={idBase} value="headers" active={tab === 'headers'}>
+              <HeadersTab form={form} set={set} errors={errors} kind={kind} />
+            </TabPanel>
+            <TabPanel idBase={idBase} value="locations" active={tab === 'locations'}>
+              <LocationsTab form={form} set={set} errors={errors} />
+            </TabPanel>
+            <TabPanel idBase={idBase} value="advanced" active={tab === 'advanced'}>
+              <AdvancedTab form={form} set={set} errors={errors} locked={lockedRoutes} droppedRoutes={droppedRoutes} />
+            </TabPanel>
+          </fieldset>
+        </div>
       </form>
     </Dialog>
   );
@@ -579,7 +593,7 @@ function NtlmField({ checked, onChange, error }: { checked: boolean; onChange: (
 
 // ---------------------------------------------------------------- TLS
 
-function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; errors: FieldErrors }) {
+function TlsTab({ form, set, errors, locked, host }: { form: SiteHostFields; set: Setter; errors: FieldErrors; locked: boolean; host?: SiteHost }) {
   const certs = useCertificates();
   const settings = useCaddySettings();
   const custom = (certs.data ?? []).filter((c) => c.kind === 'custom');
@@ -594,115 +608,122 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
   return (
     <div className="flex flex-col gap-6">
       <Section title="Certificate">
-        <RadioCards
-          aria-label="TLS mode"
-          value={form.tls}
-          onChange={(v) => set('tls', v)}
-          options={[
-            {
-              value: 'acme',
-              label: 'Automatic (ACME)',
-              icon: <Globe size={14} className="text-fg-subtle" />,
-              description: 'Public certificate from Let’s Encrypt / ZeroSSL. Needs public DNS and inbound ports 80/443.',
-            },
-            {
-              value: 'internal',
-              label: 'Internal CA',
-              icon: <ShieldCheck size={14} className="text-fg-subtle" />,
-              description: 'Issued by Caddy’s local CA. Distribute the root via GPO for trusted internal names.',
-            },
-            {
-              value: 'custom',
-              label: 'Custom certificate',
-              icon: <KeyRound size={14} className="text-fg-subtle" />,
-              description: 'Use an uploaded certificate or one referenced by path (e.g. from your enterprise PKI).',
-            },
-            {
-              value: 'none',
-              label: 'None (HTTP only)',
-              icon: <LockOpen size={14} className="text-fg-subtle" />,
-              description: `Plain HTTP on port ${httpPort}. No encryption — use only on trusted networks.`,
-            },
-          ]}
-        />
-        {form.tls === 'acme' && <AcmeChallengeField form={form} set={set} errors={errors} wildcard={wildcard} />}
-        {form.tls === 'custom' && (
-          <Field
-            label="Certificate"
-            required
-            error={errors.certificateId}
-            hint={
-              custom.length === 0 ? (
-                <>
-                  No custom certificates yet. <Link className="text-accent-text hover:underline" to="/certificates">Add one on the Certificates page</Link>.
-                </>
-              ) : undefined
-            }
-          >
-            <Select value={form.certificateId ?? ''} onChange={(e) => set('certificateId', e.target.value || null)}>
-              <option value="">Select a certificate…</option>
-              {custom.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} — {c.subjects.slice(0, 2).join(', ')}
-                  {c.subjects.length > 2 ? ` +${c.subjects.length - 2}` : ''} — expires {formatDate(c.notAfter)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        )}
-        {selected && uncovered.length > 0 && (
-          <Callout tone="warning" title="Certificate does not cover every domain">
-            <span className="mono">{uncovered.join(', ')}</span> {uncovered.length === 1 ? 'is' : 'are'} not in the
-            certificate’s subjects. Browsers will show a name mismatch warning for {uncovered.length === 1 ? 'it' : 'them'}.
-          </Callout>
-        )}
-        {selected && selected.daysRemaining < 0 && (
-          <Callout tone="danger">This certificate expired on {formatDate(selected.notAfter)}.</Callout>
-        )}
+        <fieldset disabled={locked} className="contents">
+          <RadioCards
+            aria-label="TLS mode"
+            value={form.tls}
+            onChange={(v) => set('tls', v)}
+            options={[
+              {
+                value: 'acme',
+                label: 'Automatic (ACME)',
+                icon: <Globe size={14} className="text-fg-subtle" />,
+                description: 'Public certificate from Let’s Encrypt / ZeroSSL. Needs public DNS and inbound ports 80/443.',
+              },
+              {
+                value: 'internal',
+                label: 'Internal CA',
+                icon: <ShieldCheck size={14} className="text-fg-subtle" />,
+                description: 'Issued by Caddy’s local CA. Distribute the root via GPO for trusted internal names.',
+              },
+              {
+                value: 'custom',
+                label: 'Custom certificate',
+                icon: <KeyRound size={14} className="text-fg-subtle" />,
+                description: 'Use an uploaded certificate or one referenced by path (e.g. from your enterprise PKI).',
+              },
+              {
+                value: 'none',
+                label: 'None (HTTP only)',
+                icon: <LockOpen size={14} className="text-fg-subtle" />,
+                description: `Plain HTTP on port ${httpPort}. No encryption — use only on trusted networks.`,
+              },
+            ]}
+          />
+          {form.tls === 'acme' && <AcmeChallengeField form={form} set={set} errors={errors} wildcard={wildcard} />}
+        </fieldset>
+        {form.tls === 'acme' && <DnsDelegationField form={form} set={set} errors={errors} locked={locked} host={host} />}
+        <fieldset disabled={locked} className="contents">
+          {form.tls === 'custom' && (
+            <Field
+              label="Certificate"
+              required
+              error={errors.certificateId}
+              hint={
+                custom.length === 0 ? (
+                  <>
+                    No custom certificates yet. <Link className="text-accent-text hover:underline" to="/certificates">Add one on the Certificates page</Link>.
+                  </>
+                ) : undefined
+              }
+            >
+              <Select value={form.certificateId ?? ''} onChange={(e) => set('certificateId', e.target.value || null)}>
+                <option value="">Select a certificate…</option>
+                {custom.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} — {c.subjects.slice(0, 2).join(', ')}
+                    {c.subjects.length > 2 ? ` +${c.subjects.length - 2}` : ''} — expires {formatDate(c.notAfter)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+          {selected && uncovered.length > 0 && (
+            <Callout tone="warning" title="Certificate does not cover every domain">
+              <span className="mono">{uncovered.join(', ')}</span> {uncovered.length === 1 ? 'is' : 'are'} not in the
+              certificate’s subjects. Browsers will show a name mismatch warning for {uncovered.length === 1 ? 'it' : 'them'}.
+            </Callout>
+          )}
+          {selected && selected.daysRemaining < 0 && (
+            <Callout tone="danger">This certificate expired on {formatDate(selected.notAfter)}.</Callout>
+          )}
+        </fieldset>
       </Section>
 
       <Section title="HTTPS behaviour">
-        <SwitchField
-          label="Force HTTPS"
-          description={
-            publicHttpsPort === 443
-              ? `Redirect http:// requests on port ${httpPort} to https:// (port 443${httpsPort !== 443 ? `, forwarded to ${httpsPort}` : ''}). When off, the site is served on both.`
-              : `Redirect http:// requests on port ${httpPort} to https:// on port ${publicHttpsPort}. If a router forwards public 443 to ${httpsPort}, set the public HTTPS port in Settings › Listeners. When off, the site is served on both.`
-          }
-          checked={form.tls !== 'none' && form.forceHttps}
-          disabled={form.tls === 'none'}
-          onChange={(v) => set('forceHttps', v)}
-        />
-        <SwitchField
-          label="HSTS"
-          description="Tell browsers to always use HTTPS for this domain (Strict-Transport-Security). Hard to undo — enable once HTTPS works."
-          checked={form.tls !== 'none' && form.hsts}
-          disabled={form.tls === 'none'}
-          onChange={(v) => set('hsts', v)}
-        />
-        {form.tls !== 'none' && form.hsts && (
-          <div className="grid gap-4 border-l-2 border-border pl-4 sm:grid-cols-2">
-            <Field label="Max age (seconds)" hint="31536000 = 1 year" error={errors.hstsMaxAgeSeconds}>
-              <NumberInput min={0} value={form.hstsMaxAgeSeconds} onValueChange={(v) => set('hstsMaxAgeSeconds', v)} />
-            </Field>
-            <SwitchField
-              className="sm:pt-6"
-              label="Include subdomains"
-              checked={form.hstsSubdomains}
-              onChange={(v) => set('hstsSubdomains', v)}
-            />
-          </div>
-        )}
-        {form.tls !== 'none' && settings.data && (
-          <p className="flex items-center gap-1.5 text-xs text-fg-subtle">
-            <Lock size={12} aria-hidden />
-            HTTP/3 (QUIC on UDP {httpsPort}) is {settings.data.enableHttp3 ? 'enabled' : 'disabled'} globally —{' '}
-            <Link to="/settings" className="text-accent-text hover:underline">
-              change in Settings
-            </Link>
-            .
-          </p>
-        )}
+        <fieldset disabled={locked} className="contents">
+          <SwitchField
+            label="Force HTTPS"
+            description={
+              publicHttpsPort === 443
+                ? `Redirect http:// requests on port ${httpPort} to https:// (port 443${httpsPort !== 443 ? `, forwarded to ${httpsPort}` : ''}). When off, the site is served on both.`
+                : `Redirect http:// requests on port ${httpPort} to https:// on port ${publicHttpsPort}. If a router forwards public 443 to ${httpsPort}, set the public HTTPS port in Settings › Listeners. When off, the site is served on both.`
+            }
+            checked={form.tls !== 'none' && form.forceHttps}
+            disabled={form.tls === 'none'}
+            onChange={(v) => set('forceHttps', v)}
+          />
+          <SwitchField
+            label="HSTS"
+            description="Tell browsers to always use HTTPS for this domain (Strict-Transport-Security). Hard to undo — enable once HTTPS works."
+            checked={form.tls !== 'none' && form.hsts}
+            disabled={form.tls === 'none'}
+            onChange={(v) => set('hsts', v)}
+          />
+          {form.tls !== 'none' && form.hsts && (
+            <div className="grid gap-4 border-l-2 border-border pl-4 sm:grid-cols-2">
+              <Field label="Max age (seconds)" hint="31536000 = 1 year" error={errors.hstsMaxAgeSeconds}>
+                <NumberInput min={0} value={form.hstsMaxAgeSeconds} onValueChange={(v) => set('hstsMaxAgeSeconds', v)} />
+              </Field>
+              <SwitchField
+                className="sm:pt-6"
+                label="Include subdomains"
+                checked={form.hstsSubdomains}
+                onChange={(v) => set('hstsSubdomains', v)}
+              />
+            </div>
+          )}
+          {form.tls !== 'none' && settings.data && (
+            <p className="flex items-center gap-1.5 text-xs text-fg-subtle">
+              <Lock size={12} aria-hidden />
+              HTTP/3 (QUIC on UDP {httpsPort}) is {settings.data.enableHttp3 ? 'enabled' : 'disabled'} globally —{' '}
+              <Link to="/settings" className="text-accent-text hover:underline">
+                change in Settings
+              </Link>
+              .
+            </p>
+          )}
+        </fieldset>
       </Section>
     </div>
   );
@@ -781,6 +802,120 @@ function AcmeChallengeField({ form, set, errors, wildcard }: { form: SiteHostFie
         )
       )}
     </>
+  );
+}
+
+const DELEGATION_HINT: Record<SiteHostFields['dnsDelegation'], string> = {
+  default: 'Uses the default delegation name from Settings › Caddy.',
+  off: 'Caddy writes the challenge record in each domain’s own zone, so the DNS provider token needs access to it.',
+  custom: 'Uses the name below instead of the default, for example when this domain’s records belong in another validation zone.',
+};
+
+/**
+ * TLS tab (ACME, DNS-01): challenge delegation (SPEC round 3b) — Use default / Off / Custom name, then the CNAME records this
+ * host needs with copy buttons and "Check DNS". Its inputs lock themselves (locked); the records stay usable read-only.
+ */
+function DnsDelegationField({
+  form,
+  set,
+  errors,
+  locked,
+  host,
+}: {
+  form: SiteHostFields;
+  set: Setter;
+  errors: FieldErrors;
+  locked: boolean;
+  host?: SiteHost;
+}) {
+  const settings = useCaddySettings();
+  const s = settings.data;
+  if (!s) return null;
+  const dns = usesDnsChallenge(form, s);
+  // Wildcard names of an HTTP-01 host switch to DNS-01 on their own and use the default delegation.
+  const wildcardsOnly = !dns && dnsChallengeDomains(form, s).length > 0;
+  if (!dns && !wildcardsOnly) return null;
+
+  const defaultName = s.dnsOverrideDomain?.trim() || null;
+  const customName = form.dnsOverrideDomain?.trim() ?? '';
+  const nameOk = form.dnsDelegation !== 'custom' || isDelegationName(customName);
+  const records = nameOk ? hostDelegationRecords(form, s) : [];
+  // A saved host is checked by id when the fields that decide its records are unchanged; otherwise by the records shown.
+  const recordFields = (h: SiteHostFields) => {
+    const p = toPayload(h, s);
+    return JSON.stringify([p.tls, p.acmeChallenge, p.dnsDelegation, p.dnsOverrideDomain, p.domains]);
+  };
+  const unchanged = !!host && recordFields(toFields(host)) === recordFields(form);
+  const requests = (): DelegationCheckRequest[] => (host && unchanged ? [{ hostId: host.id }] : checkRequests(records));
+
+  return (
+    <div className="flex flex-col gap-4 rounded-md border border-border p-4">
+      {dns ? (
+        <>
+          <Field label="Challenge delegation (CNAME)" error={errors.dnsDelegation} hint={DELEGATION_HINT[form.dnsDelegation]}>
+            <Select
+              value={form.dnsDelegation}
+              disabled={locked}
+              className="max-w-md"
+              onChange={(e) => {
+                const v = e.target.value as SiteHostFields['dnsDelegation'];
+                set('dnsDelegation', v);
+                if (v === 'custom' && !form.dnsOverrideDomain) set('dnsOverrideDomain', defaultName ?? '');
+              }}
+            >
+              <option value="default">Use default ({defaultName ?? 'none set'})</option>
+              <option value="off">Off — use each domain’s own zone</option>
+              <option value="custom">Custom name</option>
+            </Select>
+          </Field>
+          {form.dnsDelegation === 'custom' && (
+            <Field
+              label="Delegation name"
+              required
+              error={errors.dnsOverrideDomain}
+              hint="A name in a zone the DNS provider token can edit, for example _acme-challenge.shop.validation.example.net."
+            >
+              <Input
+                mono
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="_acme-challenge.shop.validation.example.net"
+                value={form.dnsOverrideDomain ?? ''}
+                onChange={(e) => set('dnsOverrideDomain', e.target.value)}
+                disabled={locked}
+              />
+            </Field>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-fg-muted">
+          Wildcard names use DNS-01{defaultName ? ' with the default delegation name' : ''}. The other names keep HTTP-01 / TLS-ALPN-01.
+        </p>
+      )}
+
+      {records.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-fg-muted">
+            Create {records.length === 1 ? 'this CNAME record' : 'these CNAME records'} once in the zone of{' '}
+            {records.length === 1 ? 'the domain' : 'each domain'}. Caddy then writes the challenge record only at the target.
+          </p>
+          <DelegationRecordsPanel compact rows={records} requests={requests} />
+        </div>
+      ) : (
+        form.domains.length > 0 &&
+        nameOk &&
+        form.dnsDelegation === 'default' &&
+        !defaultName && (
+          <p className="text-xs text-fg-subtle">
+            No default delegation name is set, so Caddy writes the challenge record in each domain’s own zone. Set one in{' '}
+            <Link to="/settings#acme-challenge" className="text-accent-text hover:underline">
+              Settings › Caddy › ACME challenge
+            </Link>{' '}
+            or choose a custom name.
+          </p>
+        )
+      )}
+    </div>
   );
 }
 

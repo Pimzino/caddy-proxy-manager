@@ -8,6 +8,7 @@ import { Badge, Callout, Checkbox, ChipInput, controlBase, Field, FormSection, I
 import { cn } from '@/lib/cn';
 import type { FieldErrors } from '@/lib/validation';
 import { hasStoredSecret, isResolverAddress } from './caddyForm';
+import { ChallengeDelegationPanel } from './ChallengeDelegationPanel';
 import { PluginRequirement } from './PluginInstallAction';
 import { fieldError } from './shared';
 
@@ -21,8 +22,8 @@ type Set = <K extends keyof CaddySettingsInput>(k: K, v: CaddySettingsInput[K]) 
 
 /**
  * Settings › Caddy › "ACME challenge" (SPEC round 3 DNS-01): default challenge, DNS provider from the caddy-dns catalog
- * with typed fields (secrets write-only), propagation/TTL/resolvers/override domain, and the plugin rebuild flow when the
- * provider module is not in the installed Caddy.
+ * with typed fields (secrets write-only), challenge delegation (round 3b), propagation/TTL/resolvers, and the plugin rebuild
+ * flow when the provider module is not in the installed Caddy.
  */
 export function AcmeChallengeSection({
   settings,
@@ -117,7 +118,12 @@ export function AcmeChallengeSection({
         <ProviderDetails provider={provider} settings={settings} form={form} set={set} errors={errors} disabled={disabled} />
       )}
 
-      {(form.dnsProvider || form.defaultAcmeChallenge === 'dns') && <AdvancedDns form={form} set={set} errors={errors} disabled={disabled} />}
+      {(form.dnsProvider || form.defaultAcmeChallenge === 'dns') && (
+        <>
+          <ChallengeDelegationPanel settings={settings} form={form} set={set} error={errors.dnsOverrideDomain} disabled={disabled} />
+          <AdvancedDns form={form} set={set} errors={errors} disabled={disabled} />
+        </>
+      )}
     </FormSection>
   );
 }
@@ -414,9 +420,8 @@ function AdvancedDns({ form, set, errors, disabled }: { form: CaddySettingsInput
     form.dnsPropagationDelaySeconds != null ||
     form.dnsPropagationTimeoutSeconds != null ||
     form.dnsTtlSeconds != null ||
-    form.dnsResolvers.length > 0 ||
-    !!form.dnsOverrideDomain;
-  const hasErrors = ['dnsPropagationDelaySeconds', 'dnsPropagationTimeoutSeconds', 'dnsTtlSeconds', 'dnsResolvers', 'dnsOverrideDomain'].some((k) => fieldError(errors, k));
+    form.dnsResolvers.length > 0;
+  const hasErrors = ['dnsPropagationDelaySeconds', 'dnsPropagationTimeoutSeconds', 'dnsTtlSeconds', 'dnsResolvers'].some((k) => fieldError(errors, k));
   const [open, setOpen] = useState(hasValues);
   const skipCheck = form.dnsPropagationTimeoutSeconds === -1;
   const num = (v: number) => (Number.isNaN(v) ? null : v);
@@ -426,7 +431,7 @@ function AdvancedDns({ form, set, errors, disabled }: { form: CaddySettingsInput
       <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-sm font-medium text-fg select-none [&::-webkit-details-marker]:hidden">
         <ChevronDown size={14} className="-rotate-90 text-fg-subtle transition-transform group-open:rotate-0" aria-hidden />
         Advanced
-        <span className="font-normal text-fg-subtle">propagation, TTL, resolvers, delegated domain</span>
+        <span className="font-normal text-fg-subtle">propagation, TTL, resolvers</span>
         {hasValues && !open && <Badge className="ml-auto">Customised</Badge>}
       </summary>
       <div className="flex flex-col gap-4 border-t border-border p-4">
@@ -464,19 +469,6 @@ function AdvancedDns({ form, set, errors, disabled }: { form: CaddySettingsInput
             onChange={(v) => set('dnsResolvers', v)}
             placeholder="1.1.1.1:53"
             validate={(v) => (isResolverAddress(v) ? null : 'not an IP address or host[:port]')}
-            disabled={disabled}
-          />
-        </Field>
-        <Field
-          label="Override domain"
-          error={errors.dnsOverrideDomain}
-          hint="Publish the challenge record under this name instead of _acme-challenge.<domain>. Use with a CNAME that delegates _acme-challenge to a zone the provider can edit."
-        >
-          <Input
-            mono
-            placeholder="_acme-challenge.delegated.example.net"
-            value={form.dnsOverrideDomain ?? ''}
-            onChange={(e) => set('dnsOverrideDomain', e.target.value)}
             disabled={disabled}
           />
         </Field>

@@ -185,6 +185,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
     setForm((f) => ({ ...f, [k]: v }));
     setServerErrors({});
   };
+  const locked = !isAdmin || save.isPending;
   const adminHost = form.adminListen.split(':').slice(0, -1).join(':').replace(/^\[|\]$/g, '');
   const adminLoopback = ['127.0.0.1', 'localhost', '::1'].includes(adminHost);
 
@@ -234,7 +235,9 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   return (
     <form onSubmit={(e) => void submit(e)} noValidate>
       <Card className="p-5">
-        <fieldset disabled={!isAdmin || save.isPending} className="min-w-0">
+        {/* Three fieldsets instead of one: the ACME challenge section disables its own inputs, so its delegation panel's Copy and
+            Check DNS stay usable for every role. The hidden spans keep FormSection's first/last-child spacing and borders. */}
+        <fieldset disabled={locked} className="contents">
           <UnplacedErrors errors={errors} fields={CADDY_FIELDS} />
           {managed && (
             <Callout tone="info" className="mb-5" title={`Read-only on this node — managed by ${primaryName || 'the cluster primary'}`}>
@@ -286,9 +289,13 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
               )}
             </Replicated>
           </FormSection>
+          <span hidden />
+        </fieldset>
 
-          <AcmeChallengeSection settings={settings} form={form} set={set} errors={errors} providers={providers} disabled={!isAdmin || managed} />
+        <AcmeChallengeSection settings={settings} form={form} set={set} errors={errors} providers={providers} disabled={locked || managed} />
 
+        <fieldset disabled={locked} className="contents">
+          <span hidden />
           <FormSection title="Listeners" description="Ports Caddy listens on for all sites. Remember the Windows Firewall rules (see Readiness).">
             <div className="grid gap-4 sm:grid-cols-2 lg:max-w-md">
               <Field label="HTTP port" error={errors.httpPort}>
