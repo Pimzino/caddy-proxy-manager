@@ -1,0 +1,30 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <!--
+    Caddy Proxy Manager MSI (WiX Toolset v6, SDK-style). Windows only.
+
+      dotnet publish src/CaddyManager -c Release -r win-x64 -o artifacts/publish
+      dotnet build installer/CaddyProxyManager.wixproj -c Release -p:ProductVersion=1.2.3 -p:CpmPublishDir=<abs path>\artifacts\publish\
+
+    Output: installer/bin/x64/Release/CaddyProxyManager.msi (build.ps1 copies it to artifacts/CaddyProxyManager-<ver>-x64.msi).
+  -->
+  <PropertyGroup>
+    <OutputName>CaddyProxyManager</OutputName>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <Platform Condition="'$(Platform)' == '' or '$(Platform)' == 'AnyCPU'">x64</Platform>
+    <!-- MSI versions are numeric major.minor.build; strip any pre-release suffix. -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">$(Version)</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <ProductVersion>$([System.Text.RegularExpressions.Regex]::Match('$(ProductVersion)', '^\d+(\.\d+){0,3}').Value)</ProductVersion>
+    <CpmPublishDir Condition="'$(CpmPublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\publish\</CpmPublishDir>
+    <CpmPublishDir Condition="!HasTrailingSlash('$(CpmPublishDir)')">$(CpmPublishDir)\</CpmPublishDir>
+    <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(CpmPublishDir)</DefineConstants>
+    <!-- Not a .NET project: keep repo-wide settings from Directory.Build.props from leaking in. -->
+    <Nullable />
+    <ImplicitUsings />
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
+    <PackageReference Include="WixToolset.Firewall.wixext" Version="6.0.2" />
+  </ItemGroup>
+</Project>

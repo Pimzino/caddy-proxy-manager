@@ -89,6 +89,12 @@ must include header `X-CPM-Request: 1`** (CSRF defence, enforced by Ops middlewa
 `/api` unsafe methods except `POST /api/auth/login` and `POST /api/setup`, which still send it from the UI).
 401 = not signed in, 403 = role insufficient. Roles: viewer < operator < admin (policies in `Policies`).
 
+**Settings wire shapes (all settings endpoints):** the settings class camelCased, *minus* every
+`*Protected` property, *plus* an output-only boolean `has<Name>` and a write-only input `<name>`
+(e.g. `SmtpPasswordProtected` → output `hasSmtpPassword`, input `smtpPassword`; `EabMacKeyProtected` →
+`hasEabMacKey` / `eabMacKey`; `HttpsPfxPasswordProtected` → `hasHttpsPfxPassword` / `httpsPfxPassword`).
+Input semantics: absent/null = unchanged, `""` = clear, other = set (protected via ISecretProtector).
+
 Mutation responses for Config resources: `{ "item": <entity>, "apply": ApplyResult }`.
 Delete responses: `{ "apply": ApplyResult }`.
 

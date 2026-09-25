@@ -15,6 +15,8 @@ if (await OpsCli.TryRunAsync(args) is int opsExit) return opsExit;
 
 var paths = new AppPaths();
 paths.EnsureCreated();
+// A backup restore uploaded through the UI is staged, then applied here before the database is opened.
+CaddyManager.Ops.Backup.RestoreStager.ApplyPendingRestore(paths);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {

@@ -3,6 +3,13 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <!-- SMTP e-mail notifications. (System.Diagnostics.EventLog comes with the ASP.NET Core shared framework.) -->
+    <PackageReference Include="MailKit" Version="4.18.0" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\CaddyManager.Core\CaddyManager.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CaddyManager.Ops.Tests" />
   </ItemGroup>
 </Project>

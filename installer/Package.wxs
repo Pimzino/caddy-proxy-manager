@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Caddy Proxy Manager - per-machine MSI.
+
+  Installs the self-contained single-file CaddyManager.exe to "C:\Program Files\Caddy Proxy Manager",
+  registers the Windows service "CaddyProxyManager" (LocalSystem, automatic delayed start, restart on failure),
+  opens the management UI port in Windows Defender Firewall and starts the service. The service installs
+  Caddy itself (service "Caddy") on first start.
+
+  Public properties:
+    UI_PORT   TCP port of the management UI (default: keep the configured port; 81 on a new install).
+              msiexec /i CaddyProxyManager-1.0.0-x64.msi UI_PORT=8081 /qn
+
+  Uninstall removes the manager service, the firewall exception and the Caddy service (via
+  "CaddyManager.exe uninstall-caddy-service"). Data in C:\ProgramData\CaddyProxyManager is kept.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fire="http://wixtoolset.org/schemas/v4/wxs/firewall">
+
+  <Package Name="Caddy Proxy Manager"
+           Manufacturer="Caddy Proxy Manager"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="E8291510-81A8-4EE4-9ED4-3AA76CCF2109"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500"
+           Language="1033">
+
+    <SummaryInformation Description="Caddy Proxy Manager $(var.ProductVersion)" Manufacturer="Caddy Proxy Manager" />
+
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed. Uninstall it first to downgrade." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Launch Condition="VersionNT64" Message="[ProductName] requires 64-bit Windows." />
+    <Launch Condition="Installed OR VersionNT &gt;= 603" Message="[ProductName] requires Windows Server 2016 or later (Windows Server 2025 recommended)." />
+    <Launch Condition="Privileged" Message="[ProductName] must be installed by an administrator." />
+
+    <!-- ===================================================================== properties -->
+    <!-- UI_PORT given on the command line reconfigures the UI listener; otherwise the stored setting is kept. -->
+    <Property Id="UI_PORT" Secure="yes" />
+    <Property Id="CPM_FIREWALL_PORT" Value="81" Secure="yes" />
+    <SetProperty Id="CPM_FIREWALL_PORT" Value="[UI_PORT]" After="AppSearch" Sequence="both" Condition="UI_PORT" />
+
+    <!-- Add/Remove Programs -->
+    <Property Id="ARPCOMMENTS" Value="Web UI to install, configure and monitor the Caddy web server / reverse proxy on Windows Server." />
+    <Property Id="ARPCONTACT" Value="Caddy Proxy Manager" />
+    <Property Id="ARPHELPTEXT" Value="Open the web UI on the server (http://localhost:81/ unless UI_PORT was changed). First-run setup token: C:\ProgramData\CaddyProxyManager\setup-token.txt" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="execute" />
+
+    <!-- ===================================================================== files + service -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Caddy Proxy Manager" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="ManagerExecutable">
+        <File Id="CaddyManagerExe" Source="$(var.PublishDir)CaddyManager.exe" KeyPath="yes" />
+
+        <ServiceInstall Id="ManagerServiceInstall"
+                        Name="CaddyProxyManager"
+                        DisplayName="Caddy Proxy Manager"
+                        Description="Caddy Proxy Manager: web UI that installs, configures and monitors the Caddy web server / reverse proxy."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Vital="yes">
+          <!-- Automatic (Delayed Start); run the recovery actions also when the service exits with an error code. -->
+          <ServiceConfig DelayedAutoStart="yes" FailureActionsWhen="failedToStopOrReturnedError" OnInstall="yes" OnReinstall="yes" />
+          <!-- Restart on failure: 5s / 10s / 30s, reset the failure counter after 1 day. -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="10"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="ManagerServiceControl" Name="CaddyProxyManager" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+
+        <fire:FirewallException Id="ManagementUiFirewall"
+                                Name="Caddy Proxy Manager - Management UI (TCP-In)"
+                                Description="Allows inbound TCP to the Caddy Proxy Manager web UI. Created by the Caddy Proxy Manager installer."
+                                Grouping="Caddy Proxy Manager"
+                                Port="[CPM_FIREWALL_PORT]"
+                                Protocol="tcp"
+                                Scope="any"
+                                Profile="all"
+                                IgnoreFailure="yes" />
+      </Component>
+
+      <Component Id="AppSettings">
+        <File Id="AppSettingsJson" Source="$(var.PublishDir)appsettings.json" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Caddy Proxy Manager" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <!-- ===================================================================== custom actions -->
+    <!-- Store UI_PORT in the manager's settings before the service starts (only when UI_PORT was given). -->
+    <SetProperty Id="CPM_ConfigureUi"
+                 Value="&quot;[#CaddyManagerExe]&quot; configure --ui-port [UI_PORT]"
+                 Before="CPM_ConfigureUi" Sequence="execute"
+                 Condition="UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
+    <CustomAction Id="CPM_ConfigureUi"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="check" />
+
+    <!-- On a real uninstall (not a major upgrade) also stop and delete the "Caddy" service the manager created. -->
+    <SetProperty Id="CPM_RemoveCaddyService"
+                 Value="&quot;[#CaddyManagerExe]&quot; uninstall-caddy-service"
+                 Before="CPM_RemoveCaddyService" Sequence="execute"
+                 Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="CPM_RemoveCaddyService"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CPM_ConfigureUi" After="InstallFiles" Condition="UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
+      <Custom Action="CPM_RemoveCaddyService" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

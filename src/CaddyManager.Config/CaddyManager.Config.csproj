@@ -5,4 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CaddyManager.Core\CaddyManager.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CaddyManager.Config.Tests" />
+  </ItemGroup>
 </Project>

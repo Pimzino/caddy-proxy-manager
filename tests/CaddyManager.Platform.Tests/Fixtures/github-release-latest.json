@@ -1,0 +1,29 @@
+{
+  "url": "https://api.github.com/repos/caddyserver/caddy/releases/333491932",
+  "html_url": "https://github.com/caddyserver/caddy/releases/tag/v2.11.4",
+  "id": 333491932,
+  "tag_name": "v2.11.4",
+  "name": "v2.11.4",
+  "draft": false,
+  "prerelease": false,
+  "created_at": "2026-06-03T03:54:40Z",
+  "published_at": "2026-06-03T06:52:22Z",
+  "body": "## Changelog\n\n* fix: example entry\n* feat: another entry\n",
+  "assets": [
+    {
+      "name": "caddy_2.11.4_checksums.txt",
+      "browser_download_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_checksums.txt",
+      "size": 6769
+    },
+    {
+      "name": "caddy_2.11.4_mac_arm64.tar.gz",
+      "browser_download_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_arm64.tar.gz",
+      "size": 16448366
+    },
+    {
+      "name": "caddy_2.11.4_windows_amd64.zip",
+      "browser_download_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_windows_amd64.zip",
+      "size": 17559418
+    }
+  ]
+}

@@ -1,0 +1,281 @@
+{
+ "status_code": 200,
+ "result": [
+  {
+   "id": "e97af045-03cf-427c-96f5-5607516080e7",
+   "path": "github.com/caddy-dns/cloudflare",
+   "published": "2020-07-18T02:08:15.066803Z",
+   "updated": "2021-05-05T23:01:21.21005Z",
+   "listed": true,
+   "available": true,
+   "downloads": 460540,
+   "modules": [
+    {
+     "name": "dns.providers.cloudflare",
+     "docs": "dns.providers.cloudflare wraps the provider implementation as a Caddy module.",
+     "package": "github.com/caddy-dns/cloudflare",
+     "repo": "https://github.com/caddy-dns/cloudflare"
+    }
+   ],
+   "repo": "https://github.com/caddy-dns/cloudflare"
+  },
+  {
+   "id": "1fab5617-a93f-4617-b886-cfc8e44253ae",
+   "path": "github.com/greenpau/caddy-security",
+   "published": "2022-01-24T23:25:50.010346Z",
+   "updated": "2022-01-24T23:25:50.010346Z",
+   "listed": true,
+   "available": true,
+   "downloads": 1579440,
+   "modules": [
+    {
+     "name": "http.authentication.providers.authorizer",
+     "docs": "http.authentication.providers.authorizer authorizes access to endpoints based on\nthe presense and content of JWT token.",
+     "package": "github.com/greenpau/caddy-security",
+     "repo": "https://github.com/greenpau/caddy-security"
+    },
+    {
+     "name": "http.handlers.authenticator",
+     "docs": "http.handlers.authenticator implements Form-Based, Basic, Local, LDAP,\nOpenID Connect, OAuth 2.0, SAML Authentication.",
+     "package": "github.com/greenpau/caddy-security",
+     "repo": "https://github.com/greenpau/caddy-security"
+    },
+    {
+     "name": "security",
+     "docs": "security implements security manager.",
+     "package": "github.com/greenpau/caddy-security",
+     "repo": "https://github.com/greenpau/caddy-security"
+    }
+   ],
+   "repo": "https://github.com/greenpau/caddy-security"
+  },
+  {
+   "id": "df350215-52dc-4fc9-89ec-001b9ef54d5a",
+   "path": "github.com/mholt/caddy-l4",
+   "published": "2021-05-25T22:35:46.90086Z",
+   "updated": "2021-05-25T22:35:46.90086Z",
+   "listed": true,
+   "available": true,
+   "downloads": 43268,
+   "modules": [
+    {
+     "name": "layer4",
+     "docs": "layer4 is a Caddy app that operates closest to layer 4 of the OSI model.",
+     "package": "github.com/mholt/caddy-l4/layer4",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.echo",
+     "docs": "layer4.handlers.echo is a simple handler that writes what it reads.",
+     "package": "github.com/mholt/caddy-l4/modules/l4echo",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.proxy",
+     "docs": "layer4.handlers.proxy is a handler that can proxy connections.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.proxy_protocol",
+     "docs": "layer4.handlers.proxy_protocol is a connection handler that accepts the PROXY protocol.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxyprotocol",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.tee",
+     "docs": "layer4.handlers.tee is a layer4 handler that replicates a connection so\nthat a branch of handlers can concurrently handle it. Reads\nhappen in lock-step with all concurrent branches so as to\navoid buffering: if one of the branches (including the main\nhandler chain) stops reading from the connection, it will\nblock all branches.",
+     "package": "github.com/mholt/caddy-l4/modules/l4tee",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.throttle",
+     "docs": "layer4.handlers.throttle throttles connections using leaky bucket rate limiting.",
+     "package": "github.com/mholt/caddy-l4/modules/l4throttle",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.handlers.tls",
+     "docs": "layer4.handlers.tls is a connection handler that terminates TLS.",
+     "package": "github.com/mholt/caddy-l4/modules/l4tls",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.http",
+     "docs": "layer4.matchers.http is able to match HTTP connections. The auto-generated\ndocumentation for this type is wrong; instead of an object, it\nis an array of matcher set objects.",
+     "package": "github.com/mholt/caddy-l4/modules/l4http",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.ip",
+     "docs": "layer4.matchers.ip matches requests by remote IP (or CIDR range).",
+     "package": "github.com/mholt/caddy-l4/layer4",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.proxy_protocol",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.ssh",
+     "docs": "layer4.matchers.ssh is able to match SSH connections.",
+     "package": "github.com/mholt/caddy-l4/modules/l4ssh",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.tls",
+     "docs": "layer4.matchers.tls is able to match TLS connections. Its structure\nis different from the auto-generated documentation. This\nvalue should be a map of matcher names to their values.",
+     "package": "github.com/mholt/caddy-l4/modules/l4tls",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.matchers.xmpp",
+     "docs": "layer4.matchers.xmpp is able to match XMPP connections.",
+     "package": "github.com/mholt/caddy-l4/modules/l4xmpp",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.first",
+     "docs": "layer4.proxy.selection_policies.first is a policy that selects\nthe first available host.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.ip_hash",
+     "docs": "layer4.proxy.selection_policies.ip_hash is a policy that selects a host\nbased on hashing the remote IP of the connection.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.least_conn",
+     "docs": "layer4.proxy.selection_policies.least_conn is a policy that selects the upstream\nwith the least active connections. If multiple upstreams\nhave the same fewest number, one is chosen randomly.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.random",
+     "docs": "layer4.proxy.selection_policies.random is a policy that selects\nan available host at random.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.random_choose",
+     "docs": "layer4.proxy.selection_policies.random_choose is a policy that selects\ntwo or more available hosts at random, then\nchooses the one with the least load.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "layer4.proxy.selection_policies.round_robin",
+     "docs": "layer4.proxy.selection_policies.round_robin is a policy that selects\na host based on round-robin ordering.",
+     "package": "github.com/mholt/caddy-l4/modules/l4proxy",
+     "repo": "https://github.com/mholt/caddy-l4"
+    },
+    {
+     "name": "tls.handshake_match.alpn",
+     "package": "github.com/mholt/caddy-l4/modules/l4tls",
+     "repo": "https://github.com/mholt/caddy-l4"
+    }
+   ],
+   "repo": "https://github.com/mholt/caddy-l4"
+  },
+  {
+   "id": "1b3c89c6-ae16-4666-a91c-6e126c057b58",
+   "path": "git.gorbe.io/caddy/crawler",
+   "published": "2025-07-28T04:46:07.705966Z",
+   "updated": "2025-07-28T04:46:07.705966Z",
+   "listed": true,
+   "available": true,
+   "downloads": 95,
+   "modules": [
+    {
+     "name": "http.matchers.crawler",
+     "package": "git.gorbe.io/caddy/crawler",
+     "repo": "https://git.gorbe.io/caddy/crawler.git"
+    }
+   ],
+   "repo": "https://git.gorbe.io/caddy/crawler.git"
+  },
+  {
+   "id": "9e152634-309a-4eb8-b59c-760e97881eb4",
+   "path": "git.gorbe.io/caddy/geoip",
+   "published": "2025-08-01T16:00:28.926108Z",
+   "updated": "2025-08-01T16:00:28.926108Z",
+   "listed": true,
+   "available": true,
+   "downloads": 122,
+   "modules": [
+    {
+     "name": "http.matchers.client_asn",
+     "docs": "http.matchers.client_asn matches requests by the client_ip GeoIP ASN.\n\nCaddyfile syntax:\n\n\t@asn-matcher client_asn \"24940\"\n\trespond @asn-matcher \"Hetzner Online GmbH\"\n\nLogging:\n\n\tERROR Failed to parse client IP\n\tERROR Failed to get ASN for client IP\n\tWARN  No data for client IP\n\tINFO  Request matched",
+     "package": "git.gorbe.io/caddy/geoip",
+     "repo": "https://git.gorbe.io/caddy/geoip.git"
+    },
+    {
+     "name": "http.matchers.client_country",
+     "docs": "http.matchers.client_country matches requests by the client_ip GeoIP Country.\n\nCaddyfile syntax:\n\n\t@country-matcher client_country \"HU\" \"DE\"\n\trespond @country-matcher \"Country matcher\"\n\n# Logging\n\nTo ERROR level when failed to parse client IP:\n\n\t{\"level\":\"error\", ... ,\"logger\":\"http.matchers.client_country\",\"msg\":\"Failed to parse client IP\",\"client_ip\":\"...\",\"error\":\"...\"}\n\nTo ERROR when failed to get Country for client IP:\n\n\t{\"level\":\"error\", ... ,\"logger\":\"http.matchers.client_country\",\"msg\":\"Failed to get Country for client IP\",\"client_ip\":\"...\",\"error\":\"...\"}\n\nTo WARN level when there is no data for the client IP:\n\n\t{\"level\":\"warn\", ... ,\"logger\":\"http.matchers.client_country\",\"msg\":\"No data for client IP\",\"client_ip\":\"...\"}\n\nTo INFO level when request matched:\n\n\t{\"level\":\"info\", ... ,\"logger\":\"http.matchers.client_country\",\"msg\":\"Request matched\",\"client_ip\":\"...\", \"country\": \"...\"}",
+     "package": "git.gorbe.io/caddy/geoip",
+     "repo": "https://git.gorbe.io/caddy/geoip.git"
+    },
+    {
+     "name": "http.matchers.geoip_asn",
+     "docs": "http.matchers.geoip_asn matches requests by the client_ip GeoIP ASN.\n\nCaddyfile syntax:\n\n\t@asn-matcher geoip_asn \"24940\"\n\trespond @asn-matcher \"Hetzner Online GmbH\"",
+     "package": "git.gorbe.io/caddy/geoip",
+     "repo": "https://git.gorbe.io/caddy/geoip.git"
+    },
+    {
+     "name": "http.matchers.geoip_country",
+     "docs": "http.matchers.geoip_country matches requests by the client_ip GeoIP Country.\n\nCaddyfile syntax:\n\n\t@country-matcher geoip_country \"HU\" \"DE\"\n\trespond @country-mathers \"Country matcher\"",
+     "package": "git.gorbe.io/caddy/geoip",
+     "repo": "https://git.gorbe.io/caddy/geoip.git"
+    }
+   ],
+   "repo": "https://git.gorbe.io/caddy/geoip.git"
+  },
+  {
+   "id": "37244591-c589-4b8e-b697-3ec4549126e5",
+   "path": "github.com/AnswerDotAI/caddy-sqlite-router",
+   "published": "2025-11-21T21:43:40.259908Z",
+   "updated": "2025-11-21T21:43:40.259908Z",
+   "listed": true,
+   "available": true,
+   "downloads": 19,
+   "modules": [
+    {
+     "name": "http.handlers.sqlite_router",
+     "package": "github.com/AnswerDotAI/caddy-sqlite-router",
+     "repo": "https://github.com/AnswerDotAI/caddy-sqlite-router"
+    }
+   ],
+   "repo": "https://github.com/AnswerDotAI/caddy-sqlite-router"
+  },
+  {
+   "id": "875c30d9-1ab8-4351-8575-164d8fd79395",
+   "path": "example.com/unlisted/plugin",
+   "published": "2024-01-13T04:34:47.423402Z",
+   "updated": "2024-01-13T04:34:47.423402Z",
+   "listed": false,
+   "available": true,
+   "downloads": 296,
+   "modules": [
+    {
+     "name": "http.reverse_proxy.transport.uwsgi",
+     "package": "github.com/BadAimWeeb/caddy-uwsgi-transport",
+     "repo": "https://github.com/BadAimWeeb/caddy-uwsgi-transport"
+    }
+   ],
+   "repo": "https://github.com/BadAimWeeb/caddy-uwsgi-transport"
+  },
+  {
+   "id": "e18a2d64-de46-4202-a1c6-377dd540d63d",
+   "path": "example.com/nomodules/plugin",
+   "published": "2025-07-15T17:07:39.884857Z",
+   "updated": "2025-07-15T17:07:39.884857Z",
+   "listed": true,
+   "available": true,
+   "downloads": 10,
+   "modules": null,
+   "repo": "https://github.com/Boomchainlab/vite-react-template"
+  }
+ ]
+}

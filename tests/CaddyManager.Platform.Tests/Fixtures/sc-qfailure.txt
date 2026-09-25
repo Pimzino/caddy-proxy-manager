@@ -1,0 +1,9 @@
+[SC] QueryServiceConfig2 SUCCESS
+
+SERVICE_NAME: Caddy
+        RESET_PERIOD (in seconds)    : 86400
+        REBOOT_MESSAGE               :
+        COMMAND_LINE                 :
+        FAILURE_ACTIONS              : RESTART -- Delay = 5000 milliseconds.
+                                       RESTART -- Delay = 5000 milliseconds.
+                                       RESTART -- Delay = 30000 milliseconds.

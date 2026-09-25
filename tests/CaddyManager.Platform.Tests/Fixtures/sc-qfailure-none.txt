@@ -1,0 +1,6 @@
+[SC] QueryServiceConfig2 SUCCESS
+
+SERVICE_NAME: Caddy
+        RESET_PERIOD (in seconds)    : 0
+        REBOOT_MESSAGE               :
+        COMMAND_LINE                 :

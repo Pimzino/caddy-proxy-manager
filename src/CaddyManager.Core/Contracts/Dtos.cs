@@ -109,6 +109,7 @@ public sealed record CertificateInfo
     public string? Source { get; init; }                // "uploaded" | "filePath" | issuer dir name
     public List<string> UsedByHostIds { get; init; } = new();
     public string? Error { get; init; }                 // e.g. file missing/unreadable
+    public string? Notes { get; init; }
 }
 
 // ------------------------------------------------------------------ Readiness
