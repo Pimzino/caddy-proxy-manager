@@ -408,8 +408,8 @@ When `TrafficStatsEnabled` (default true) in Managed mode:
 - Disabled → no `cpm_stats` sink (per-host logs unchanged).
 
 ### Telemetry module (IServerTelemetry)
-- Sampler (BackgroundService, every 2 s, ring buffer 10 min): CPU% (Windows GetSystemTimes; Linux /proc/stat; macOS
-  host_statistics), memory (Windows GlobalMemoryStatusEx; Linux /proc/meminfo; macOS host_statistics64 + hw.memsize), disks (the
+- Sampler (BackgroundService, every 2 s, ring buffer 10 min): CPU% (GetSystemTimes), memory (GlobalMemoryStatusEx) —
+  Windows only (the product is Windows-only; elsewhere these are 0 and the sampler just keeps running), disks (the
   DataDir volume labelled "Data", plus the system drive), network rx/tx per second (NetworkInterface statistics over up,
   non-loopback interfaces), Caddy process CPU/memory (PID from ICaddyHost status; null when not running), manager process
   CPU/memory, active connections (IPGlobalProperties established TCP connections whose local port is HttpPort/HttpsPort),

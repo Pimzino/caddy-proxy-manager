@@ -24,11 +24,19 @@ server is actually ready to serve traffic, and e-mails you when something goes w
   and manual rollback.
 - **Sites.** Proxy hosts (load balancing, health checks, custom locations, header rules, WebSockets, NTLM upstreams),
   redirects, static sites, custom responses, and TCP/UDP streams (with the `caddy-l4` plugin).
-- **Certificates.** Automatic Let's Encrypt / ZeroSSL / private ACME CA (incl. EAB and DNS challenge via plugins),
+- **Certificates.** Automatic Let's Encrypt / ZeroSSL / private ACME CA (incl. EAB), with the HTTP challenge or the
+  **DNS-01 challenge** through 24 built-in DNS provider integrations (Cloudflare, Route 53, Azure DNS, RFC 2136 …;
+  no inbound ports needed, wildcards supported, the provider plugin is added to Caddy for you),
   Caddy's internal CA (root exportable for GPO), and your own certificates — uploaded PEM/PFX, referenced PEM or PFX
   files on disk or a share (renewals picked up automatically), or the Windows certificate store (follows AD CS
   auto-enrolment renewals). Point any domain at any certificate.
 - **Access lists.** IP allow/deny rules and basic auth, per host.
+- **Multiple servers.** Join other Caddy Proxy Manager servers to a cluster: the primary replicates sites,
+  certificates, access lists and Caddy settings to every node over an encrypted channel, and shared Caddy storage
+  (a file share or Redis) lets all servers share certificates and answer ACME challenges behind a load balancer.
+- **Server details and traffic.** Per-server pages with live CPU, memory, disk, network, Caddy process and connection
+  charts, versions and sync state, plus traffic statistics per server and per site: requests, unique clients, data
+  in/out, status codes, busiest hosts and clients over the last hour, day, week or month.
 - **Server readiness.** Windows Firewall rules (evaluated against the effective policy incl. GPO), network
   connection profile, domain membership with a ready-to-run **GPO firewall script**, port conflicts (IIS/http.sys),
   outbound ACME connectivity, DNS, clock, disk — with one-click fixes.
@@ -61,6 +69,8 @@ The manager downloads the latest Caddy on first start. On servers without Intern
 |---|---|
 | [Installation, upgrade and uninstall](docs/installation.md) | MSI and zip installs, silent parameters, ports, first run |
 | [Certificates](docs/certificates.md) | ACME, internal CA, own certificates, shares, Windows store, wildcards |
+| [Clustering (multiple servers)](docs/cluster.md) | Adding servers, replication, shared storage, security model |
+| [Traffic statistics](docs/traffic-statistics.md) | What is measured, accuracy, retention |
 | [Group Policy and firewall](docs/group-policy.md) | Readiness checks, GPO firewall rules, distributing the internal root CA |
 | [Notifications](docs/notifications.md) | SMTP, Microsoft 365, webhooks, alert rules |
 | [Users and sign-in](docs/users.md) | Roles, Active Directory (LDAP), password reset |
