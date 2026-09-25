@@ -36,6 +36,11 @@ public sealed class CaddySettings : ISettingsDocument
     public int HttpPort { get; set; } = 80;
     public int HttpsPort { get; set; } = 443;
     /// <summary>
+    /// Port clients use to reach HTTPS when it differs from HttpsPort (NAT/port forwarding, e.g. public 443 → 8443).
+    /// Used for HTTP→HTTPS redirects. null = same as HttpsPort.
+    /// </summary>
+    public int? PublicHttpsPort { get; set; }
+    /// <summary>
     /// HTTP/3 (QUIC on UDP HttpsPort). Off by default: optional (browsers fall back to HTTP/2), needs a UDP firewall
     /// rule, and gains little for internal sites.
     /// </summary>

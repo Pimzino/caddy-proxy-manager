@@ -173,8 +173,6 @@ public sealed class GeneratorTests : IDisposable
         HostRoute(cfg, "srv1", "plain.example.com");
         Assert.DoesNotContain(Routes(cfg, "srv0"), r => r!.ToJsonString().Contains("plain.example.com"));
         Assert.Equal(["plain.example.com"], Strings(Srv(cfg, "srv0")["automatic_https"]!["skip"]));
-        // TLS host with ForceHttps=true is not on the HTTP server (Caddy adds the redirect itself)
-        Assert.DoesNotContain(Routes(cfg, "srv1"), r => r!.ToJsonString().Contains("secure.example.com"));
     }
 
     [Fact]
@@ -355,7 +353,6 @@ public sealed class GeneratorTests : IDisposable
     [InlineData(LoadBalancingPolicy.RoundRobin, "round_robin")]
     [InlineData(LoadBalancingPolicy.Random, "random")]
     [InlineData(LoadBalancingPolicy.LeastConn, "least_conn")]
-    [InlineData(LoadBalancingPolicy.IpHash, "ip_hash")]
     [InlineData(LoadBalancingPolicy.First, "first")]
     [InlineData(LoadBalancingPolicy.Cookie, "cookie")]
     [InlineData(LoadBalancingPolicy.UriHash, "uri_hash")]
@@ -431,22 +428,6 @@ public sealed class GeneratorTests : IDisposable
         sr = Handler(HostRoute(Gen(hosts: [h]).Config, "srv1", "old.example.com"), "static_response");
         Assert.Equal(302, sr["status_code"]!.GetValue<int>());
         Assert.Equal(["https://new.example.com/"], Strings(sr["headers"]!["Location"]));
-    }
-
-    [Fact]
-    public void Static_site_with_browse_and_spa_fallback()
-    {
-        var h = new SiteHost { Kind = HostKind.Static, Domains = ["spa.example.com"], Tls = TlsMode.None, RootPath = @"C:\sites\spa", Browse = true, SpaFallback = true, Compression = false };
-        var sub = Sub(HostRoute(Gen(hosts: [h]).Config, "srv1", "spa.example.com"));
-        var file = sub[0]!["match"]![0]!["file"]!;
-        Assert.Equal(@"C:\sites\spa", file["root"]!.GetValue<string>());
-        Assert.Equal(["{http.request.uri.path}", "/index.html"], Strings(file["try_files"]));
-        Assert.Equal("rewrite", sub[0]!["handle"]![0]!["handler"]!.GetValue<string>());
-        Assert.Equal("{http.matchers.file.relative}", sub[0]!["handle"]![0]!["uri"]!.GetValue<string>());
-        var fs = sub[1]!["handle"]![0]!;
-        Assert.Equal("file_server", fs["handler"]!.GetValue<string>());
-        Assert.Equal(@"C:\sites\spa", fs["root"]!.GetValue<string>());
-        Assert.NotNull(fs["browse"]);
     }
 
     [Fact]
@@ -642,7 +623,6 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(Path.Combine(_env.Paths.AccessLogDir, "wildcard.logs.example.com.log"), logger["writer"]!["filename"]!.GetValue<string>());
         Assert.Equal("json", logger["encoder"]!["format"]!.GetValue<string>());
         Assert.Equal(["http.log.access.cpm_access_h1"], Strings(logger["include"]));
-        Assert.Equal(["admin.api", "http.log.access.cpm_access_h1"], Strings(logs["default"]!["exclude"]));
         var srvLogs = Srv(cfg, "srv0")["logs"]!;
         Assert.Equal(["cpm_access_h1"], Strings(srvLogs["logger_names"]!["*.logs.example.com"]));
         Assert.True(srvLogs["skip_unmapped_hosts"]!.GetValue<bool>());

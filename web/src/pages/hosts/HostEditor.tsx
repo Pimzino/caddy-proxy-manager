@@ -26,7 +26,7 @@ import {
   useConfirm,
 } from '@/components/ui';
 import { formatDate } from '@/lib/format';
-import { isValidHostname, serverFieldErrors, type FieldErrors } from '@/lib/validation';
+import { isValidSiteDomain, serverFieldErrors, type FieldErrors } from '@/lib/validation';
 import {
   certCovers,
   HEADER_ACTIONS,
@@ -300,7 +300,7 @@ function DetailsTab({
             onChange={(v) => set('domains', v)}
             placeholder="app.example.com"
             normalize={(s) => s.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')}
-            validate={(d) => (isValidHostname(d) ? null : 'not a valid host name')}
+            validate={(d) => (isValidSiteDomain(d) ? null : 'not a valid host name')}
           />
         </Field>
         <SwitchField
@@ -316,7 +316,15 @@ function DetailsTab({
           <Section title="Upstream servers" description="Requests are forwarded to these backends. Paste a URL like https://10.0.0.5:8443 into the host field to fill all columns.">
             <UpstreamList value={form.upstreams} onChange={(v) => set('upstreams', v)} errors={errors} prefix="upstreams" />
             {form.upstreams.length > 1 && (
-              <Field label="Load balancing" className="max-w-sm">
+              <Field
+                label="Load balancing"
+                className="max-w-sm"
+                hint={
+                  ['first', 'ipHash', 'uriHash', 'cookie'].includes(form.loadBalancing) && !form.healthCheck.enabled
+                    ? 'With this policy a backend that is down keeps getting its share of requests unless the active health check (below) is on.'
+                    : 'Round robin and least connections retry a request on the next backend when one cannot be reached.'
+                }
+              >
                 <Select value={form.loadBalancing} onChange={(e) => set('loadBalancing', e.target.value as SiteHostFields['loadBalancing'])}>
                   {LOAD_BALANCING.map((l) => (
                     <option key={l.value} value={l.value}>
@@ -329,7 +337,7 @@ function DetailsTab({
             {anyHttps && (
               <SwitchField
                 label="Skip upstream certificate verification"
-                description="Only for internal backends with self-signed certificates. Traffic stays encrypted but the backend is not authenticated."
+                description="Only for internal backends with self-signed certificates. Traffic stays encrypted but the backend is not authenticated. When the Host header is kept, the requested domain is also sent as TLS SNI (IIS SNI bindings, name-based virtual hosts), with separate upstream connections per domain. Wildcard domains send no SNI for an IP upstream."
                 checked={form.upstreamTlsInsecure}
                 onChange={(v) => set('upstreamTlsInsecure', v)}
               />
@@ -362,7 +370,14 @@ function DetailsTab({
               </div>
             </Field>
           </Section>
-          <Section title="Active health check" description="Caddy probes each upstream and stops sending traffic to failing ones.">
+          <Section
+            title="Active health check"
+            description={
+              form.upstreams.length > 1
+                ? 'Caddy probes each upstream and stops sending traffic to failing ones. Without it, an upstream is taken out of rotation for 30 s after a failed request (passive check) and the others take over.'
+                : 'Caddy probes the upstream on a schedule; while the check fails the host answers 503. Without a check this upstream is shown as “not monitored”: a single upstream is never taken offline because of failed requests, since there is nothing to fail over to.'
+            }
+          >
             <SwitchField
               label="Enable health checks"
               checked={form.healthCheck.enabled}
@@ -377,7 +392,7 @@ function DetailsTab({
                     onChange={(e) => set('healthCheck', { ...form.healthCheck, path: e.target.value })}
                   />
                 </Field>
-                <Field label="Expected status" hint="0 = any 2xx response" error={errors['healthCheck.expectStatus']}>
+                <Field label="Expected status" hint="0 = any 2xx, 1–5 = any status of that class (3 = any redirect), or an exact code. A redirect counts as a failure unless you allow it here." error={errors['healthCheck.expectStatus']}>
                   <NumberInput
                     value={form.healthCheck.expectStatus}
                     onValueChange={(v) => set('healthCheck', { ...form.healthCheck, expectStatus: v })}
@@ -460,7 +475,7 @@ function DetailsTab({
           </Field>
           <SwitchField
             label="Directory browsing"
-            description="List folder contents when there is no index.html."
+            description="List folder contents when there is no index.html. Files and folders starting with a dot and web.config are never served or listed (404); /.well-known/ is served."
             checked={form.browse}
             onChange={(v) => set('browse', v)}
           />
@@ -477,7 +492,7 @@ function DetailsTab({
         <Section title="Response">
           <div className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
             <Field label="Status code" required error={errors.responseStatus}>
-              <NumberInput min={100} max={599} value={form.responseStatus} onValueChange={(v) => set('responseStatus', v)} />
+              <NumberInput min={200} max={599} value={form.responseStatus} onValueChange={(v) => set('responseStatus', v)} />
             </Field>
             <Field label="Content type" required error={errors.responseContentType}>
               <Input
@@ -569,6 +584,8 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
   const uncovered = selected ? form.domains.filter((d) => !certCovers(selected, d)) : [];
   const httpsPort = settings.data?.httpsPort ?? 443;
   const httpPort = settings.data?.httpPort ?? 80;
+  // Port clients reach HTTPS on (Settings > Listeners > Public HTTPS port), else the HTTPS port itself.
+  const publicHttpsPort = settings.data?.publicHttpsPort ?? httpsPort;
   const wildcard = form.domains.some((d) => d.startsWith('*.'));
 
   return (
@@ -658,7 +675,11 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
       <Section title="HTTPS behaviour">
         <SwitchField
           label="Force HTTPS"
-          description={`Redirect http:// requests on port ${httpPort} to https:// on port ${httpsPort}. When off, the site is served on both.`}
+          description={
+            publicHttpsPort === 443
+              ? `Redirect http:// requests on port ${httpPort} to https:// (port 443${httpsPort !== 443 ? `, forwarded to ${httpsPort}` : ''}). When off, the site is served on both.`
+              : `Redirect http:// requests on port ${httpPort} to https:// on port ${publicHttpsPort}. If a router forwards public 443 to ${httpsPort}, set the public HTTPS port in Settings › Listeners. When off, the site is served on both.`
+          }
           checked={form.tls !== 'none' && form.forceHttps}
           disabled={form.tls === 'none'}
           onChange={(v) => set('forceHttps', v)}
@@ -762,7 +783,9 @@ function HeadersTab({ form, set, errors, kind }: { form: SiteHostFields; set: Se
           description={
             <>
               Sent to the upstream. Placeholders are allowed, e.g. <span className="mono">{'{http.request.remote.host}'}</span>.
-              X-Forwarded-For/Proto/Host are added by Caddy automatically.
+              X-Forwarded-For/Proto/Host are added by Caddy automatically. Caddy drops request headers from clients whose names contain an
+              underscore (for example <span className="mono">SM_USER</span> or <span className="mono">X_Api_Key</span>) before they reach any
+              upstream or matcher; headers set here, including names with underscores, are still sent.
             </>
           }
         >

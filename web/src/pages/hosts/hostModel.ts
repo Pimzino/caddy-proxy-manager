@@ -3,7 +3,7 @@ import { ArrowLeftRight, CornerUpRight, FileCode2, FolderOpen } from 'lucide-rea
 import type { CertificateInfo, HeaderOp, HostKind, SiteHost, SiteHostFields, Upstream } from '@/api/types';
 import {
   isAbsoluteHttpUrl,
-  isValidHostname,
+  isValidSiteDomain,
   isValidPort,
   isValidUpstreamHost,
   jsonArrayError,
@@ -173,7 +173,9 @@ function validateUpstreams(list: Upstream[], prefix: string, errors: FieldErrors
 function validateHeaders(list: HeaderOp[], prefix: string, errors: FieldErrors) {
   list.forEach((o, i) => {
     if (!o.name.trim()) errors[`${prefix}.${i}.name`] = 'Enter a header name.';
-    else if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(o.name.trim()))
+    else if (o.name.includes('*'))
+      errors[`${prefix}.${i}.name`] = `"${o.name}" is not allowed: Caddy treats "*" in a header name as a wildcard ("*" would delete every header).`;
+    else if (!/^[A-Za-z0-9!#$%&'+.^_`|~-]+$/.test(o.name.trim()))
       errors[`${prefix}.${i}.name`] = `"${o.name}" is not a valid header name.`;
   });
 }
@@ -182,7 +184,7 @@ function validateHeaders(list: HeaderOp[], prefix: string, errors: FieldErrors) 
 export function validateHost(h: SiteHostFields): FieldErrors {
   const e: FieldErrors = {};
   if (h.domains.length === 0) e.domains = 'Add at least one domain name.';
-  const bad = h.domains.filter((d) => !isValidHostname(d));
+  const bad = h.domains.filter((d) => !isValidSiteDomain(d));
   if (bad.length) e.domains = `Invalid domain name: ${bad.join(', ')}`;
 
   if (h.kind === 'proxy') {
@@ -192,7 +194,7 @@ export function validateHost(h: SiteHostFields): FieldErrors {
       if (!(h.healthCheck.intervalSeconds >= 1)) e['healthCheck.intervalSeconds'] = 'Interval must be at least 1 second.';
       if (!(h.healthCheck.timeoutSeconds >= 1)) e['healthCheck.timeoutSeconds'] = 'Timeout must be at least 1 second.';
       const s = h.healthCheck.expectStatus;
-      if (!(s === 0 || (s >= 100 && s <= 599))) e['healthCheck.expectStatus'] = 'Use 0 (any 2xx) or a status code 100–599.';
+      if (!((s >= 0 && s <= 5) || (s >= 100 && s <= 599))) e['healthCheck.expectStatus'] = 'Use 0 (any 2xx), a class 1–5 (e.g. 3 = any 3xx) or a status code 100–599.';
     }
     const paths = new Set<string>();
     h.locations.forEach((l, i) => {
@@ -212,8 +214,8 @@ export function validateHost(h: SiteHostFields): FieldErrors {
   }
   if (h.kind === 'static' && !h.rootPath?.trim()) e.rootPath = 'Enter the folder to serve.';
   if (h.kind === 'response') {
-    if (!(Number.isInteger(h.responseStatus) && h.responseStatus >= 100 && h.responseStatus <= 599))
-      e.responseStatus = 'Status must be between 100 and 599.';
+    if (!(Number.isInteger(h.responseStatus) && h.responseStatus >= 200 && h.responseStatus <= 599))
+      e.responseStatus = 'Status must be between 200 and 599 (1xx codes are informational).';
     if (!h.responseContentType.trim()) e.responseContentType = 'Enter a content type.';
   }
   if (h.tls === 'custom' && !h.certificateId) e.certificateId = 'Choose a certificate, or pick another TLS mode.';

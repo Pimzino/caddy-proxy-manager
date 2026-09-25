@@ -16,7 +16,8 @@ import type {
 
 export function caddySettingsInput(s: CaddySettings): CaddySettingsInput {
   const { hasEabMacKey: _h, hasAcmeIssuerJson: _a, ...rest } = s;
-  return rest;
+  // The API omits null values; keep the field explicit so clearing it is sent as null.
+  return { ...rest, publicHttpsPort: rest.publicHttpsPort ?? null };
 }
 
 export function notificationSettingsInput(s: NotificationSettings): NotificationSettingsInput {

@@ -662,7 +662,7 @@ function UpstreamsCard() {
   if (ups.isError || (ups.data && ups.data.length === 0)) {
     return (
       <Card className="mt-4">
-        <CardHeader title="Upstream health" description="Live state of reverse-proxy backends reported by Caddy." />
+        <CardHeader title="Upstream health" description="Live state of reverse-proxy backends reported by Caddy. Health is known only where a check measures it: the host’s active health check, or passive checks on hosts with several upstreams." />
         <EmptyState
           title={ups.isError ? 'Upstream data unavailable' : 'No upstreams reported'}
           description={ups.isError ? 'Caddy’s admin API is not reachable.' : 'Caddy reports upstreams once proxy hosts receive traffic.'}
@@ -672,7 +672,7 @@ function UpstreamsCard() {
   }
   return (
     <Card className="mt-4">
-      <CardHeader title="Upstream health" description="Live state of reverse-proxy backends reported by Caddy." />
+      <CardHeader title="Upstream health" description="Live state of reverse-proxy backends reported by Caddy. Health is known only where a check measures it: the host’s active health check, or passive checks on hosts with several upstreams." />
       {ups.isPending ? (
         <LoadingBlock />
       ) : (
@@ -689,7 +689,17 @@ function UpstreamsCard() {
             {(ups.data ?? []).map((u) => (
               <TR key={u.address}>
                 <TD className="mono">{u.address}</TD>
-                <TD>{u.healthy ? <StatusDot tone="success" label="Healthy" /> : <StatusDot tone="danger" label="Unhealthy" />}</TD>
+                <TD>
+                  {u.monitored === false ? (
+                    <span title="No health check measures this upstream (enable the active health check on its host). Caddy would report it healthy even when it is down.">
+                      <StatusDot tone="neutral" label="Not monitored" />
+                    </span>
+                  ) : u.healthy ? (
+                    <StatusDot tone="success" label="Healthy" />
+                  ) : (
+                    <StatusDot tone="danger" label="Unhealthy" />
+                  )}
+                </TD>
                 <TD className="mono text-right">{formatNumber(u.numRequests)}</TD>
                 <TD className="mono text-right">{formatNumber(u.fails)}</TD>
               </TR>

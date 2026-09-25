@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CaddyManager.Config.Admin;
 using CaddyManager.Config.Generation;
 using CaddyManager.Config.Services;
 using CaddyManager.Config.Validation;
@@ -309,7 +310,9 @@ internal static class ConfigEndpoints
         {
             try
             {
-                return Results.Ok(await admin.GetUpstreamsAsync(ct));
+                // All upstreams, each flagged whether a health check monitors it (unmonitored = health unknown).
+                if (admin is CaddyAdminClient client) return Results.Ok(await client.GetUpstreamStatusAsync(ct));
+                return Results.Ok((await admin.GetUpstreamsAsync(ct)).Select(u => new UpstreamStatus(u.Address, u.NumRequests, u.Fails, u.Healthy, true)));
             }
             catch (CaddyAdminException ex)
             {

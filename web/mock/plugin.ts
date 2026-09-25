@@ -1245,11 +1245,11 @@ const routes: [string, string, Handler][] = [
     currentUser(s);
     if (s.status.state !== 'running') throw new HttpError(503, 'Caddy admin API unreachable');
     return ok([
-      { address: '10.0.10.21:8080', numRequests: 3, fails: 0, healthy: true },
-      { address: '10.0.10.31:3000', numRequests: 1, fails: 0, healthy: true },
-      { address: '10.0.10.32:3000', numRequests: 0, fails: 4, healthy: false },
-      { address: 'sp01.corp.example.com:443', numRequests: 0, fails: 0, healthy: true },
-      { address: '10.0.20.40:8090', numRequests: 2, fails: 0, healthy: true },
+      { address: '10.0.10.21:8080', numRequests: 3, fails: 0, healthy: true, monitored: true },
+      { address: '10.0.10.31:3000', numRequests: 1, fails: 0, healthy: true, monitored: true },
+      { address: '10.0.10.32:3000', numRequests: 0, fails: 4, healthy: false, monitored: true },
+      { address: 'sp01.corp.example.com:443', numRequests: 0, fails: 0, healthy: true, monitored: false },
+      { address: '10.0.20.40:8090', numRequests: 2, fails: 0, healthy: true, monitored: false },
       { address: '10.0.10.50:5000', numRequests: 7, fails: 1, healthy: true },
       { address: '10.0.20.80:44300', numRequests: 0, fails: 0, healthy: true },
     ]);

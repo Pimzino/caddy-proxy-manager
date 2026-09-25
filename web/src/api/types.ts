@@ -243,6 +243,8 @@ export interface CaddySettings {
   disableTlsAlpnChallenge: boolean;
   httpPort: number;
   httpsPort: number;
+  /** HTTPS port clients reach when NAT/port forwarding maps it to httpsPort (e.g. 443 → 8443); null/absent = httpsPort. Used for “Force HTTPS” redirects. */
+  publicHttpsPort?: number | null;
   enableHttp3: boolean;
   bindAddresses: string[];
   defaultSite: DefaultSiteBehavior;
@@ -453,7 +455,10 @@ export interface UpstreamHealth {
   address: string;
   numRequests: number;
   fails: number;
+  /** Only meaningful when monitored: Caddy reports an unchecked upstream as healthy whatever its state. */
   healthy: boolean;
+  /** A health check measures this upstream (an active check, or passive checks on a host with several upstreams). */
+  monitored?: boolean;
 }
 
 export interface CertificateInfo {

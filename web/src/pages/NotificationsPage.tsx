@@ -44,6 +44,12 @@ const SECURITY_OPTIONS: { value: SmtpSecurity; label: string; port: number }[] =
   { value: 'none', label: 'None — unencrypted (port 25)', port: 25 },
 ];
 
+/** Exchange Online SMTP endpoints (smtp.office365.com, *.mail.protection.outlook.com, smtp-mail.outlook.com) — same rule as the server. */
+function isExchangeOnline(host: string | null | undefined): boolean {
+  const h = (host ?? '').trim().replace(/\.$/, '').toLowerCase();
+  return h.endsWith('.office365.com') || h.endsWith('.outlook.com');
+}
+
 const AUTH_OPTIONS: { value: SmtpAuthMode; label: string }[] = [
   { value: 'none', label: 'None (relay)' },
   { value: 'password', label: 'Password' },
@@ -220,9 +226,23 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
                 </Select>
               </Field>
             </div>
+            {form.smtpSecurity === 'auto' && (
+              <p className="-mt-2 text-xs text-fg-subtle">
+                Automatic uses TLS when the server offers it. When a password or OAuth2 token is sent, TLS is required (TLS on connect for port 465,
+                STARTTLS otherwise): a server that offers no TLS gets an error, never the credentials. Without sign-in, Automatic may send mail
+                unencrypted to a relay that offers no TLS.
+              </p>
+            )}
             <Field label="Sign-in">
               <Segmented aria-label="SMTP authentication" value={form.smtpAuth ?? 'password'} onChange={(v) => set('smtpAuth', v)} options={AUTH_OPTIONS} />
             </Field>
+            {(form.smtpAuth ?? 'password') === 'password' && isExchangeOnline(form.smtpHost) && (
+              <Callout tone="warning" title="Microsoft 365 is retiring password sign-in for SMTP">
+                Microsoft disables Basic authentication (user name and password) for SMTP AUTH by default for existing tenants at the end of December
+                2026; administrators can re-enable it only until it is removed, and new tenants do not offer it. Alert e-mails through{' '}
+                <span className="mono">{form.smtpHost.trim()}</span> will then fail. Switch Sign-in to <strong>Microsoft 365 OAuth2</strong>.
+              </Callout>
+            )}
             {form.smtpAuth === 'none' && (
               <p className="-mt-2 text-xs text-fg-subtle">No authentication — for an internal relay (Exchange receive connector) that accepts mail from this server’s IP address.</p>
             )}

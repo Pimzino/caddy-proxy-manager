@@ -231,11 +231,13 @@ public sealed partial class CaddyConfigService(
         {
             try
             {
+                await ReleaseZeroRttQuicListenersAsync(target, json, ct);
                 await target.LoadAsync(json, ct);
                 logger.LogInformation("Configuration loaded into Caddy ({Reason})", reason);
             }
             catch (CaddyAdminException ex)
             {
+                await RestoreAdminEndpointAsync(target, json, ct);
                 return await FailAsync(reason, json, ex.Message, warnings);
             }
             catch (HttpRequestException ex)
@@ -373,14 +375,123 @@ public sealed partial class CaddyConfigService(
     {
         var candidates = new List<string> { settings.AdminListen };
         var running = ReadAdminListen(paths.CaddyConfigFile);
-        if (running is not null && !string.Equals(running, settings.AdminListen, StringComparison.OrdinalIgnoreCase))
+        if (running is not null && !candidates.Contains(running, StringComparer.OrdinalIgnoreCase))
             candidates.Add(running);
+        // A rejected load still moves Caddy's admin endpoint to the rejected config's address (see
+        // RestoreAdminEndpointAsync); if that restore never happened (manager restarted, Caddy busy), Caddy is there.
+        if (LastRevisionAdminListenIfFailed() is { } stranded && !candidates.Contains(stranded, StringComparer.OrdinalIgnoreCase))
+            candidates.Add(stranded);
         foreach (var c in candidates)
         {
             var client = admin.ForAddress(c);
             if (await client.IsReachableAsync(ct)) return client;
         }
         return null;
+    }
+
+    /// <summary>
+    /// After Caddy rejected a config whose admin address differs from the one used: Caddy swaps its admin endpoint
+    /// BEFORE provisioning the apps and does not restore it when provisioning fails (the old apps keep running), so
+    /// the admin API now listens on the rejected config's address while caddy.json and the settings keep the old one.
+    /// Re-load the last good config through the new address to move the admin endpoint back.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (provisionContext: replaceLocalAdminServer)
+    /// </summary>
+    private async Task RestoreAdminEndpointAsync(CaddyAdminClient used, string rejectedJson, CancellationToken ct)
+    {
+        try
+        {
+            var rejectedListen = (JsonNode.Parse(rejectedJson) as JsonObject)?["admin"]?["listen"]?.GetValue<string>();
+            if (rejectedListen is null) return;
+            string rejectedBase;
+            try { rejectedBase = CaddyAdminClient.BaseUrlFor(rejectedListen); }
+            catch (CaddyAdminException) { return; }
+            if (string.Equals(rejectedBase, used.BaseUrl, StringComparison.OrdinalIgnoreCase)) return;
+            if (await used.IsReachableAsync(ct)) return;
+            var moved = admin.ForAddress(rejectedListen);
+            if (!await moved.IsReachableAsync(ct)) return;
+            if (!File.Exists(paths.CaddyConfigFile))
+            {
+                logger.LogWarning("Caddy moved its admin API to {Address} after rejecting the configuration and no previous configuration exists to restore it", rejectedListen);
+                return;
+            }
+            await moved.LoadAsync(await File.ReadAllTextAsync(paths.CaddyConfigFile, ct), ct);
+            logger.LogWarning("Caddy moved its admin API to {Address} although it rejected the configuration; the last good configuration was re-loaded to restore it", rejectedListen);
+        }
+        catch (Exception ex) when (ex is CaddyAdminException or HttpRequestException or IOException or JsonException or InvalidOperationException)
+        {
+            logger.LogWarning(ex, "Could not restore Caddy's admin endpoint after a rejected configuration");
+        }
+    }
+
+    /// <summary>
+    /// Caddy keeps ONE QUIC listener per address across config reloads and keeps the Allow0RTT it was created with
+    /// (listeners.go ListenQUIC: listenerPool.LoadOrNew), so a new "allow_0rtt": false only takes effect on a fresh
+    /// listener. When the running config serves HTTP/3 with 0-RTT on an address the new config serves with 0-RTT off
+    /// (e.g. after upgrading from a version that did not disable it), the new config is first loaded without HTTP/3
+    /// on those servers, which releases the listener; the real load then creates a new one. Clients use HTTP/2
+    /// meanwhile. https://github.com/caddyserver/caddy/blob/v2.11.4/listeners.go
+    /// </summary>
+    private async Task ReleaseZeroRttQuicListenersAsync(CaddyAdminClient target, string json, CancellationToken ct)
+    {
+        if (!json.Contains("\"allow_0rtt\"", StringComparison.Ordinal)) return;
+        JsonObject? next, running;
+        try
+        {
+            next = JsonNode.Parse(json) as JsonObject;
+            var runningText = await target.GetConfigAsync(ct);
+            running = string.IsNullOrWhiteSpace(runningText) ? null : JsonNode.Parse(runningText) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+        if (next?["apps"]?["http"]?["servers"] is not JsonObject nextServers || running?["apps"]?["http"]?["servers"] is not JsonObject runningServers) return;
+
+        static bool ServesH3(JsonObject srv) =>
+            srv["protocols"] is not JsonArray p || p.Any(x => x?.GetValue<string>() == "h3"); // Caddy's default includes h3
+        static bool ZeroRttOff(JsonObject srv) => srv["allow_0rtt"] is JsonValue v && v.GetValueKind() == JsonValueKind.False;
+        static HashSet<string> Listen(JsonObject srv) =>
+            (srv["listen"] as JsonArray)?.Select(x => x?.GetValue<string>() ?? "").ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
+
+        var affected = new List<string>();
+        foreach (var (name, node) in nextServers)
+        {
+            if (node is not JsonObject srv || !ServesH3(srv) || !ZeroRttOff(srv)) continue;
+            var listen = Listen(srv);
+            if (runningServers.Any(r => r.Value is JsonObject old && ServesH3(old) && !ZeroRttOff(old) && Listen(old).Overlaps(listen)))
+                affected.Add(name);
+        }
+        if (affected.Count == 0) return;
+
+        var interim = (JsonObject)next.DeepClone();
+        // The interim load must keep Caddy's admin API where it is: Caddy moves its admin endpoint to the loaded
+        // config's admin.listen, so an interim copy with a NEW admin address sent the following real load (through
+        // `target`, the old address) into the void, and the interim config (no HTTP/3) stayed live.
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (replaceLocalAdminServer)
+        if (running!["admin"] is JsonNode runningAdmin) interim["admin"] = runningAdmin.DeepClone();
+        else interim.Remove("admin"); // Caddy's default admin address, where it runs now
+        foreach (var name in affected)
+        {
+            var srv = interim["apps"]!["http"]!["servers"]![name]!.AsObject();
+            srv["protocols"] = new JsonArray((srv["protocols"] as JsonArray)?.Select(x => x?.GetValue<string>()).Where(p => p is not null && p != "h3").Select(p => (JsonNode)p!).ToArray() ?? [JsonValue.Create("h1")!, JsonValue.Create("h2")!]);
+        }
+        logger.LogInformation("Re-creating Caddy's HTTP/3 listener so that 0-RTT is disabled ({Servers})", string.Join(", ", affected));
+        await target.LoadAsync(interim.ToJsonString(), ct);
+    }
+
+    /// <summary>The admin address of the most recent config revision when that revision was rejected, else null.</summary>
+    private string? LastRevisionAdminListenIfFailed()
+    {
+        try
+        {
+            var last = store.Col<ConfigRevision>().Query().OrderByDescending(r => r.CreatedAt).Limit(1).ToList().FirstOrDefault();
+            if (last is null || last.Success || string.IsNullOrWhiteSpace(last.Json)) return null;
+            return (JsonNode.Parse(last.Json) as JsonObject)?["admin"]?["listen"]?.GetValue<string>();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static string? ReadAdminListen(string file)

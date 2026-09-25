@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace CaddyManager.Config.Admin;
 
 /// <summary>Client for Caddy's admin API (http://&lt;AdminListen&gt;).</summary>
-public sealed class CaddyAdminClient : ICaddyAdminClient
+public sealed partial class CaddyAdminClient : ICaddyAdminClient
 {
     public const string HttpClientName = "caddy-admin";
     private static readonly TimeSpan ReachabilityTimeout = TimeSpan.FromSeconds(3);
@@ -186,7 +186,25 @@ public sealed class CaddyAdminClient : ICaddyAdminClient
         return where + (string.IsNullOrEmpty(directive) ? "" : $"{directive}: ") + message;
     }
 
-    public async Task<List<UpstreamHealth>> GetUpstreamsAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Upstreams whose health a health check actually measures (see <see cref="GetUpstreamStatusAsync"/>), for the
+    /// dashboard and the upstream-down alert. An upstream without any check is left out: Caddy reports it healthy
+    /// whatever its state (Upstream.Healthy() is true without active or passive checks), so listing it would claim a
+    /// health nobody measured.
+    /// </summary>
+    public async Task<List<UpstreamHealth>> GetUpstreamsAsync(CancellationToken ct = default) =>
+        (await GetUpstreamStatusAsync(ct)).Where(u => u.Monitored)
+            .Select(u => new UpstreamHealth { Address = u.Address, NumRequests = u.NumRequests, Fails = u.Fails, Healthy = u.Healthy })
+            .ToList();
+
+    /// <summary>
+    /// Every upstream Caddy knows, with whether a health check monitors it: an active check on a reverse_proxy that
+    /// uses the address, or passive checks (fail_duration set) there. The manager itself generates no passive checks
+    /// (one request could mark every upstream down), so an upstream without an active check is not monitored unless an
+    /// administrator added passive checks in advanced routes.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/hosts.go (Upstream.Healthy)
+    /// </summary>
+    public async Task<List<UpstreamStatus>> GetUpstreamStatusAsync(CancellationToken ct = default)
     {
         try
         {
@@ -195,20 +213,103 @@ public sealed class CaddyAdminClient : ICaddyAdminClient
             var body = await resp.Content.ReadAsStringAsync(cts.Token);
             if (!resp.IsSuccessStatusCode)
                 throw new CaddyAdminException($"Caddy admin API returned {(int)resp.StatusCode}: {ExtractError(body)}");
-            return ParseUpstreams(body);
+            var metric = await GetUpstreamHealthMetricAsync(cts.Token);
+            var monitored = MonitoredUpstreams(await GetConfigAsync(cts.Token));
+            return ParseUpstreams(body, metric)
+                .Select(u => new UpstreamStatus(u.Address, u.NumRequests, u.Fails, u.Healthy, monitored.Contains(u.Address)))
+                .ToList();
         }
         catch (HttpRequestException ex)
         {
             _logger.LogDebug(ex, "Caddy admin API not reachable at {Url}", BaseUrl);
-            return new List<UpstreamHealth>();
+            return new List<UpstreamStatus>();
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return new List<UpstreamHealth>();
+            return new List<UpstreamStatus>();
         }
     }
 
-    internal static List<UpstreamHealth> ParseUpstreams(string body)
+    /// <summary>
+    /// Dial addresses of every reverse_proxy (generated, advanced routes or Caddyfile) that has an active health check
+    /// or passive checks with a fail_duration (Caddy ignores passive settings without it, healthchecks.go countFailure).
+    /// </summary>
+    internal static HashSet<string> MonitoredUpstreams(string? configJson)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(configJson)) return set;
+        JsonNode? root;
+        try { root = JsonNode.Parse(configJson); }
+        catch (JsonException) { return set; }
+        Walk(root);
+        return set;
+
+        void Walk(JsonNode? n)
+        {
+            switch (n)
+            {
+                case JsonObject o:
+                    if (o["handler"] is JsonValue hv && hv.GetValueKind() == JsonValueKind.String && hv.GetValue<string>() == "reverse_proxy"
+                        && o["health_checks"] is JsonObject hc
+                        && (hc["active"] is JsonObject || (hc["passive"] is JsonObject p && p["fail_duration"] is JsonNode fd && fd.ToJsonString() is not ("0" or "\"0s\"" or "\"\"")))
+                        && o["upstreams"] is JsonArray ups)
+                    {
+                        foreach (var u in ups)
+                            if (u?["dial"] is JsonValue d && d.GetValueKind() == JsonValueKind.String) set.Add(d.GetValue<string>());
+                    }
+                    foreach (var (_, v) in o) Walk(v);
+                    break;
+                case JsonArray a:
+                    foreach (var v in a) Walk(v);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// caddy_reverse_proxy_upstreams_healthy per upstream address from the admin /metrics endpoint (Prometheus text),
+    /// or an empty map when it cannot be read. Each reverse_proxy handler sets it every 10 s from Upstream.Healthy(),
+    /// which combines ACTIVE health checks with the passive failure count (fails &lt; max_fails) - the only place Caddy
+    /// exposes active health. /reverse_proxy/upstreams only has address, num_requests and fails (passive).
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/metrics.go ;
+    /// https://caddyserver.com/docs/api#get-reverse_proxyupstreams
+    /// </summary>
+    private async Task<Dictionary<string, bool>> GetUpstreamHealthMetricAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await Client().GetAsync(Url("/metrics"), ct);
+            if (!resp.IsSuccessStatusCode) return new();
+            return ParseUpstreamHealthMetric(await resp.Content.ReadAsStringAsync(ct));
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogDebug(ex, "Caddy metrics not readable at {Url}", BaseUrl);
+            return new();
+        }
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^caddy_reverse_proxy_upstreams_healthy\{[^}]*upstream=""((?:[^""\\]|\\.)*)""[^}]*\}\s+(\S+)", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex UpstreamHealthyMetric();
+
+    internal static Dictionary<string, bool> ParseUpstreamHealthMetric(string metrics)
+    {
+        var map = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (System.Text.RegularExpressions.Match m in UpstreamHealthyMetric().Matches(metrics))
+        {
+            var address = m.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+            if (double.TryParse(m.Groups[2].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+                map[address] = v != 0;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Upstreams with their health: unhealthy when Caddy's healthy metric says so (active checks, or passive failures
+    /// reaching max_fails), or - when no metric is known for the address - when requests to it failed within the passive
+    /// window (fails &gt; 0; Caddy only counts fails for proxies with passive checks).
+    /// </summary>
+    internal static List<UpstreamHealth> ParseUpstreams(string body, IReadOnlyDictionary<string, bool>? healthyMetric = null)
     {
         var list = new List<UpstreamHealth>();
         if (string.IsNullOrWhiteSpace(body) || JsonNode.Parse(body) is not JsonArray arr) return list;
@@ -216,12 +317,11 @@ public sealed class CaddyAdminClient : ICaddyAdminClient
         {
             if (n is not JsonObject o) continue;
             var fails = Int(o["fails"]);
-            var healthy = o["healthy"] is JsonValue hv && hv.GetValueKind() is JsonValueKind.True or JsonValueKind.False
-                ? hv.GetValue<bool>()
-                : fails == 0;
+            var address = o["address"]?.GetValue<string>() ?? "";
+            var healthy = healthyMetric is not null && healthyMetric.TryGetValue(address, out var metric) ? metric : fails == 0;
             list.Add(new UpstreamHealth
             {
-                Address = o["address"]?.GetValue<string>() ?? "",
+                Address = address,
                 NumRequests = Int(o["num_requests"]),
                 Fails = fails,
                 Healthy = healthy,
@@ -265,3 +365,6 @@ public sealed class CaddyAdminClient : ICaddyAdminClient
         return body.Trim();
     }
 }
+
+/// <summary>An upstream with its health and whether a health check monitors it (false = health unknown).</summary>
+public sealed record UpstreamStatus(string Address, int NumRequests, int Fails, bool Healthy, bool Monitored);

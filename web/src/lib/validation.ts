@@ -7,6 +7,8 @@ const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1
 export function isValidHostname(value: string): boolean {
   const v = value.trim();
   if (!v || v.length > 253) return false;
+  // An all-numeric last label is not a host name but a mistyped IP ("10.1", "010.1.1.1"), as on the server.
+  if (/(^|\.)\d+$/.test(v)) return false;
   return HOSTNAME_RE.test(v);
 }
 
@@ -21,6 +23,12 @@ export function isIpv6(value: string): boolean {
   if (doubleColons > 1) return false;
   const parts = v.split(':');
   return parts.length >= 3 && parts.length <= 8;
+}
+
+/** Site domain: host name (optionally with a leading "*." wildcard) or an IP address, as the server accepts. */
+export function isValidSiteDomain(value: string): boolean {
+  const v = value.trim().replace(/^\[(.*)\]$/, '$1');
+  return isValidHostname(v) || isIpv4(v) || isIpv6(v);
 }
 
 /** Upstream host: hostname, IPv4 or IPv6 (with or without brackets). */

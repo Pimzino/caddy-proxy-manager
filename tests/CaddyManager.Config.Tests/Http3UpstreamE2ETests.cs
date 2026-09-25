@@ -64,7 +64,8 @@ public sealed class Http3UpstreamE2ETests
         var apply = await s.Config.ApplyAsync("http3 e2e");
         Assert.True(apply.Success, apply.Error + "\n" + caddy.Output); // (5)
 
-        var report = new JsonObject { ["caddy"] = caddy.Output.Split('\n').FirstOrDefault(l => l.Contains("version")) ?? "", ["scenarios"] = new JsonArray() };
+        var report = E2EArtifacts.Report(nameof(Http3_client_requests_reach_an_http2_upstream_like_http2_requests));
+        report["scenarios"] = new JsonArray();
         var base_ = $"https://localhost:{httpsPort}";
         var small = RandomNumberGenerator.GetBytes(100);
         var large = RandomNumberGenerator.GetBytes(1024 * 1024 + 17);
@@ -130,7 +131,7 @@ public sealed class Http3UpstreamE2ETests
         var control = await Send("CONTROL: GET over HTTP/3 without the fix", HttpVersion.Version30, HttpMethod.Get, "/api/get-h3-control");
         Assert.True(control.CanHaveBody, "Control did not reproduce the HTTP/3 framing bug; the regression test would not catch it.");
 
-        WriteArtifact("http3-upstream-framing.json", report);
+        E2EArtifacts.Write("http3-upstream-framing.json", report);
         await admin.StopAsync();
     }
 
@@ -172,13 +173,6 @@ public sealed class Http3UpstreamE2ETests
     }
 
     private static string Sha(byte[] b) => Convert.ToHexString(SHA256.HashData(b));
-
-    private static void WriteArtifact(string name, JsonNode report)
-    {
-        var dir = Environment.GetEnvironmentVariable("CPM_E2E_ARTIFACTS") is { Length: > 0 } d ? d : Path.Combine(AppContext.BaseDirectory, "e2e-artifacts");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, name), report.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-    }
 
     /// <summary>
     /// HTTPS backend that only speaks HTTP/2 (like Nutanix Prism's Envoy on 9440) and records, per request, the raw

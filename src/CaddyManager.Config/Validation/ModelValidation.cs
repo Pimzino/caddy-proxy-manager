@@ -93,10 +93,14 @@ public static partial class ModelValidation
                         v.Add("healthCheck.path", "Health check path must start with '/'.");
                     if (h.HealthCheck.IntervalSeconds is < 1 or > 86400) v.Add("healthCheck.intervalSeconds", "Interval must be 1-86400 seconds.");
                     if (h.HealthCheck.TimeoutSeconds is < 1 or > 3600) v.Add("healthCheck.timeoutSeconds", "Timeout must be 1-3600 seconds.");
-                    if (h.HealthCheck.ExpectStatus != 0 && h.HealthCheck.ExpectStatus is < 100 or > 599)
-                        v.Add("healthCheck.expectStatus", "Expected status must be 0 (any 2xx) or 100-599.");
+                    // 1-5 is a status class (3 = any 3xx), as Caddy's expect_status supports.
+                    if (h.HealthCheck.ExpectStatus is not (>= 0 and <= 5) and not (>= 100 and <= 599))
+                        v.Add("healthCheck.expectStatus", "Expected status must be 0 (any 2xx), a class 1-5 (e.g. 3 = any 3xx) or a code 100-599.");
                 }
                 if (HasCrLf(h.UpstreamHostHeader)) v.Add("upstreamHostHeader", "Host header may not contain line breaks.");
+                if (h.UpstreamNtlm && h.AccessListId is not null
+                    && store.Col<AccessList>().FindById(h.AccessListId) is { } ntlmList && ntlmList.Users.Count > 0)
+                    v.Add("accessListId", "This access list asks for a user name and password (basic auth). NTLM/Negotiate logins use the same Authorization header, so Windows authentication cannot work behind it. Use an access list with IP rules only.");
                 ValidateHeaders(v, "requestHeaders", h.RequestHeaders);
                 break;
             case HostKind.Redirect:
@@ -108,7 +112,8 @@ public static partial class ModelValidation
                 else if (!IsAbsolutePath(h.RootPath)) v.Add("rootPath", "Root folder must be an absolute path, e.g. C:\\sites\\example.");
                 break;
             case HostKind.Response:
-                if (h.ResponseStatus is < 100 or > 599) v.Add("responseStatus", "Status must be 100-599.");
+                // 1xx codes are informational; Caddy would send them and then an implicit 200.
+                if (h.ResponseStatus is < 200 or > 599) v.Add("responseStatus", "Status must be 200-599.");
                 if (HasCrLf(h.ResponseContentType)) v.Add("responseContentType", "Content type may not contain line breaks.");
                 break;
         }
@@ -173,7 +178,10 @@ public static partial class ModelValidation
     {
         for (var i = 0; i < ops.Count; i++)
         {
-            if (!NetUtil.IsValidHeaderName(ops[i].Name)) v.Add($"{field}[{i}].name", $"'{ops[i].Name}' is not a valid header name.");
+            if (!NetUtil.IsValidHeaderName(ops[i].Name))
+                v.Add($"{field}[{i}].name", ops[i].Name.Contains('*')
+                    ? $"'{ops[i].Name}' is not allowed: Caddy treats '*' in a header name as a wildcard (\"*\" would delete every header)."
+                    : $"'{ops[i].Name}' is not a valid header name.");
             if (HasCrLf(ops[i].Value)) v.Add($"{field}[{i}].value", "Header values may not contain line breaks.");
         }
     }
@@ -234,6 +242,8 @@ public static partial class ModelValidation
         if (!NetUtil.IsValidPort(s.HttpPort)) v.Add("httpPort", "HTTP port must be 1-65535.");
         if (!NetUtil.IsValidPort(s.HttpsPort)) v.Add("httpsPort", "HTTPS port must be 1-65535.");
         if (s.HttpPort == s.HttpsPort) v.Add("httpsPort", "HTTP and HTTPS ports must differ.");
+        if (s.PublicHttpsPort is int publicPort && !NetUtil.IsValidPort(publicPort))
+            v.Add("publicHttpsPort", "Public HTTPS port must be 1-65535, or empty to use the HTTPS port.");
         if (!NetUtil.IsLoopbackListen(s.AdminListen, out var adminErr)) v.Add("adminListen", adminErr!);
         if (s.LogLevel is null || s.LogLevel.Trim().ToLowerInvariant() is not ("debug" or "info" or "warn" or "error"))
             v.Add("logLevel", "Log level must be debug, info, warn or error.");

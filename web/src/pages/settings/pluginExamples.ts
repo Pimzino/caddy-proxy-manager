@@ -48,6 +48,8 @@ export const ACME_ISSUER_EXAMPLES: JsonExample[] = [
 export const TLS_POLICY_EXAMPLES: JsonExample[] = [
   { label: 'TLS 1.3 only', json: pretty({ protocol_min: 'tls1.3' }) },
   { label: 'TLS 1.2+ with modern curves', json: pretty({ protocol_min: 'tls1.2', curves: ['x25519', 'secp256r1', 'secp384r1'] }) },
+  // Unknown names and IP-only (no SNI) HTTPS requests get this host's certificate, then the default site.
+  { label: 'Answer HTTPS for unknown names and IPs', json: pretty({ fallback_sni: 'app.example.com', default_sni: 'app.example.com' }) },
   {
     label: 'Require client certificates (mTLS)',
     json: pretty({

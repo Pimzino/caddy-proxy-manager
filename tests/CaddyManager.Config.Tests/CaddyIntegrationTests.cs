@@ -397,8 +397,8 @@ public sealed class CaddyIntegrationTests
         using (var r = await Get("internal.test", "/x"))
         {
             Assert.Equal(HttpStatusCode.PermanentRedirect, r.StatusCode);
-            // Caddy omits the port when it equals the configured https_port (it is assumed to be the public port).
-            Assert.Equal("https://internal.test/x", r.Headers.Location!.ToString());
+            // No public HTTPS port configured: clients are sent to HttpsPort (HttpServerE2ETests covers PublicHttpsPort).
+            Assert.Equal($"https://internal.test:{httpsPort}/x", r.Headers.Location!.ToString());
         }
         // ForceHttps=false → served over plain HTTP too
         using (var r = await Get("internal-both.test"))

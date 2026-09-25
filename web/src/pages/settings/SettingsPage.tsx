@@ -123,6 +123,7 @@ function validateCaddy(f: CaddySettingsInput): FieldErrors {
   if (!isValidPort(f.httpPort)) e.httpPort = 'Port must be between 1 and 65535.';
   if (!isValidPort(f.httpsPort)) e.httpsPort = 'Port must be between 1 and 65535.';
   if (isValidPort(f.httpPort) && f.httpPort === f.httpsPort) e.httpsPort = 'HTTP and HTTPS must use different ports.';
+  if (f.publicHttpsPort != null && !isValidPort(f.publicHttpsPort)) e.publicHttpsPort = 'Port must be between 1 and 65535, or leave empty.';
   if (f.defaultSite === 'redirect' && !isAbsoluteHttpUrl(f.defaultRedirectUrl ?? '')) e.defaultRedirectUrl = 'Enter an absolute http(s) URL.';
   if (!/^(\[[0-9a-f:]+\]|[a-z0-9.-]+):\d{1,5}$/i.test(f.adminListen.trim())) e.adminListen = 'Use host:port, e.g. 127.0.0.1:2019.';
   const jsonErr = jsonObjectError(f.serverOptionsJson);
@@ -135,7 +136,7 @@ function validateCaddy(f: CaddySettingsInput): FieldErrors {
 
 /** Field keys the Caddy settings form shows next to a field; other server errors go to a summary. */
 const CADDY_FIELDS = [
-  'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort',
+  'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort', 'publicHttpsPort',
   'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
   ...PLUGIN_FIELDS,
 ];
@@ -176,6 +177,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
         tlsConnectionPolicyJson: form.tlsConnectionPolicyJson?.trim() || null,
         acmeIssuerJson: secretPayload(form.acmeIssuerJson),
         adminListen: form.adminListen.trim(),
+        publicHttpsPort: form.publicHttpsPort == null || Number.isNaN(form.publicHttpsPort) ? null : form.publicHttpsPort,
       });
       feedback.applied(res.apply, 'Settings saved and applied');
     } catch (err) {
@@ -237,7 +239,30 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 <NumberInput min={1} max={65535} value={form.httpsPort} onValueChange={(v) => set('httpsPort', v)} />
               </Field>
             </div>
-            <SwitchField label="HTTP/3 (QUIC)" description={`Optional. Also listen on UDP ${form.httpsPort || 443} for HTTP/3; browsers use HTTP/2 when it is off. Needs an inbound UDP firewall rule. Off by default.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
+            <Field
+              label="Public HTTPS port"
+              error={errors.publicHttpsPort}
+              className="lg:max-w-md"
+              hint="Optional. The port clients use for HTTPS when a router or firewall forwards it to the HTTPS port above (for example public 443 → 8443). Leave empty when clients connect to the HTTPS port directly."
+            >
+              <NumberInput
+                min={1}
+                max={65535}
+                placeholder={isValidPort(form.httpsPort) ? String(form.httpsPort) : ''}
+                value={form.publicHttpsPort}
+                onValueChange={(v) => set('publicHttpsPort', Number.isNaN(v) ? null : v)}
+              />
+            </Field>
+            {(() => {
+              const port = form.publicHttpsPort != null && isValidPort(form.publicHttpsPort) ? form.publicHttpsPort : form.httpsPort;
+              return isValidPort(port) ? (
+                <p className="-mt-2 text-xs text-fg-subtle">
+                  “Force HTTPS” redirects send clients to <span className="mono">{port === 443 ? 'https://host/' : `https://host:${port}/`}</span>
+                  {port === 443 ? ' (no port: 443 is the default).' : '.'}
+                </p>
+              ) : null;
+            })()}
+            <SwitchField label="HTTP/3 (QUIC)" description={`Optional. Also listen on UDP ${form.httpsPort || 443} for HTTP/3; browsers use HTTP/2 when it is off. Needs an inbound UDP firewall rule. Off by default. 0-RTT (early data) stays disabled, so hosts with IP access lists never answer “425 Too Early”.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
             <Field label="Bind addresses" error={fieldError(errors, 'bindAddresses')} hint="Leave empty to listen on all interfaces.">
               <ChipInput
                 value={form.bindAddresses}
@@ -264,9 +289,19 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 <Input mono type="url" placeholder="https://www.example.com" value={form.defaultRedirectUrl ?? ''} onChange={(e) => set('defaultRedirectUrl', e.target.value)} />
               </Field>
             )}
+            <p className="text-xs text-fg-subtle">
+              Over HTTPS the default site is only reached for names that have a certificate. A browser that opens https:// with an unknown name, or
+              with the server’s IP address, gets a TLS error before any site runs: Caddy has no certificate for that name. To answer those requests
+              too, add <span className="mono">{'{"fallback_sni": "app.example.com", "default_sni": "app.example.com"}'}</span> (a name of one of your
+              HTTPS hosts) to the TLS connection policy under Plugins &amp; advanced below; clients then see that host’s certificate and the default
+              site’s response.
+            </p>
           </FormSection>
 
-          <FormSection title="Client IPs" description="When Caddy is behind a load balancer or CDN, trust its X-Forwarded-For header to get the real client IP (used by access lists and logs).">
+          <FormSection
+            title="Client IPs"
+            description="When Caddy is behind a load balancer or CDN, trust its X-Forwarded-For header to get the real client IP (used by access lists, IP-hash load balancing and logs). The header is read strictly from right to left: the client IP is the first address, from the right, that is not a trusted proxy. Addresses a client puts at the left of the header itself are ignored, so list every proxy in front of Caddy (all CDN ranges), or real clients are seen as the last proxy."
+          >
             <Field label="Trusted proxies" error={fieldError(errors, 'trustedProxies')}>
               <ChipInput
                 value={form.trustedProxies}

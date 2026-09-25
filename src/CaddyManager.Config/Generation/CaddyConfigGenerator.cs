@@ -10,7 +10,7 @@ namespace CaddyManager.Config.Generation;
 /// Pure translation of the manager's model (hosts, streams, access lists, certificates, settings) into a
 /// Caddy JSON document. Output is deterministic (stable ordering) so identical input hashes identically.
 /// </summary>
-public static class CaddyConfigGenerator
+public static partial class CaddyConfigGenerator
 {
     public const string HttpsServerName = "srv0";
     public const string HttpServerName = "srv1";
@@ -37,11 +37,22 @@ public static class CaddyConfigGenerator
     public const string ZeroSslDirectory = "https://acme.zerossl.com/v2/DV90";
 
     // Common exploit-probe patterns (SQL injection, path traversal, script injection), minus rules that
-    // break ordinary applications (such as "?next=/path").
+    // break ordinary applications (such as "?next=/path"). path_regexp runs on the unescaped, cleaned path, so a ".."
+    // SEGMENT only survives there next to a backslash or as a double-encoded "%2e%2e"; names that merely contain dots
+    // ("v1.../x", "file..txt") must not match.
     internal const string ExploitPathPattern =
-        @"(?i)(\.\./|\.\.\\|%2e%2e(%2f|%5c|/)|/\.(git|svn|hg|env)(/|$)|/etc/passwd|/proc/self/environ|/wp-config\.php)";
+        @"(?i)((^|[/\\])(\.\.|%2e%2e)([/\\]|%2f|%5c|$)|/\.(git|svn|hg|env)(/|$)|/etc/passwd|/proc/self/environ|/wp-config\.php)";
     internal const string ExploitQueryPattern =
         @"(?i)(union.*select.*\(|union.*all.*select|concat.*\(|[a-z0-9_]=http://|[a-z0-9_]=(\.\.//?)+|(<|%3c).*script.*(>|%3e)|globals(=|\[|%[0-9a-z]{0,2})|_request(=|\[|%[0-9a-z]{0,2})|proc/self/environ|mosconfig_[a-z_]{1,21}(=|%3d)|base64_(en|de)code\(.*\))";
+    /// <summary>
+    /// A ".." path SEGMENT in the RAW request target (before the query), with dots and separators plain, percent-encoded
+    /// or double-encoded, and ";" (Tomcat path parameters, "/..;/"). path_regexp only sees the unescaped, cleaned path
+    /// (path.Clean removes "../"), so "..%2f" and "%2e%2e/" reached upstreams that decode them later. The segment must
+    /// start after a separator, so dotted names such as "/v1.../x" stay allowed.
+    /// https://caddyserver.com/docs/caddyfile/matchers#path-regexp
+    /// </summary>
+    internal const string ExploitRawTraversalPattern =
+        @"(?i)^[^?]*(/|\\|%2f|%5c|%252f|%255c)(\.|%2e|%252e){2}(/|\\|%2f|%5c|%252f|%255c|;|\?|$)";
     internal const string ExploitUserAgentPattern =
         @"(?i)(sqlmap|nikto|masscan|wpscan|acunetix|netsparker|zgrab|dirbuster|havij|nessus|openvas)";
 
@@ -79,7 +90,26 @@ public static class CaddyConfigGenerator
         }
         root["storage"] ??= Storage(paths);
         if (root["logging"] is null) root["logging"] = new JsonObject { ["logs"] = ProcessLoggers(settings, paths, []) };
+        DisableTrustInstall(root);
         return root.ToJsonString();
+    }
+
+    /// <summary>
+    /// Sets install_trust=false on EVERY certificate authority of the pki app (the implicit "local" CA included) unless
+    /// the config sets it. Caddy's PKI app installs each configured CA's root into the OS trust stores at start unless
+    /// install_trust is explicitly false (nil means install). A Caddyfile's `pki { ca corp {...} }` block defines
+    /// further CAs, and `tls internal` - or any site name that does not qualify for a public certificate - provisions
+    /// "local" implicitly (PKI.GetCA). The service runs headless as LocalSystem, so it must never modify trust stores.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddypki/pki.go (Start, GetCA)
+    /// </summary>
+    private static void DisableTrustInstall(JsonObject root)
+    {
+        if (root["apps"] is not JsonObject apps || (apps["http"] is null && apps["tls"] is null && apps["pki"] is null)) return;
+        if (apps["pki"] is not JsonObject pki) apps["pki"] = pki = new JsonObject();
+        if (pki["certificate_authorities"] is not JsonObject cas) pki["certificate_authorities"] = cas = new JsonObject();
+        if (cas["local"] is not JsonObject) cas["local"] = new JsonObject();
+        foreach (var (_, ca) in cas)
+            if (ca is JsonObject o && o["install_trust"] is null) o["install_trust"] = false;
     }
 
     // ------------------------------------------------------------------ full config
@@ -114,7 +144,13 @@ public static class CaddyConfigGenerator
             else
             {
                 httpsSites.Add((site, handler));
-                if (!site.Host.ForceHttps) httpSites.Add((site, handler));
+                // ForceHttps: our own redirect route on the HTTP server. Caddy's automatic redirects are not relied on:
+                // they are only inserted before our catch-all when at least one name gets a MANAGED certificate
+                // (autohttps.go: `if len(uniqueDomainsForCerts) != 0`), so hosts with only custom certificates got
+                // the default site on http://, and their Location never carries a non-443 https_port.
+                // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/autohttps.go
+                // The plain-HTTP copy omits HSTS (RFC 6797 §8.1: ignored over insecure transport).
+                httpSites.Add((site, site.Host.ForceHttps ? HttpsRedirectHandler(s) : HostHandler(site, ctx, plainHttp: true)));
             }
         }
         var httpsRoutes = HostRoutes(httpsSites);
@@ -132,10 +168,16 @@ public static class CaddyConfigGenerator
             };
             var connPolicies = ConnectionPolicies(httpsHosts, ctx);
             if (connPolicies is not null) srv0["tls_connection_policies"] = connPolicies;
-            var autoHttps = AutomaticHttps(sites);
-            if (autoHttps is not null) srv0["automatic_https"] = autoHttps;
+            srv0["automatic_https"] = AutomaticHttps(sites);
             ApplyCommonServerOptions(srv0, s, loggerNames, ctx);
             srv0["protocols"] = s.EnableHttp3 ? new JsonArray("h1", "h2", "h3") : new JsonArray("h1", "h2");
+            // QUIC 0-RTT data arrives before the handshake proves the client address, so remote_ip/client_ip matchers
+            // answer 425 Too Early (some clients never retry), and early data can be replayed.
+            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go (allow_0rtt)
+            if (s.EnableHttp3) srv0["allow_0rtt"] = false;
+            var errorRoutes = HostRoutes(httpsSites.Select(x => (x.Site, ErrorHeadersHandler(x.Site.Host, plainHttp: false))).Where(x => x.Item2 is not null)
+                .Select(x => (x.Site, x.Item2!)).ToList());
+            if (errorRoutes.Count > 0) srv0["errors"] = new JsonObject { ["routes"] = errorRoutes };
             MergeServerOptions(srv0, s, ctx);
             servers[HttpsServerName] = srv0;
         }
@@ -147,7 +189,12 @@ public static class CaddyConfigGenerator
             ["routes"] = httpRoutes,
         };
         ApplyCommonServerOptions(srv1, s, loggerNames, ctx);
-        srv1["protocols"] = new JsonArray("h1", "h2");
+        // HTTP/2 needs TLS; on a plain-HTTP listener Caddy skips "h2" and logs a warning on every load.
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go (protocols)
+        srv1["protocols"] = new JsonArray("h1");
+        var httpErrorRoutes = HostRoutes(httpSites.Where(x => x.Site.Host.Tls == TlsMode.None || !x.Site.Host.ForceHttps)
+            .Select(x => (x.Site, ErrorHeadersHandler(x.Site.Host, plainHttp: true))).Where(x => x.Item2 is not null).Select(x => (x.Site, x.Item2!)).ToList());
+        if (httpErrorRoutes.Count > 0) srv1["errors"] = new JsonObject { ["routes"] = httpErrorRoutes };
         MergeServerOptions(srv1, s, ctx);
         servers[HttpServerName] = srv1;
 
@@ -177,7 +224,10 @@ public static class CaddyConfigGenerator
         MergeExtraApps(apps, s, ctx);
 
         // ---- logging
-        var logs = ProcessLoggers(s, input.Paths, accessLoggers.Keys.Select(k => "http.log.access." + k).ToList());
+        // Access log lines go to the per-host files only; the process log excludes the whole access namespace so that
+        // requests routed to a host whose Host header does not match a logger_names key exactly (e.g. upper case) do
+        // not end up in caddy.log.
+        var logs = ProcessLoggers(s, input.Paths, accessLoggers.Count > 0 ? ["http.log.access"] : []);
         foreach (var (name, (domain, _)) in accessLoggers)
         {
             logs[name] = new JsonObject
@@ -329,20 +379,42 @@ public static class CaddyConfigGenerator
 
     internal static bool IsWildcard(string domain) => domain.StartsWith("*.", StringComparison.Ordinal);
 
+    /// <summary>True when a wildcard such as *.example.com covers the name (exactly one extra label, never the apex).</summary>
+    internal static bool CoveredByWildcard(string name, string wildcard)
+    {
+        if (!IsWildcard(wildcard) || name == wildcard) return false;
+        var dot = name.IndexOf('.');
+        return dot > 0 && !name.StartsWith("*.", StringComparison.Ordinal)
+            && string.Equals(name[(dot + 1)..], wildcard[2..], StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int LabelCount(string domain) => domain.Count(c => c == '.') + 1;
 
     /// <summary>The host's subroute handler (access list, headers, compression, advanced routes, kind handler).</summary>
-    private static JsonObject HostHandler(Site site, Ctx ctx)
+    private static JsonObject HostHandler(Site site, Ctx ctx, bool plainHttp = false)
     {
         var h = site.Host;
         var routes = new JsonArray();
         var stripAuthorization = false;
 
+        // 0. access log: pick the host's logger explicitly. The server's logger_names lookup is an exact,
+        // case-sensitive map lookup on the Host header, so "ECHO.TEST" (routed here case-insensitively) was logged to
+        // the default log instead of this host's file. https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/logging.go
+        if (h.AccessLog)
+            routes.Add(new JsonObject
+            {
+                ["handle"] = new JsonArray(new JsonObject { ["handler"] = "vars", ["access_logger_names"] = new JsonArray(AccessLoggerPrefix + h.Id) }),
+            });
+
         // 1. access list
         if (!string.IsNullOrEmpty(h.AccessListId))
         {
             if (ctx.AccessLists.TryGetValue(h.AccessListId, out var al))
+            {
+                if (h.Kind == HostKind.Proxy && h.UpstreamNtlm && al.Users.Any(u => !string.IsNullOrWhiteSpace(u.Username)))
+                    ctx.Warn($"Host '{site.Domains[0]}': the access list '{al.Name}' asks for a user name and password (basic auth), but NTLM/Negotiate logins also use the Authorization header, so Windows authentication cannot work on this host. Use an access list with IP rules only.");
                 stripAuthorization = AddAccessListRoutes(routes, al, ctx);
+            }
             else
             {
                 // Fail closed: a host that should be protected must never be served openly.
@@ -355,7 +427,7 @@ public static class CaddyConfigGenerator
         if (h.BlockExploits) routes.Add(BlockExploitsRoute());
 
         // 3. HSTS + response headers
-        var headers = ResponseHeadersHandler(h);
+        var headers = ResponseHeadersHandler(h, plainHttp);
         if (headers is not null) routes.Add(new JsonObject { ["handle"] = new JsonArray(headers) });
 
         // 4. compression
@@ -379,7 +451,7 @@ public static class CaddyConfigGenerator
         switch (h.Kind)
         {
             case HostKind.Proxy:
-                AddProxyRoutes(routes, h, site.Domains[0], stripAuthorization, ctx);
+                AddProxyRoutes(routes, site, stripAuthorization, ctx);
                 break;
             case HostKind.Redirect:
                 routes.Add(new JsonObject { ["handle"] = new JsonArray(RedirectHandler(h, site.Domains[0], ctx)) });
@@ -507,6 +579,13 @@ public static class CaddyConfigGenerator
             },
             new JsonObject
             {
+                ["vars_regexp"] = new JsonObject
+                {
+                    ["{http.request.uri}"] = new JsonObject { ["name"] = "cpm_exploit_raw", ["pattern"] = ExploitRawTraversalPattern },
+                },
+            },
+            new JsonObject
+            {
                 ["header_regexp"] = new JsonObject
                 {
                     ["User-Agent"] = new JsonObject { ["name"] = "cpm_exploit_ua", ["pattern"] = ExploitUserAgentPattern },
@@ -515,21 +594,48 @@ public static class CaddyConfigGenerator
         ["handle"] = new JsonArray(Forbidden()),
     };
 
-    private static JsonObject? ResponseHeadersHandler(SiteHost h)
+    private static HeaderOpSet ResponseHeaderOps(SiteHost h, bool plainHttp)
     {
         var ops = HeaderOps(h.ResponseHeaders);
-        if (h.Hsts && h.Tls != TlsMode.None)
+        if (h.Hsts && h.Tls != TlsMode.None && !plainHttp)
         {
             var value = $"max-age={Math.Max(0, h.HstsMaxAgeSeconds)}" + (h.HstsSubdomains ? "; includeSubDomains" : "");
+            ops.Delete.Remove("Strict-Transport-Security");
+            ops.Add.Remove("Strict-Transport-Security");
             ops.Set["Strict-Transport-Security"] = [value];
         }
-        var obj = ops.ToJson();
+        return ops;
+    }
+
+    private static JsonObject? ResponseHeadersHandler(SiteHost h, bool plainHttp)
+    {
+        var obj = ResponseHeaderOps(h, plainHttp).ToJson();
         if (obj is null) return null;
         // Deferred so the operations also apply to (and override) headers written by upstreams.
         obj["deferred"] = true;
         return new JsonObject { ["handler"] = "headers", ["response"] = obj };
     }
 
+    /// <summary>
+    /// The host's response headers for error responses (401 from basic auth, 502/503 from the proxy, 404 from the file
+    /// server). Deferred header changes "do not take effect if an error occurs later in the middleware chain", so the
+    /// server's error routes apply them again (not deferred); Caddy then writes the error status itself.
+    /// https://caddyserver.com/docs/json/apps/http/servers/routes/handle/headers/response/deferred/
+    /// </summary>
+    private static JsonObject? ErrorHeadersHandler(SiteHost h, bool plainHttp)
+    {
+        var obj = ResponseHeaderOps(h, plainHttp).ToJson();
+        return obj is null ? null : new JsonObject { ["handler"] = "headers", ["response"] = obj };
+    }
+
+    /// <summary>
+    /// Header operations. Caddy applies a handler's operations in a FIXED order (add, then set, then delete), not in
+    /// the order the user listed them, so the list is folded here into the equivalent final state per header:
+    /// "delete X, add X: v" becomes "set X: v" and "set X: a, add X: b" becomes "set X: [a, b]", which Caddy sends
+    /// as ONE comma-joined field line "X: a,b" (equivalent for list-valued fields, RFC 9110 §5.3; not for Set-Cookie,
+    /// which cannot be expressed as set-then-add in one handler).
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/headers/headers.go (ApplyTo)
+    /// </summary>
     private sealed class HeaderOpSet
     {
         public SortedDictionary<string, List<string>> Set { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -561,16 +667,26 @@ public static class CaddyConfigGenerator
         {
             if (!NetUtil.IsValidHeaderName(op.Name)) continue;
             var name = op.Name.Trim();
+            var value = op.Value ?? "";
             switch (op.Action)
             {
                 case HeaderAction.Set:
-                    set.Set[name] = [op.Value ?? ""];
+                    set.Add.Remove(name);
+                    set.Delete.Remove(name);
+                    set.Set[name] = [value];
                     break;
                 case HeaderAction.Add:
-                    if (!set.Add.TryGetValue(name, out var list)) set.Add[name] = list = new();
-                    list.Add(op.Value ?? "");
+                    if (set.Set.TryGetValue(name, out var setValues)) setValues.Add(value);
+                    else if (set.Delete.Remove(name)) set.Set[name] = [value];
+                    else
+                    {
+                        if (!set.Add.TryGetValue(name, out var list)) set.Add[name] = list = new();
+                        list.Add(value);
+                    }
                     break;
                 case HeaderAction.Delete:
+                    set.Set.Remove(name);
+                    set.Add.Remove(name);
                     set.Delete.Add(name);
                     break;
             }
@@ -604,6 +720,7 @@ public static class CaddyConfigGenerator
                 if (item is JsonObject o) list.Add(o.DeepClone());
                 else ctx.Warn($"Host '{label}': an advanced route entry is not a JSON object and was ignored.");
             }
+            WarnUnderscoreHeaderMatchers(arr, label, ctx);
             return list;
         }
         catch (JsonException ex)
@@ -613,10 +730,39 @@ public static class CaddyConfigGenerator
         }
     }
 
+    /// <summary>
+    /// Caddy v2.11.4 drops every client request header whose name contains "_" before any handler runs
+    /// (GHSA-f59h-q822-g45g), so header / header_regexp matchers on such names never match. Headers the host SETS for
+    /// the upstream are applied later and still go out.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go ; https://github.com/caddyserver/caddy/releases/tag/v2.11.4
+    /// </summary>
+    private static void WarnUnderscoreHeaderMatchers(JsonNode node, string label, Ctx ctx)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var (key, value) in o)
+                {
+                    if (key is "header" or "header_regexp" && value is JsonObject headers)
+                        foreach (var (name, _) in headers)
+                            if (name.Contains('_'))
+                                ctx.Warn($"Host '{label}': an advanced route matches the request header '{name}', but Caddy drops client request headers whose names contain an underscore, so it never matches. Use the hyphenated name if the client can send it.");
+                    if (value is not null) WarnUnderscoreHeaderMatchers(value, label, ctx);
+                }
+                break;
+            case JsonArray a:
+                foreach (var item in a)
+                    if (item is not null) WarnUnderscoreHeaderMatchers(item, label, ctx);
+                break;
+        }
+    }
+
     // ------------------------------------------------------------------ kind handlers
 
-    private static void AddProxyRoutes(JsonArray routes, SiteHost h, string label, bool stripAuthorization, Ctx ctx)
+    private static void AddProxyRoutes(JsonArray routes, Site site, bool stripAuthorization, Ctx ctx)
     {
+        var h = site.Host;
+        var label = site.Domains[0];
         var locations = h.Locations
             .Select(l => (Location: l, Path: NormalizeLocationPath(l.Path)))
             .OrderByDescending(x => x.Path.Length)
@@ -633,7 +779,7 @@ public static class CaddyConfigGenerator
             var handles = new JsonArray();
             if (loc.StripPrefix && path != "/")
                 handles.Add(new JsonObject { ["handler"] = "rewrite", ["strip_path_prefix"] = path });
-            handles.Add(ReverseProxy(ups, loc.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: false, label, ctx));
+            handles.Add(ReverseProxy(ups, loc.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: false, site, ctx));
             var match = path == "/" ? StringArray(["/*"]) : StringArray([path, path + "/*"]);
             routes.Add(new JsonObject
             {
@@ -659,7 +805,7 @@ public static class CaddyConfigGenerator
         }
         routes.Add(new JsonObject
         {
-            ["handle"] = new JsonArray(ReverseProxy(upstreams, h.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: true, label, ctx)),
+            ["handle"] = new JsonArray(ReverseProxy(upstreams, h.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: true, site, ctx)),
         });
     }
 
@@ -696,9 +842,11 @@ public static class CaddyConfigGenerator
     internal const int Http3RequestBufferBytes = 4096;
 
     private static JsonObject ReverseProxy(List<Upstream> upstreams, bool insecure, SiteHost h, bool stripAuthorization,
-        bool includeHealthCheck, string label, Ctx ctx)
+        bool includeHealthCheck, Site site, Ctx ctx)
     {
+        var label = site.Domains[0];
         var rp = new JsonObject { ["handler"] = "reverse_proxy" };
+        var keepClientHost = string.IsNullOrWhiteSpace(h.UpstreamHostHeader);
 
         var request = HeaderOps(h.RequestHeaders);
         if (!string.IsNullOrWhiteSpace(h.UpstreamHostHeader))
@@ -728,6 +876,7 @@ public static class CaddyConfigGenerator
         }
 
         var https = upstreams.Any(u => u.Scheme == UpstreamScheme.Https);
+        var sniNames = https && insecure && keepClientHost ? site.Domains.Where(d => !IsWildcard(d)).ToList() : [];
         var ntlm = h.UpstreamNtlm && NtlmAvailable(label, ctx);
         if (https || ntlm)
         {
@@ -738,7 +887,17 @@ public static class CaddyConfigGenerator
                 if (upstreams.Any(u => u.Scheme == UpstreamScheme.Http))
                     ctx.Warn($"Host '{label}': upstreams mix http and https; Caddy uses one transport per proxy, so all are contacted over HTTPS.");
                 var tls = new JsonObject();
-                if (insecure) tls["insecure_skip_verify"] = true;
+                if (insecure)
+                {
+                    tls["insecure_skip_verify"] = true;
+                    // SNI defaults to the dial host (none at all for an IP), while Host carries the client's name; IIS
+                    // SNI bindings and Apache/nginx name-based vhosts pick the site by SNI and may answer 421 or the
+                    // wrong site. With verification off the name only selects the site, so the host's name is sent.
+                    // (With verification on the dial name must stay, or an internal certificate would fail to verify.)
+                    // A host with ONE exact name sets it here; hosts with several names get one proxy per name (see
+                    // PerNameSni below).
+                    if (sniNames is [var only] && site.Domains.Count == 1) tls["server_name"] = only;
+                }
                 transport["tls"] = tls;
             }
             rp["transport"] = transport;
@@ -754,6 +913,17 @@ public static class CaddyConfigGenerator
             rp["load_balancing"] = lb;
         }
 
+        // No passive health checks. Caddy counts EVERY proxy error as a passive failure, including a backend dropping
+        // one request's connection, and retries a GET on every upstream within try_duration, so a single request that
+        // makes the backends drop the connection marked all of them down and the whole host answered 503 for the
+        // fail_duration (repeatable by anyone). Unhealthy upstreams are detected by the optional active check instead
+        // (then reported; otherwise "not monitored", CaddyAdminClient.GetUpstreamStatusAsync).
+        // https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#passive-health-checks ;
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/reverseproxy.go (countFailure)
+        var healthChecks = new JsonObject();
+        if (includeHealthCheck && upstreams.Count > 1 && !h.HealthCheck.Enabled
+            && h.LoadBalancing is LoadBalancingPolicy.First or LoadBalancingPolicy.IpHash or LoadBalancingPolicy.UriHash or LoadBalancingPolicy.Cookie)
+            ctx.Warn($"Host '{label}': with the {h.LoadBalancing} load-balancing policy and no active health check, Caddy keeps choosing an upstream that is down, so its share of requests fails. Enable the active health check (Details tab) so a dead upstream is skipped.");
         if (includeHealthCheck && h.HealthCheck.Enabled)
         {
             var hc = h.HealthCheck;
@@ -765,14 +935,48 @@ public static class CaddyConfigGenerator
                 ["interval"] = $"{Math.Max(1, hc.IntervalSeconds)}s",
                 ["timeout"] = $"{Math.Max(1, hc.TimeoutSeconds)}s",
             };
+            // 1-5 = any status of that class (e.g. 3 = 3xx); Caddy's StatusCodeMatches supports classes.
             if (hc.ExpectStatus > 0) active["expect_status"] = hc.ExpectStatus;
-            rp["health_checks"] = new JsonObject { ["active"] = active };
+            // Active checks send the upstream address as Host and do not apply the proxy's header operations, so a
+            // backend that routes by Host (IIS bindings, appliances redirecting IP access) failed its check and the
+            // host answered 503. Send the Host that proxied requests carry. Request placeholders are unavailable here.
+            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/healthchecks.go
+            var healthHost = HealthCheckHost(h, site);
+            if (healthHost is not null) active["headers"] = new JsonObject { ["Host"] = new JsonArray(healthHost) };
+            healthChecks["active"] = active;
         }
+        if (healthChecks.Count > 0) rp["health_checks"] = healthChecks;
 
         var ups = new JsonArray();
         foreach (var u in upstreams) ups.Add(new JsonObject { ["dial"] = NetUtil.HostPort(u.Host, u.Port) });
         rp["upstreams"] = ups;
-        return rp;
+        return sniNames.Count > 0 && site.Domains.Count > 1 ? PerNameSni(rp, sniNames) : rp;
+    }
+
+    /// <summary>
+    /// One reverse_proxy per exact name, each sending that name as TLS SNI, and a last one without server_name for
+    /// the host's wildcard names. A single proxy cannot do this: a request-time "{http.request.host}" server_name is
+    /// only evaluated when a connection is DIALLED, and the transport pools connections per upstream address, not per
+    /// SNI, so a connection opened for a.test was reused for b.test and strict upstreams answered 421 Misdirected
+    /// Request. Every handler has its own transport, so its own connection pool.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/httptransport.go (DialTLSContext)
+    /// </summary>
+    private static JsonObject PerNameSni(JsonObject rp, List<string> names)
+    {
+        var routes = new JsonArray();
+        foreach (var name in names)
+        {
+            var clone = (JsonObject)rp.DeepClone();
+            clone["transport"]!["tls"]!["server_name"] = name;
+            routes.Add(new JsonObject
+            {
+                ["match"] = new JsonArray(new JsonObject { ["host"] = new JsonArray(name) }),
+                ["handle"] = new JsonArray(clone),
+                ["terminal"] = true,
+            });
+        }
+        routes.Add(new JsonObject { ["handle"] = new JsonArray(rp) });
+        return new JsonObject { ["handler"] = "subroute", ["routes"] = routes };
     }
 
     /// <summary>True when the installed binary has the http_ntlm transport; otherwise warns (the flag is skipped).</summary>
@@ -786,36 +990,193 @@ public static class CaddyConfigGenerator
         return false;
     }
 
+    /// <summary>The Host header for active health checks, or null to keep Caddy's default (the upstream address).</summary>
+    private static string? HealthCheckHost(SiteHost h, Site site)
+    {
+        var configured = h.UpstreamHostHeader?.Trim();
+        if (!string.IsNullOrEmpty(configured))
+            return configured.Contains('{') ? null : configured; // "{upstream}" = the default; other placeholders are request-bound
+        return site.Domains.FirstOrDefault(d => !IsWildcard(d));
+    }
+
     public static string PolicyName(LoadBalancingPolicy p) => p switch
     {
         LoadBalancingPolicy.RoundRobin => "round_robin",
         LoadBalancingPolicy.Random => "random",
         LoadBalancingPolicy.LeastConn => "least_conn",
-        LoadBalancingPolicy.IpHash => "ip_hash",
+        // ip_hash hashes the immediate peer, so behind a load balancer every client landed on one upstream.
+        // client_ip_hash uses the client IP from trusted proxies and equals ip_hash without them.
+        // https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#load-balancing
+        LoadBalancingPolicy.IpHash => "client_ip_hash",
         LoadBalancingPolicy.First => "first",
         LoadBalancingPolicy.Cookie => "cookie",
         LoadBalancingPolicy.UriHash => "uri_hash",
         _ => "round_robin",
     };
 
+    /// <summary>
+    /// 308 to the same host and URI over HTTPS on the PUBLIC HTTPS port: CaddySettings.PublicHttpsPort (the port
+    /// clients reach, e.g. 443 forwarded by NAT to an internal 8443), or HttpsPort when it is not set. Port 443 is
+    /// omitted. Caddy's own redirect cannot express this ("https_port ... is for internal use only", autohttps.go).
+    /// The host comes from the Host header with any port removed but IPv6 brackets kept: {http.request.host} strips the
+    /// brackets (net.SplitHostPort), which turned "[::1]:8080" into "https://::1:8443/". {http.request.uri} keeps the
+    /// path escaped as the client sent it (URL.RequestURI).
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/replacer.go ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/autohttps.go
+    /// </summary>
+    private static JsonObject HttpsRedirectHandler(CaddySettings s)
+    {
+        static JsonObject To(string location) => new()
+        {
+            ["handler"] = "static_response",
+            ["status_code"] = 308,
+            ["headers"] = new JsonObject { ["Location"] = new JsonArray(location) },
+            ["close"] = true,
+        };
+        var port = PublicHttpsPort(s);
+        var portPart = port == 443 ? "" : ":" + port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return new JsonObject
+        {
+            ["handler"] = "subroute",
+            ["routes"] = new JsonArray(
+                new JsonObject
+                {
+                    ["match"] = new JsonArray(new JsonObject
+                    {
+                        ["vars_regexp"] = new JsonObject
+                        {
+                            ["{http.request.hostport}"] = new JsonObject { ["name"] = "cpm_redir_host", ["pattern"] = @"^(\[[^\]]+\]|[^:\[\]]+)(:[0-9]*)?$" },
+                        },
+                    }),
+                    ["handle"] = new JsonArray(To("https://{http.regexp.cpm_redir_host.1}" + portPart + "{http.request.uri}")),
+                    ["terminal"] = true,
+                },
+                // Anything else (not a well-formed Host): Caddy's host placeholder.
+                new JsonObject { ["handle"] = new JsonArray(To("https://{http.request.host}" + portPart + "{http.request.uri}")) }),
+        };
+    }
+
+    /// <summary>The HTTPS port clients use: PublicHttpsPort when set (NAT/port forwarding), else HttpsPort.</summary>
+    internal static int PublicHttpsPort(CaddySettings s) => s.PublicHttpsPort is int p && NetUtil.IsValidPort(p) ? p : s.HttpsPort;
+
+    /// <summary>
+    /// Escapes braces in user text that Caddy would otherwise read as placeholders: static_response header values
+    /// go through ReplaceAll, which turns unknown "{...}" into an empty string. Real placeholders ({http.*}, {env.*},
+    /// {system.*}, {time.*}, {file.*}) are kept. https://caddyserver.com/docs/conventions#placeholders
+    /// </summary>
+    internal static string EscapeLiteralBraces(string value) =>
+        PlaceholderToken().Replace(value, m => IsCaddyPlaceholder(m.Value) ? m.Value : m.Value.Replace("{", "\\{").Replace("}", "\\}"));
+
+    private static bool IsCaddyPlaceholder(string token) =>
+        token.Length > 2 && token[1..^1] is var name && name.Length > 0
+        && new[] { "http.", "env.", "system.", "time.", "file." }.Any(p => name.StartsWith(p, StringComparison.Ordinal))
+        && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' || c is '_' || c is '-' || c is ':' || c is '/');
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\{[^{}]*\}|[{}]", System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex PlaceholderToken();
+
     private static JsonObject RedirectHandler(SiteHost h, string label, Ctx ctx)
     {
         var target = (h.RedirectTarget ?? "").Trim();
         if (!NetUtil.IsHttpUrl(target)) ctx.Warn($"Host '{label}': redirect target '{target}' is not an absolute http(s) URL.");
-        if (h.PreservePath) target = target.TrimEnd('/') + "{http.request.uri}";
+        target = EscapeLiteralBraces(target);
         var code = h.RedirectCode is 301 or 302 or 303 or 307 or 308 ? h.RedirectCode : 301;
-        return new JsonObject
+        JsonObject To(string location) => new()
         {
             ["handler"] = "static_response",
             ["status_code"] = code,
-            ["headers"] = new JsonObject { ["Location"] = new JsonArray(target) },
+            ["headers"] = new JsonObject { ["Location"] = new JsonArray(location) },
+        };
+        if (!h.PreservePath) return To(target);
+        var q = target.IndexOf('?');
+        // {http.request.uri} is the request target as sent (escaped path + query, URL.RequestURI).
+        if (q < 0) return To(target.TrimEnd('/') + "{http.request.uri}");
+        // The target has its own query: the request path goes before it, the request's query (if any) after it with
+        // "&". Placeholders cannot express "only if not empty", so requests with and without a query get their own
+        // route. The path must stay ESCAPED: {http.request.uri.path} is the decoded path, so "/x%3Fy%23z" became
+        // "/p/x?y#z?a=1"; it is taken from {http.request.uri} (escaped) with a regexp instead.
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/replacer.go (http.request.uri, .path)
+        var basePath = target[..q].TrimEnd('/');
+        var query = target[(q + 1)..];
+        var queryPart = query.Length == 0 ? "" : "?" + query;
+        JsonObject UriMatch(string name, string pattern) => new()
+        {
+            ["vars_regexp"] = new JsonObject { ["{http.request.uri}"] = new JsonObject { ["name"] = name, ["pattern"] = pattern } },
+        };
+        return new JsonObject
+        {
+            ["handler"] = "subroute",
+            ["routes"] = new JsonArray(
+                new JsonObject
+                {
+                    ["match"] = new JsonArray(UriMatch("cpm_redir_q", @"^([^?]*)\?(.+)$")),
+                    ["handle"] = new JsonArray(To(basePath + "{http.regexp.cpm_redir_q.1}" + (query.Length == 0 ? "?" : queryPart + "&") + "{http.regexp.cpm_redir_q.2}")),
+                    ["terminal"] = true,
+                },
+                new JsonObject
+                {
+                    ["match"] = new JsonArray(UriMatch("cpm_redir_p", @"^([^?]*)")),
+                    ["handle"] = new JsonArray(To(basePath + "{http.regexp.cpm_redir_p.1}" + queryPart)),
+                }),
         };
     }
+
+    /// <summary>
+    /// Request paths a static site never serves: dotfiles/dot-folders (.git, .env, .htpasswd) and IIS web.config, also
+    /// with trailing dots or spaces, which Windows ignores when it opens a file ("web.config." is web.config). Caddy
+    /// itself rejects alternate data streams (":") and 8.3 short names on Windows (fileserver/staticfiles.go ServeHTTP).
+    /// </summary>
+    internal const string StaticHiddenPathPattern = @"(?i)(/\.|/web\.config[. ]*$)";
+    /// <summary>Hidden names inside /.well-known/ (a dotfile or web.config below it).</summary>
+    internal const string StaticHiddenWellKnownPattern = @"(?i)^/\.well-known/(.*/)?(\.|web\.config[. ]*$)";
 
     private static void AddStaticRoutes(JsonArray routes, SiteHost h, string label, Ctx ctx)
     {
         var root = (h.RootPath ?? "").Trim();
-        if (root.Length == 0) ctx.Warn($"Host '{label}': static site has no root folder.");
+        if (root.Length == 0)
+        {
+            // Fail closed: an empty root makes file_server fall back to {http.vars.root}, i.e. "." - the service's
+            // working directory (C:\Windows\System32 for a Windows service).
+            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/fileserver/staticfiles.go
+            ctx.Warn($"Host '{label}': static site has no root folder; requests receive 503.");
+            routes.Add(new JsonObject
+            {
+                ["handle"] = new JsonArray(new JsonObject
+                {
+                    ["handler"] = "static_response",
+                    ["status_code"] = 503,
+                    ["body"] = "503 Service Unavailable - no root folder configured",
+                    ["headers"] = new JsonObject { ["Content-Type"] = new JsonArray("text/plain; charset=utf-8") },
+                }),
+            });
+            return;
+        }
+        // file_server hides nothing by default (only the Caddyfile adapter hides the Caddyfile), so .git/, .env and
+        // web.config were downloadable. Answer 404 for them, except under /.well-known/ (RFC 8615: security.txt,
+        // apple-app-site-association, ...) where only dotfiles inside are hidden. `hide` alone is not enough: it is
+        // case-sensitive, and it matches every component of the absolute path, so ".*" would also hide .well-known.
+        // Matcher sets are OR'ed; the path matcher is case-insensitive.
+        // https://caddyserver.com/docs/caddyfile/directives/file_server ("should not be treated as a security boundary")
+        routes.Add(new JsonObject
+        {
+            ["match"] = new JsonArray(
+                new JsonObject
+                {
+                    ["path_regexp"] = new JsonObject { ["name"] = "cpm_hidden", ["pattern"] = StaticHiddenPathPattern },
+                    ["not"] = new JsonArray(new JsonObject { ["path"] = new JsonArray(WellKnownPath) }),
+                },
+                new JsonObject
+                {
+                    ["path_regexp"] = new JsonObject { ["name"] = "cpm_hidden_wk", ["pattern"] = StaticHiddenWellKnownPattern },
+                }),
+            ["handle"] = new JsonArray(new JsonObject
+            {
+                ["handler"] = "static_response",
+                ["status_code"] = 404,
+                ["body"] = "404 Not Found\n",
+                ["headers"] = new JsonObject { ["Content-Type"] = new JsonArray("text/plain; charset=utf-8") },
+            }),
+        });
         if (h.SpaFallback)
         {
             routes.Add(new JsonObject
@@ -825,20 +1186,38 @@ public static class CaddyConfigGenerator
                     ["file"] = new JsonObject
                     {
                         ["root"] = root,
-                        ["try_files"] = new JsonArray("{http.request.uri.path}", "/index.html"),
+                        // Directories only match a try_files entry that ends in "/", so "/sub/" (with an index.html)
+                        // fell through to the SPA index. https://caddyserver.com/docs/caddyfile/matchers#file
+                        ["try_files"] = new JsonArray("{http.request.uri.path}", "{http.request.uri.path}/", "/index.html"),
                     },
                 }),
                 ["handle"] = new JsonArray(new JsonObject { ["handler"] = "rewrite", ["uri"] = "{http.matchers.file.relative}" }),
             });
         }
+        // /.well-known/ files are served by a file_server without `hide` (the route above already answers 404 for
+        // dotfiles inside it); no directory listing there.
+        routes.Add(new JsonObject
+        {
+            ["match"] = new JsonArray(new JsonObject { ["path"] = new JsonArray(WellKnownPath) }),
+            ["handle"] = new JsonArray(new JsonObject { ["handler"] = "file_server", ["root"] = root }),
+            ["terminal"] = true,
+        });
         var fs = new JsonObject { ["handler"] = "file_server", ["root"] = root };
+        // Also keep dotfiles out of directory listings, unless the root itself lies below a dot-folder (then `hide`
+        // would hide the whole site, as it compares every component of the absolute path).
+        if (!root.Replace('\\', '/').Split('/').Any(c => c.StartsWith('.') && c is not "." and not ".."))
+            fs["hide"] = new JsonArray(".*");
         if (h.Browse) fs["browse"] = new JsonObject();
         routes.Add(new JsonObject { ["handle"] = new JsonArray(fs) });
     }
 
+    private const string WellKnownPath = "/.well-known/*";
+
     private static JsonObject ResponseHandler(SiteHost h)
     {
-        var status = h.ResponseStatus is >= 100 and <= 999 ? h.ResponseStatus : 200;
+        // 1xx codes are informational: Caddy sends them and then an implicit 200 (103 even continues the chain).
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/staticresp.go
+        var status = h.ResponseStatus is >= 200 and <= 599 ? h.ResponseStatus : 200;
         var o = new JsonObject { ["handler"] = "static_response", ["status_code"] = status };
         if (!string.IsNullOrEmpty(h.ResponseBody)) o["body"] = h.ResponseBody;
         var ct = string.IsNullOrWhiteSpace(h.ResponseContentType) ? "text/plain; charset=utf-8" : h.ResponseContentType.Trim();
@@ -859,7 +1238,7 @@ public static class CaddyConfigGenerator
                 {
                     ["handler"] = "static_response",
                     ["status_code"] = 302,
-                    ["headers"] = new JsonObject { ["Location"] = new JsonArray(s.DefaultRedirectUrl!.Trim()) },
+                    ["headers"] = new JsonObject { ["Location"] = new JsonArray(EscapeLiteralBraces(s.DefaultRedirectUrl!.Trim())) },
                 };
                 break;
             case DefaultSiteBehavior.CaddyWelcome:
@@ -899,10 +1278,21 @@ public static class CaddyConfigGenerator
     private static void ApplyCommonServerOptions(JsonObject srv, CaddySettings s, SortedDictionary<string, string> loggerNames, Ctx ctx)
     {
         var proxies = s.TrustedProxies.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
-        var valid = proxies.Where(p => NetUtil.IsValidCidr(p) && !p.Equals("all", StringComparison.OrdinalIgnoreCase)).Distinct().ToList();
-        foreach (var bad in proxies.Except(valid)) ctx.Warn($"Trusted proxy '{bad}' is not a valid IP/CIDR and was ignored.");
+        var valid = new List<string>();
+        foreach (var p in proxies)
+        {
+            if (!p.Equals("all", StringComparison.OrdinalIgnoreCase) && NetUtil.NormalizeCidr(p) is { } n) { if (!valid.Contains(n)) valid.Add(n); }
+            else ctx.Warn($"Trusted proxy '{p}' is not a valid IP/CIDR and was ignored.");
+        }
         if (valid.Count > 0)
+        {
             srv["trusted_proxies"] = new JsonObject { ["source"] = "static", ["ranges"] = StringArray(valid) };
+            // Without strict mode Caddy takes the LEFT-most valid X-Forwarded-For entry, which the client controls:
+            // "X-Forwarded-For: 10.1.1.1" sent by an attacker through the proxy passed an allow-10.1.1.1 access list.
+            // Strict mode reads right to left and uses the first address that is not a trusted proxy.
+            // https://caddyserver.com/docs/caddyfile/options#trusted-proxies-strict
+            srv["trusted_proxies_strict"] = 1;
+        }
 
         if (loggerNames.Count > 0)
         {
@@ -949,6 +1339,16 @@ public static class CaddyConfigGenerator
             var exact = site.Domains.Where(d => !IsWildcard(d)).ToList();
             if (exact.Count > 0) arr.Add(SniPolicy(exact, site.Certificate!));
         }
+        // ACME/Internal names covered by a custom wildcard: policies are first-match-wins and the SNI matcher honours
+        // wildcards, so without this policy the custom *.example.com policy would serve them its tagged certificate.
+        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddytls/connpolicy.go
+        var customWildcards = custom.SelectMany(x => x.Domains.Where(IsWildcard)).ToList();
+        var managedUnderCustom = httpsSites.Where(x => x.Host.Tls != TlsMode.Custom)
+            .SelectMany(x => x.Domains)
+            .Where(d => customWildcards.Any(w => CoveredByWildcard(d, w)))
+            .Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
+        if (managedUnderCustom.Count > 0)
+            arr.Add(new JsonObject { ["match"] = new JsonObject { ["sni"] = StringArray(managedUnderCustom) } });
         var wildcardGroups = custom
             .SelectMany(site => site.Domains.Where(IsWildcard).GroupBy(LabelCount)
                 .Select(g => (Depth: g.Key, Domains: g.OrderBy(d => d, StringComparer.Ordinal).ToList(), Site: site)))
@@ -985,14 +1385,23 @@ public static class CaddyConfigGenerator
         return extra.Count == 0 ? null : extra;
     }
 
-    private static JsonObject? AutomaticHttps(List<Site> sites)
+    private static JsonObject AutomaticHttps(List<Site> sites)
     {
         var skip = sites.Where(x => x.Host.Tls == TlsMode.None).SelectMany(x => x.Domains).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
         var skipCerts = sites.Where(x => x.Host.Tls == TlsMode.Custom).SelectMany(x => x.Domains).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
-        if (skip.Count == 0 && skipCerts.Count == 0) return null;
-        var o = new JsonObject();
+        // HTTP->HTTPS redirects are generated explicitly on the HTTP server (see Generate), so the behaviour does not
+        // depend on whether Caddy manages any certificate.
+        var o = new JsonObject { ["disable_redirects"] = true };
         if (skip.Count > 0) o["skip"] = StringArray(skip);
-        if (skipCerts.Count > 0) o["skip_certificates"] = StringArray(skipCerts);
+        if (skipCerts.Count > 0)
+        {
+            o["skip_certificates"] = StringArray(skipCerts);
+            // Otherwise a loaded custom certificate (e.g. *.example.com) silently replaces the managed certificate of
+            // every ACME/Internal host it covers ("skipping automatic certificate management because one or more
+            // matching certificates are already loaded"). Custom names stay unmanaged through skip_certificates.
+            // https://caddyserver.com/docs/automatic-https ; .../v2.11.4/modules/caddyhttp/autohttps.go
+            o["ignore_loaded_certificates"] = true;
+        }
         return o;
     }
 
@@ -1018,6 +1427,28 @@ public static class CaddyConfigGenerator
                 });
             }
             tls["certificates"] = new JsonObject { ["load_files"] = files };
+        }
+
+        // Since v2.10 Caddy serves a managed wildcard for covered subdomains instead of obtaining their own
+        // certificates, unless the name is listed in the "automate" loader (tls.go Manage: managingWildcardFor looks
+        // at the names being managed, not at whether the wildcard was ever issued). So an exact host is forced into
+        // its own certificate when the covering wildcard host uses another TLS mode (ACME vs Internal: it would get
+        // the other host's certificate and issuer), or when the wildcard is ACME without a DNS challenge (a public
+        // wildcard cannot be issued then, and the exact host would never get any certificate).
+        // https://github.com/caddyserver/caddy/releases/tag/v2.10.0 ; .../v2.11.4/modules/caddytls/tls.go (Manage)
+        DnsProviderName(AcmeIssuerExtra(ctx), out var acmeHasDnsChallenge);
+        var managedWildcards = sites.Where(x => x.Host.Tls is TlsMode.Acme or TlsMode.Internal)
+            .SelectMany(x => x.Domains.Where(IsWildcard).Select(w => (Wildcard: w, x.Host.Tls))).ToList();
+        var automate = sites.Where(x => x.Host.Tls is TlsMode.Acme or TlsMode.Internal)
+            .SelectMany(x => x.Domains.Where(d => !IsWildcard(d)).Select(d => (Domain: d, x.Host.Tls)))
+            .Where(x => managedWildcards.Any(w => CoveredByWildcard(x.Domain, w.Wildcard)
+                && (w.Tls != x.Tls || (w.Tls == TlsMode.Acme && !acmeHasDnsChallenge))))
+            .Select(x => x.Domain).Distinct().OrderBy(d => d, StringComparer.Ordinal).ToList();
+        if (automate.Count > 0)
+        {
+            var certsObj = tls["certificates"] as JsonObject ?? new JsonObject();
+            certsObj["automate"] = StringArray(automate);
+            tls["certificates"] = certsObj;
         }
 
         var policies = new JsonArray();

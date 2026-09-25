@@ -237,7 +237,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
             {d.upstreams.unhealthy > 0 ? (
               <span className="font-medium text-danger">{d.upstreams.unhealthy} unhealthy</span>
             ) : (
-              <span className="text-fg-subtle">{d.upstreams.total ? 'All backends responding' : 'No upstreams reported yet'}</span>
+              <span className="text-fg-subtle">{d.upstreams.total ? 'All health-checked backends responding' : 'No health-checked upstreams'}</span>
             )}
           </p>
         </StatCard>
