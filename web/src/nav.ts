@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   Braces,
   Cable,
+  ChartLine,
   ClipboardCheck,
   CornerUpRight,
   FileCode2,
@@ -12,6 +13,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Mail,
+  Network,
   Puzzle,
   ScrollText,
   Server,
@@ -36,7 +38,14 @@ export interface NavGroup {
 }
 
 export const navGroups: NavGroup[] = [
-  { label: 'Overview', items: [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
+  {
+    label: 'Overview',
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+      { to: '/servers', label: 'Servers', icon: Network },
+      { to: '/traffic', label: 'Traffic', icon: ChartLine },
+    ],
+  },
   {
     label: 'Sites',
     items: [

@@ -29,6 +29,18 @@ public static class ApiResults
 
     public static IResult Failed(string title, string detail) =>
         Results.Problem(title: title, detail: detail, statusCode: StatusCodes.Status422UnprocessableEntity);
+
+    public const string ManagedByPrimaryTitle = "Managed by the cluster primary";
+
+    /// <summary>409 answered by mutating endpoints of replicated resources on a managed cluster node (see IClusterRole).</summary>
+    public static IResult ManagedByPrimary(string? primaryName) =>
+        Results.Problem(title: ManagedByPrimaryTitle,
+            detail: $"This server is a node managed by '{(string.IsNullOrWhiteSpace(primaryName) ? "the primary" : primaryName)}'. Make this change on the primary.",
+            statusCode: StatusCodes.Status409Conflict);
+
+    /// <summary>The 409 result when <paramref name="services"/> resolves an IClusterRole that is a managed node; otherwise null.</summary>
+    public static IResult? RejectIfManagedNode(IServiceProvider services) =>
+        services.GetService(typeof(IClusterRole)) is IClusterRole { IsManagedNode: true } role ? ManagedByPrimary(role.PrimaryName) : null;
 }
 
 /// <summary>Collects field validation errors.</summary>

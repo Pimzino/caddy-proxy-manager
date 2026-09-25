@@ -1,5 +1,6 @@
 using System.Reflection;
 using CaddyManager;
+using CaddyManager.Cluster;
 using CaddyManager.Config;
 using CaddyManager.Core;
 using CaddyManager.Core.Infrastructure;
@@ -8,12 +9,14 @@ using CaddyManager.Ops;
 using CaddyManager.Ops.Events;
 using CaddyManager.Ops.Settings;
 using CaddyManager.Platform;
+using CaddyManager.Telemetry;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.EventLog;
 
 // CLI verbs (install / uninstall / reset-password ...) run and exit before the web host starts.
 if (await PlatformCli.TryRunAsync(args) is int platformExit) return platformExit;
 if (await OpsCli.TryRunAsync(args) is int opsExit) return opsExit;
+if (await ClusterCli.TryRunAsync(args) is int clusterExit) return clusterExit;
 
 var paths = new AppPaths();
 paths.EnsureCreated();
@@ -53,7 +56,9 @@ builder.Services
     .AddCore(paths, store)
     .AddConfigModule()
     .AddPlatformModule()
-    .AddOpsModule();
+    .AddOpsModule()
+    .AddTelemetryModule()
+    .AddClusterModule();
 builder.Services.ConfigureHttpJsonOptions(o => JsonDefaults.Configure(o.SerializerOptions));
 builder.Services.AddProblemDetails();
 
@@ -159,6 +164,8 @@ app.MapCoreEndpoints();
 app.MapConfigEndpoints();
 app.MapPlatformEndpoints();
 app.MapOpsEndpoints();
+app.MapTelemetryEndpoints();
+app.MapClusterEndpoints();
 
 app.MapFallback(async ctx =>
 {

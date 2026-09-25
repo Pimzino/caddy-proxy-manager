@@ -33,6 +33,15 @@ public enum TlsMode
     Custom,
 }
 
+/// <summary>Per-host ACME challenge choice.</summary>
+public enum HostAcmeChallenge
+{
+    /// <summary>CaddySettings.DefaultAcmeChallenge (wildcard domains always use DNS when a provider is configured).</summary>
+    Default,
+    Http,
+    Dns,
+}
+
 public enum LoadBalancingPolicy { RoundRobin, Random, LeastConn, IpHash, First, Cookie, UriHash }
 public enum UpstreamScheme { Http, Https }
 public enum HeaderAction { Set, Add, Delete }
@@ -82,6 +91,8 @@ public sealed class SiteHost : Entity
     public TlsMode Tls { get; set; } = TlsMode.Acme;
     /// <summary>Certificate.Id when Tls == Custom.</summary>
     public string? CertificateId { get; set; }
+    /// <summary>ACME challenge for this host (Tls == Acme only).</summary>
+    public HostAcmeChallenge AcmeChallenge { get; set; } = HostAcmeChallenge.Default;
     /// <summary>Redirect HTTP to HTTPS (only meaningful when Tls != None).</summary>
     public bool ForceHttps { get; set; } = true;
     public bool Hsts { get; set; }

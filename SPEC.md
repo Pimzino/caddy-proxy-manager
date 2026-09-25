@@ -329,3 +329,174 @@ role from group membership (no matching group → 403 "not authorised"); `UserDt
   10 minutes after `UpdatedAt` → Warning (alertRule `certificateExpiry`) with the last `tls.obtain`/`tls.issuance`
   error lines from caddy.log; Recovered when issued.
 - Manager behind Caddy: the host uses forwarded headers from loopback proxies only (X-Forwarded-For/Proto).
+
+---
+
+## Round 3 additions (contract): DNS-01, clustering, server details, traffic statistics
+
+Research notes (verified against Caddy v2.11.4 source/docs) that every builder must follow are in
+`docs/research/round3-dns01.md`, `docs/research/round3-cluster.md` and `docs/research/round3-accesslog.md`.
+
+New modules (only depend on Core, like the others): `src/CaddyManager.Cluster` (owner: CLUSTER builder) and
+`src/CaddyManager.Telemetry` (owner: TELEMETRY builder), each with `Add<Module>Module()` / `Map<Module>Endpoints()`,
+plus `ClusterCli.TryRunAsync(args)`. Test projects `tests/CaddyManager.Cluster.Tests`, `tests/CaddyManager.Telemetry.Tests`.
+
+New Core contract (already written — do not change without the lead):
+- Models: `AcmeChallengeType {Http, Dns}`, `StorageBackend {Local, FileSystem, Redis, Custom}`, `HostAcmeChallenge {Default, Http, Dns}`,
+  `SiteHost.AcmeChallenge`, CaddySettings DNS fields (`DefaultAcmeChallenge, DnsProvider, DnsProviderOptions, DnsProviderSecretsProtected,
+  DnsPropagationDelaySeconds, DnsPropagationTimeoutSeconds, DnsTtlSeconds, DnsResolvers, DnsOverrideDomain`), storage fields
+  (`StorageBackend, StoragePath, RedisAddresses, RedisDb, RedisUsername, RedisPasswordProtected, RedisTls, RedisTlsInsecure,
+  RedisKeyPrefix, RedisEncryptionKeyProtected, StorageJsonProtected`), `TrafficStatsEnabled`, `CaddySettings.NodeLocalProperties`,
+  `NotificationSettings.AlertServerOffline` (alertRule `serverOffline`), `AppPaths.StatsLogDir/StatsLogFile`.
+- DTOs (Contracts/Dtos.cs): `ServerInfo, DiskUsage, ResourceSample, TrafficRange, TrafficQuery, TrafficTotals, TrafficPoint,
+  TrafficHostRow, TrafficClientRow, StatusCount, TrafficReport, ClusterRole, ServerStatus, ServerSyncState, ServerSummary, ClusterStatus`.
+- Interfaces: `IConfigChangeFeed` (Config), `ICertificateMaterialStore` (Config), `IClusterRole` (Cluster), `IServerTelemetry` (Telemetry).
+  `ApiResults.ManagedByPrimary(name)` / `ApiResults.RejectIfManagedNode(services)`.
+
+### Settings wire shape additions (`/api/settings/caddy`)
+Standard secret rule: `redisPasswordProtected` → `hasRedisPassword` / `redisPassword`; `redisEncryptionKeyProtected` →
+`hasRedisEncryptionKey` / `redisEncryptionKey`; `storageJsonProtected` → `hasStorageJson` / `storageJson` (text or object).
+DNS provider secrets: output `dnsProviderSecretFields: string[]` (field names that have a value); input
+`dnsProviderSecrets: { [field]: string }` — a key with a non-empty string sets it, `""` removes it, absent keys are unchanged,
+null/absent object = unchanged; `dnsProviderSecretsClear: true` removes all (applied before `dnsProviderSecrets`).
+Changing `dnsProvider` to a different provider clears options and secrets that are not fields of the new provider.
+`storageJson`, `hasStorageJson` and `dnsProviderOptions` are visible to viewers (non-secret); secrets never are.
+
+### DNS-01 (Config module)
+- `GET /api/settings/caddy/dns-providers` (viewer) → `DnsProviderInfo[]`:
+  `{ name, label, package ("github.com/caddy-dns/<name>"), module ("dns.providers.<name>"), docsUrl, installed: bool
+  (module in the installed binary), notes?: string, fields: [{ name, label, secret: bool, required: bool,
+  type: "string"|"number"|"boolean"|"duration", placeholder?, help? }] }` for the 24 providers in the research notes
+  ("duration" fields are entered in seconds and written as integer nanoseconds). Ordered by popularity (cloudflare, route53,
+  azure, digitalocean, ...).
+- Effective challenge of an ACME host: `SiteHost.AcmeChallenge` unless Default → `CaddySettings.DefaultAcmeChallenge`;
+  a wildcard domain on a host with effective Http uses Dns when a provider is configured (warning otherwise, as today).
+- Generation: ACME subjects are split into one automation policy per effective challenge. Dns policies get, on every ACME
+  issuer, `challenges.dns = { provider: { name, ...options (typed per catalog), ...secrets }, ttl?, propagation_delay?,
+  propagation_timeout? (-1 → -1), resolvers? (on every issuer — apps.tls.resolvers is not used by the ACME issuer),
+  override_domain? }` (durations as strings like "30s"). Http policies are unchanged. `AcmeIssuerJson` (advanced) is still
+  deep-merged into every ACME issuer after generation. Warn (ApplyResult warning) when the provider module is not in the
+  installed binary; 400 on PUT settings/host when Dns is selected but no provider is configured or a required field is missing.
+- Secrets must never leak: Caddy errors returned by /load (e.g. Cloudflare's provisioning error contains the token) are
+  scrubbed of every configured secret value (DNS secrets, Redis password/encryption key, storage JSON string values, EAB key)
+  before they reach ApplyResult/ConfigRevision/events/API responses. Viewer config redaction also covers these.
+- Host validation: `acmeChallenge` "dns" requires a configured provider (400 with field error `acmeChallenge`).
+
+### Storage / clustering at the Caddy level (Config module)
+- `storage` in generated + boot + Caddyfile-mode configs: Local → `file_system` root `AppPaths.CaddyStorageDir`;
+  FileSystem → `file_system` root `StoragePath`; Redis → `{ module: "redis", client_type: "simple", address: [...],
+  db, username?, password?, key_prefix, encryption_key?, tls_enabled?, tls_insecure? }` (pberkel/caddy-storage-redis;
+  module `caddy.storage.redis`, plugin `github.com/pberkel/caddy-storage-redis`); Custom → the StorageJson object.
+- PUT validation: FileSystem needs an absolute local or UNC path that the manager can create/write (test file written and
+  removed); Redis needs ≥1 `host:port`; Custom needs an object with a string `module`. When the installed binary is known and
+  lacks the module (`caddy.storage.redis` or the custom module id `caddy.storage.<module>`) → 400 naming the plugin to add.
+- Switching Local → FileSystem copies existing `certificates/`, `acme/`, `pki/` (and `ocsp/`) folders from the old root to
+  the new root when those folders do not exist there yet (keeps issued certificates and the internal CA root). Reported in
+  the ApplyResult warnings.
+- The certificate inventory scans the FileSystem root when that backend is used; for Redis/Custom it lists only custom
+  certificates and adds note "Certificates are kept in <backend> storage".
+
+### Traffic statistics logging (Config module generates, Telemetry module consumes)
+When `TrafficStatsEnabled` (default true) in Managed mode:
+- Every HTTP server gets `logs` (at least `{}`); `skip_unmapped_hosts` is no longer used, so every request is logged to
+  `http.log.access` or a named `http.log.access.<name>` (per-host access logs keep working through their own sinks).
+- A sink `logging.logs.cpm_stats` with `include: ["http.log.access"]`, writer `file` → `AppPaths.StatsLogFile`,
+  `roll_size_mb: 10`, `roll_keep: 5`, `roll_compression: "none"`, `mode: "0600"`, encoder `filter` wrapping `json` that
+  deletes `request>headers`, `resp_headers`, `request>tls` (keep: ts, request.client_ip, request.remote_ip, request.host,
+  request.method, request.proto, request.uri, bytes_read, size, status, duration). `logs.default` must exclude
+  `http.log.access` (it already must not duplicate access logs).
+- Disabled → no `cpm_stats` sink (per-host logs unchanged).
+
+### Telemetry module (IServerTelemetry)
+- Sampler (BackgroundService, every 2 s, ring buffer 10 min): CPU% (Windows GetSystemTimes; Linux /proc/stat; macOS
+  host_statistics), memory (Windows GlobalMemoryStatusEx; Linux /proc/meminfo; macOS host_statistics64 + hw.memsize), disks (the
+  DataDir volume labelled "Data", plus the system drive), network rx/tx per second (NetworkInterface statistics over up,
+  non-loopback interfaces), Caddy process CPU/memory (PID from ICaddyHost status; null when not running), manager process
+  CPU/memory, active connections (IPGlobalProperties established TCP connections whose local port is HttpPort/HttpsPort),
+  requests/second (from ingestion). Never throws; unsupported values are 0/null.
+- `GetInfoAsync` → ServerInfo (Caddy version/state/plugins via ICaddyHost / ICaddyBinaryManager when registered, cached 30 s).
+- Stats ingestion: tails `AppPaths.StatsLogFile` every second, opening with `FileShare.ReadWrite | FileShare.Delete`
+  (otherwise Caddy's rotation rename fails on Windows). Rotation = the path now names a different/new file: drain the old
+  handle to EOF first, then open the new file from 0. Persist the read position (file identity + offset) so a manager restart
+  resumes without double counting. Malformed lines are skipped (counted).
+- Aggregation: host = `request.host` lower-cased without port; client = `request.client_ip` (fallback remote_ip);
+  bytesIn = `bytes_read`, bytesOut = `size`; status buckets 2xx/3xx/4xx/5xx/other(0,1xx); duration seconds.
+  Buckets: minute (server total, keep 48 h), hour (server total + per host, keep 35 d), day (server total + per host,
+  keep 400 d). Unique clients per bucket: exact set up to 1024 IPs then HyperLogLog (p=12, mergeable; counts across buckets
+  merge sketches). Top clients: space-saving top-k (k=200) per day bucket. Status code counts per hour/day bucket.
+  Writes batched (flush ≤ 5 s); LiteDB collections owned by Telemetry.
+- Reports: hour → 60 minute points, day → 24 hourly, week → 168 hourly, month → 30 daily; zero-filled; `Enabled=false` with
+  empty data when stats are disabled. Streams (layer4) and requests rejected before HTTP parsing are not counted (Notes say so).
+
+### Cluster module
+Concepts: this server is **Standalone** (default), **Primary** (has ≥1 node; becomes Standalone when the last is removed) or
+**Node** (joined with a token; managed). The primary pushes configuration to nodes over their manager UI port; Caddy's
+admin API stays on loopback everywhere. Shared Caddy storage (above) makes the nodes one Caddy certificate cluster.
+
+Replicated (primary → node): SiteHost, StreamHost, AccessList, Certificate (+ PEM cert/key content; nodes store them as
+Uploaded through ICertificateMaterialStore, keeping the Id), CaddySettings except `NodeLocalProperties` (secrets travel in
+plain text inside the encrypted envelope and are re-protected by the node), BinarySettings.Plugins. The bundle revision is a
+SHA-256 of its canonical JSON. A node whose installed plugins lack desired ones starts a binary install job (latest with
+plugins) and applies after it finishes. Nodes keep serving with the last applied config when the primary is unreachable.
+
+Security: join token `cpmj1.<base64url(json {v:1, primary: name, nodeId, secret: base64(32 random bytes)})>`, shown once
+(admin can regenerate, which invalidates the previous secret). Primary stores the secret protected (ISecretProtector); the node
+too. Every RPC is `POST /api/cluster/rpc` (anonymous at cookie level, header `X-CPM-Request: 1`) with body
+`{ v:1, nodeId, ts (unix s), nonce (b64 12 bytes), ct (b64 AES-256-GCM ciphertext||tag) }`; key = HKDF-SHA256(secret,
+salt "cpm-cluster-v1", info "aes-256-gcm"); AAD `cpm1|req|<nodeId>|<ts>|<nonce>`; plaintext `{ op, args }`. Response same
+envelope with AAD `cpm1|resp|<nodeId>|<ts>|<nonce>|<requestNonce>`. Reject |now−ts| > 300 s, reused nonces (10 min cache),
+unknown nodeId, decrypt failure → 401 problem (no detail), logged; not a node → 404. Ops: `hello`, `info`, `samples {since}`,
+`traffic {query}`, `sync {bundle}` → `{ appliedRevision, apply: ApplyResult, warnings }`, `caddy.status`, `caddy.restart`,
+`caddy.update {version?}` → JobInfo, `job {id}` → JobInfo, `leave`.
+Node URL may be http or https; https with a self-signed certificate is accepted only when its SHA-256 certificate fingerprint
+matches the one pinned when the node was added/first contacted (TOFU; shown in the UI; admin can re-pin).
+
+Background (primary): heartbeat every 15 s per node (`hello` → info, latest sample, appliedRevision); on IConfigChangeFeed.Applied
+(debounced 2 s) and whenever a node reports a stale revision → `sync`. 3 consecutive failures → Warning event
+`server-offline:<nodeId>` (category "cluster", alertRule `serverOffline`), Recovered on success. Sync failure → Warning
+`server-sync:<nodeId>` (alertRule `configFailure`) with Caddy's (scrubbed) error.
+Node: when `IsManagedNode`, mutations of replicated resources answer `ApiResults.ManagedByPrimary` (409) — Config endpoints
+(hosts, streams, access lists, certificates incl. upload/path/sync/replace, caddy settings except node-local fields,
+caddyfile import/commit) and Platform `PUT /api/caddy/plugins`. Binary install/update, service start/stop, readiness, logs,
+users and UI settings stay local.
+
+Endpoints (all JSON; `{id}` = "local" or a node id):
+| Method | Path | Role | Result |
+|---|---|---|---|
+| GET | /api/cluster | viewer | ClusterStatus |
+| POST | /api/cluster/join | admin | `{ token }` → ClusterStatus (only when Standalone with no nodes; replaces replicated data on next sync; 409 otherwise) |
+| POST | /api/cluster/leave | admin | → ClusterStatus (node → Standalone; keeps the last applied data, now editable) |
+| GET | /api/servers | viewer | ServerSummary[] (local first) |
+| GET | /api/servers/{id} | viewer | ServerSummary (fresh: node queried live with 5 s timeout, falls back to cached heartbeat data) |
+| GET | /api/servers/{id}/samples?since=ISO | viewer | ResourceSample[] (proxied to the node) |
+| GET | /api/servers/{id}/traffic?range=hour\|day\|week\|month&host= | viewer | TrafficReport |
+| POST | /api/servers | admin | `{ name, url }` → `{ server: ServerSummary, joinToken, fingerprint? }` (Standalone becomes Primary; 409 on a node) |
+| PUT | /api/servers/{id} | admin | `{ name, url, repin?: bool }` → ServerSummary |
+| POST | /api/servers/{id}/token | admin | → `{ joinToken }` (new secret) |
+| DELETE | /api/servers/{id} | admin | → 204 (best-effort `leave` RPC first) |
+| POST | /api/servers/{id}/sync | operator | → ServerSummary (push now) |
+| POST | /api/servers/{id}/caddy/restart | operator | → CaddyStatus |
+| POST | /api/servers/{id}/caddy/update | admin | `{ version? }` → JobInfo (job of that server) |
+| GET | /api/servers/{id}/jobs/{jobId} | viewer | JobInfo |
+CLI: `CaddyManager.exe cluster join <token>`, `cluster leave`, `cluster status` (stop the service first, like reset-password).
+Audit every mutation (objectType "server"/"cluster").
+
+### Web UI
+Nav: **Overview** gains **Servers** (`/servers`, `/servers/:id`) and **Traffic** (`/traffic?server=local`).
+- Servers list: local + nodes; status, versions (manager / Caddy), CPU/memory mini bars, sync state; Add server dialog
+  (name, URL → shows the join token once with copy button + CLI command); row actions (Sync now, Regenerate token, Remove).
+- Server detail: header (name, status, host name, OS, manager/Caddy versions, uptime, IPs), live charts polled every 2 s
+  (CPU, memory, network rx/tx, requests/s, Caddy CPU/memory, connections), disks, Caddy state + Restart/Update (roles), sync
+  state (nodes), and the traffic section.
+- Traffic: range tabs (1 h / 24 h / 7 d / 30 d), host filter, KPI tiles (requests, unique clients, data in/out, error rate,
+  avg duration), time-series chart, top hosts, top clients, status codes. Hand-written SVG charts (no chart library).
+- Dashboard: traffic KPI card (24 h) with sparkline + servers card.
+- Settings > Caddy: ACME challenge section (default challenge, DNS provider picker from the catalog with typed fields, secret
+  fields write-only, propagation/TTL/resolvers/override domain, "plugin not installed → Add plugin and rebuild Caddy" flow using
+  existing PUT /api/caddy/plugins + POST /api/caddy/binary/install + job dialog), traffic statistics toggle.
+- Settings > Cluster (new tab): role/status, Join cluster (paste token) / Leave, shared storage form (backend radio,
+  path/redis fields/custom JSON, plugin hints).
+- Host editor TLS tab: ACME challenge select (Default / HTTP / DNS) shown when TLS = ACME; wildcard hint.
+- Node mode: banner "Managed by <primary> — changes are made on the primary" and mutation controls of replicated resources
+  disabled (read-only views).
+- Notifications: "Server offline" alert toggle.

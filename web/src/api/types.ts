@@ -27,6 +27,12 @@ export type CaddyRunState = 'notInstalled' | 'stopped' | 'starting' | 'running' 
 export type CertificateKind = 'custom' | 'acme' | 'internal' | 'internalRoot';
 export type CheckStatus = 'pass' | 'warn' | 'fail' | 'info' | 'skipped';
 export type JobState = 'running' | 'succeeded' | 'failed';
+export type AcmeChallengeType = 'http' | 'dns';
+export type HostAcmeChallenge = 'default' | 'http' | 'dns';
+export type StorageBackend = 'local' | 'fileSystem' | 'redis' | 'custom';
+export type ClusterRole = 'standalone' | 'primary' | 'node';
+export type ServerStatus = 'online' | 'offline' | 'pending' | 'error';
+export type TrafficRange = 'hour' | 'day' | 'week' | 'month';
 
 // ---------------------------------------------------------------- Entities (Models/Hosts.cs)
 
@@ -72,6 +78,8 @@ export interface SiteHostFields {
 
   tls: TlsMode;
   certificateId?: string | null;
+  /** ACME challenge for this host (tls = acme only). "default" = CaddySettings.defaultAcmeChallenge. */
+  acmeChallenge: HostAcmeChallenge;
   forceHttps: boolean;
   hsts: boolean;
   hstsSubdomains: boolean;
@@ -261,13 +269,80 @@ export interface CaddySettings {
   hasAcmeIssuerJson: boolean;
   /** JSON object merged into every TLS connection policy. */
   tlsConnectionPolicyJson?: string | null;
+
+  // ---- Round 3: DNS-01
+  defaultAcmeChallenge: AcmeChallengeType;
+  /** caddy-dns provider name, e.g. "cloudflare"; absent = none. */
+  dnsProvider?: string | null;
+  /** Non-secret provider fields by JSON field name. */
+  dnsProviderOptions: Record<string, string>;
+  /** Names of secret provider fields that have a stored value (values are never returned). */
+  dnsProviderSecretFields: string[];
+  dnsPropagationDelaySeconds?: number | null;
+  /** null = Caddy default (2 min); -1 = skip the propagation check. */
+  dnsPropagationTimeoutSeconds?: number | null;
+  dnsTtlSeconds?: number | null;
+  dnsResolvers: string[];
+  dnsOverrideDomain?: string | null;
+
+  // ---- Round 3: storage (clustering)
+  storageBackend: StorageBackend;
+  storagePath?: string | null;
+  redisAddresses: string[];
+  redisDb: number;
+  redisUsername?: string | null;
+  hasRedisPassword: boolean;
+  redisTls: boolean;
+  redisTlsInsecure: boolean;
+  redisKeyPrefix: string;
+  hasRedisEncryptionKey: boolean;
+  hasStorageJson: boolean;
+
+  // ---- Round 3: traffic statistics
+  trafficStatsEnabled: boolean;
 }
 
-export type CaddySettingsInput = Omit<CaddySettings, 'hasEabMacKey' | 'hasAcmeIssuerJson'> & {
+export type CaddySettingsInput = Omit<
+  CaddySettings,
+  'hasEabMacKey' | 'hasAcmeIssuerJson' | 'dnsProviderSecretFields' | 'hasRedisPassword' | 'hasRedisEncryptionKey' | 'hasStorageJson'
+> & {
   eabMacKey?: string | null;
   /** Write-only: absent/null = unchanged, "" = clear, other = set. */
   acmeIssuerJson?: string | null;
+  /** Write-only per field: non-empty = set, "" = remove that field, absent keys unchanged. */
+  dnsProviderSecrets?: Record<string, string> | null;
+  /** Remove every stored secret field (applied before dnsProviderSecrets). */
+  dnsProviderSecretsClear?: boolean;
+  redisPassword?: string | null;
+  redisEncryptionKey?: string | null;
+  /** Custom storage module JSON object (text or object). absent/null = unchanged, "" = clear. */
+  storageJson?: string | null;
 };
+
+/** Field of a caddy-dns provider (GET /api/settings/caddy/dns-providers). "duration" = seconds in the UI. */
+export interface DnsProviderField {
+  name: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  type: 'string' | 'number' | 'boolean' | 'duration';
+  placeholder?: string | null;
+  help?: string | null;
+}
+
+export interface DnsProviderInfo {
+  name: string;
+  label: string;
+  /** Go package for the Caddy build, e.g. github.com/caddy-dns/cloudflare. */
+  package: string;
+  /** Caddy module id, e.g. dns.providers.cloudflare. */
+  module: string;
+  docsUrl: string;
+  /** The module is compiled into the installed Caddy binary. */
+  installed: boolean;
+  notes?: string | null;
+  fields: DnsProviderField[];
+}
 
 export interface BinarySettings {
   plugins: string[];
@@ -310,6 +385,8 @@ export interface NotificationSettings {
   certificateExpiryDays: number;
   alertUpdateAvailable: boolean;
   alertReadinessFailure: boolean;
+  /** A cluster node stopped answering the primary. */
+  alertServerOffline: boolean;
   autoRestartCaddy: boolean;
   cooldownMinutes: number;
   sendRecoveryNotices: boolean;
@@ -686,4 +763,154 @@ export interface ProblemDetails {
   detail?: string;
   status?: number;
   errors?: Record<string, string[]>;
+}
+
+// ---------------------------------------------------------------- Round 3: servers, telemetry, cluster (Contracts/Dtos.cs)
+
+export interface ServerInfo {
+  hostname: string;
+  fqdn?: string | null;
+  os: string;
+  isWindows: boolean;
+  architecture: string;
+  managerVersion: string;
+  caddyVersion?: string | null;
+  caddyState: CaddyRunState;
+  caddyStartedAt?: IsoDate | null;
+  caddyPlugins: string[];
+  processorCount: number;
+  totalMemoryBytes: number;
+  systemUptimeSeconds: number;
+  managerUptimeSeconds: number;
+  dataDir: string;
+  ipAddresses: string[];
+  domain?: string | null;
+  collectedAt: IsoDate;
+}
+
+export interface DiskUsage {
+  name: string;
+  label: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+export interface ResourceSample {
+  at: IsoDate;
+  cpuPercent: number;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  disks: DiskUsage[];
+  networkRxBytesPerSec: number;
+  networkTxBytesPerSec: number;
+  caddyCpuPercent?: number | null;
+  caddyMemoryBytes?: number | null;
+  managerCpuPercent: number;
+  managerMemoryBytes: number;
+  activeConnections?: number | null;
+  requestsPerSecond: number;
+}
+
+export interface TrafficTotals {
+  requests: number;
+  bytesIn: number;
+  bytesOut: number;
+  uniqueClients: number;
+  status2xx: number;
+  status3xx: number;
+  status4xx: number;
+  status5xx: number;
+  statusOther: number;
+  avgDurationMs: number;
+}
+
+export interface TrafficPoint {
+  at: IsoDate;
+  requests: number;
+  bytesIn: number;
+  bytesOut: number;
+  uniqueClients: number;
+  status4xx: number;
+  status5xx: number;
+}
+
+export interface TrafficHostRow {
+  host: string;
+  requests: number;
+  bytesIn: number;
+  bytesOut: number;
+  uniqueClients: number;
+  status4xx: number;
+  status5xx: number;
+}
+
+export interface TrafficClientRow {
+  ip: string;
+  requests: number;
+  bytesOut: number;
+  lastSeen: IsoDate;
+}
+
+export interface StatusCount {
+  code: number;
+  count: number;
+}
+
+export interface TrafficReport {
+  range: TrafficRange;
+  from: IsoDate;
+  to: IsoDate;
+  bucketSize: 'minute' | 'hour' | 'day';
+  host?: string | null;
+  enabled: boolean;
+  lastIngestAt?: IsoDate | null;
+  totals: TrafficTotals;
+  series: TrafficPoint[];
+  topHosts: TrafficHostRow[];
+  topClients: TrafficClientRow[];
+  statusCodes: StatusCount[];
+  notes: string[];
+}
+
+export interface ServerSyncState {
+  desiredRevision?: string | null;
+  appliedRevision?: string | null;
+  inSync: boolean;
+  lastSyncAt?: IsoDate | null;
+  lastError?: string | null;
+  warnings: string[];
+}
+
+export interface ServerSummary {
+  /** "local" for this server, otherwise the node id. */
+  id: string;
+  name: string;
+  isLocal: boolean;
+  url?: string | null;
+  status: ServerStatus;
+  lastSeenAt?: IsoDate | null;
+  lastError?: string | null;
+  info?: ServerInfo | null;
+  latest?: ResourceSample | null;
+  sync?: ServerSyncState | null;
+  addedAt?: IsoDate | null;
+}
+
+export interface ClusterStatus {
+  role: ClusterRole;
+  serverName: string;
+  primaryName?: string | null;
+  lastPrimaryContactAt?: IsoDate | null;
+  appliedRevision?: string | null;
+  nodeCount: number;
+  storageBackend: StorageBackend;
+  warnings: string[];
+}
+
+export interface AddServerResult {
+  server: ServerSummary;
+  /** Shown once: paste on the node (Settings > Cluster > Join) or run `CaddyManager.exe cluster join <token>`. */
+  joinToken: string;
+  /** SHA-256 fingerprint of the node's HTTPS certificate when pinned. */
+  fingerprint?: string | null;
 }

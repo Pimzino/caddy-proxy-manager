@@ -4,6 +4,28 @@ namespace CaddyManager.Core.Models;
 public interface ISettingsDocument { }
 
 public enum AcmeCa { LetsEncrypt, LetsEncryptStaging, ZeroSsl, Custom }
+/// <summary>How ACME proves control of a domain.</summary>
+public enum AcmeChallengeType
+{
+    /// <summary>HTTP-01 / TLS-ALPN-01 answered by Caddy on ports 80/443 (needs inbound reachability from the CA).</summary>
+    Http,
+    /// <summary>DNS-01: a TXT record is created through the configured caddy-dns provider (no inbound port needed; required for wildcards).</summary>
+    Dns,
+}
+
+/// <summary>Where Caddy keeps certificates, ACME accounts, locks and the internal CA. Servers sharing it form a Caddy cluster.</summary>
+public enum StorageBackend
+{
+    /// <summary>AppPaths.CaddyStorageDir on this server (default; not shared).</summary>
+    Local,
+    /// <summary>file_system storage in a folder shared by every server (local path or UNC \\server\share\caddy).</summary>
+    FileSystem,
+    /// <summary>Redis via the github.com/pberkel/caddy-storage-redis plugin (module caddy.storage.redis).</summary>
+    Redis,
+    /// <summary>Any other storage module: StorageJsonProtected holds the full storage object including "module".</summary>
+    Custom,
+}
+
 public enum DefaultSiteBehavior { NotFound, CloseConnection, Redirect, CaddyWelcome }
 public enum ConfigMode
 {
@@ -79,6 +101,62 @@ public sealed class CaddySettings : ISettingsDocument
     public string? AcmeIssuerJsonProtected { get; set; }
     /// <summary>JSON object merged into every TLS connection policy (e.g. {"protocol_min":"tls1.3"} or client_authentication for mTLS).</summary>
     public string? TlsConnectionPolicyJson { get; set; }
+
+    // ---- Round 3: DNS-01 challenge (first-class caddy-dns provider)
+    /// <summary>Challenge used by ACME hosts whose SiteHost.AcmeChallenge is Default.</summary>
+    public AcmeChallengeType DefaultAcmeChallenge { get; set; } = AcmeChallengeType.Http;
+    /// <summary>caddy-dns provider name (module dns.providers.&lt;name&gt;, package github.com/caddy-dns/&lt;name&gt;), e.g. "cloudflare"; null/"" = none.</summary>
+    public string? DnsProvider { get; set; }
+    /// <summary>Non-secret provider fields by JSON field name (e.g. {"subscription_id": "..."}). Values are strings; the generator converts per the provider catalog field type.</summary>
+    public Dictionary<string, string> DnsProviderOptions { get; set; } = new();
+    /// <summary>
+    /// Secret provider fields as a protected JSON object {"api_token": "..."}. Wire: output <c>dnsProviderSecretFields</c> (names
+    /// of the fields that are set), input <c>dnsProviderSecrets</c> (object: key → string sets, key → "" clears that key, keys
+    /// absent unchanged; null/absent = unchanged, {} with <c>"dnsProviderSecretsClear": true</c> clears all).
+    /// </summary>
+    public string? DnsProviderSecretsProtected { get; set; }
+    /// <summary>Wait before the first propagation check (challenges.dns.propagation_delay). null = Caddy default (0).</summary>
+    public int? DnsPropagationDelaySeconds { get; set; }
+    /// <summary>Max time to wait for propagation (propagation_timeout). null = Caddy default (2 min); -1 = skip the check.</summary>
+    public int? DnsPropagationTimeoutSeconds { get; set; }
+    /// <summary>TTL of the challenge TXT record. null = provider default.</summary>
+    public int? DnsTtlSeconds { get; set; }
+    /// <summary>DNS resolvers (host:port) used for propagation checks, e.g. 1.1.1.1:53 — useful behind split-horizon DNS.</summary>
+    public List<string> DnsResolvers { get; set; } = new();
+    /// <summary>Delegated challenge domain (CNAME _acme-challenge.&lt;domain&gt; → this name) — challenges.dns.override_domain.</summary>
+    public string? DnsOverrideDomain { get; set; }
+
+    // ---- Round 3: storage (clustering). Servers configured with the same storage coordinate certificates as a Caddy cluster.
+    public StorageBackend StorageBackend { get; set; } = StorageBackend.Local;
+    /// <summary>FileSystem backend folder shared by every server (UNC paths are reached as the computer account DOMAIN\HOST$).</summary>
+    public string? StoragePath { get; set; }
+    /// <summary>Redis backend addresses "host:port" (pberkel/caddy-storage-redis `address` array).</summary>
+    public List<string> RedisAddresses { get; set; } = new();
+    public int RedisDb { get; set; }
+    public string? RedisUsername { get; set; }
+    /// <summary>Wire: hasRedisPassword / redisPassword.</summary>
+    public string? RedisPasswordProtected { get; set; }
+    public bool RedisTls { get; set; }
+    public bool RedisTlsInsecure { get; set; }
+    public string RedisKeyPrefix { get; set; } = "caddy";
+    /// <summary>Optional encryption of stored values in Redis (`encryption_key`). Wire: hasRedisEncryptionKey / redisEncryptionKey.</summary>
+    public string? RedisEncryptionKeyProtected { get; set; }
+    /// <summary>Custom backend: full storage JSON object incl. "module" (e.g. {"module":"consul",...}). Protected. Wire: hasStorageJson / storageJson.</summary>
+    public string? StorageJsonProtected { get; set; }
+
+    // ---- Round 3: traffic statistics
+    /// <summary>Write a compact access log of every HTTP request (AppPaths.StatsLogFile) that the manager aggregates into traffic statistics.</summary>
+    public bool TrafficStatsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Properties that belong to one server and are never replicated from a cluster primary (listeners and local paths).
+    /// A managed node may still change these locally.
+    /// </summary>
+    public static readonly string[] NodeLocalProperties =
+    [
+        nameof(HttpPort), nameof(HttpsPort), nameof(PublicHttpsPort), nameof(BindAddresses), nameof(AdminListen),
+        nameof(CertificateStorePath),
+    ];
 }
 
 /// <summary>Caddy binary / plugin management. Owned by the Platform module.</summary>
@@ -139,6 +217,8 @@ public sealed class NotificationSettings : ISettingsDocument
     public int CertificateExpiryDays { get; set; } = 14;
     public bool AlertUpdateAvailable { get; set; } = true;
     public bool AlertReadinessFailure { get; set; } = true;
+    /// <summary>A cluster node stopped answering the primary (alertRule "serverOffline").</summary>
+    public bool AlertServerOffline { get; set; } = true;
     public bool AutoRestartCaddy { get; set; } = true;
     public int CooldownMinutes { get; set; } = 30;
     public bool SendRecoveryNotices { get; set; } = true;

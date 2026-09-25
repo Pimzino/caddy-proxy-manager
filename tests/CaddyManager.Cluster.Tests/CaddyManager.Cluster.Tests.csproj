@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- End-to-end tests compose real managers (all modules) and real Caddy processes. -->
+    <ProjectReference Include="..\..\src\CaddyManager.Core\CaddyManager.Core.csproj" />
+    <ProjectReference Include="..\..\src\CaddyManager.Config\CaddyManager.Config.csproj" />
+    <ProjectReference Include="..\..\src\CaddyManager.Platform\CaddyManager.Platform.csproj" />
+    <ProjectReference Include="..\..\src\CaddyManager.Ops\CaddyManager.Ops.csproj" />
+    <ProjectReference Include="..\..\src\CaddyManager.Telemetry\CaddyManager.Telemetry.csproj" />
+    <ProjectReference Include="..\..\src\CaddyManager.Cluster\CaddyManager.Cluster.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="Microsoft.Extensions.DependencyInjection" />
+  </ItemGroup>
+</Project>

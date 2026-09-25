@@ -86,6 +86,7 @@ export function newHost(kind: HostKind): SiteHostFields {
     domains: [],
     notes: null,
     tls: 'acme',
+    acmeChallenge: 'default',
     certificateId: null,
     forceHttps: true,
     hsts: false,

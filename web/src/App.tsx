@@ -12,6 +12,9 @@ import { ThemeProvider } from '@/lib/theme';
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 const SetupPage = lazy(() => import('@/pages/SetupPage'));
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
+const ServersPage = lazy(() => import('@/pages/servers/ServersPage'));
+const ServerDetailPage = lazy(() => import('@/pages/servers/ServerDetailPage'));
+const TrafficPage = lazy(() => import('@/pages/servers/TrafficPage'));
 const HostsPage = lazy(() => import('@/pages/hosts/HostsPage'));
 const StreamsPage = lazy(() => import('@/pages/StreamsPage'));
 const CertificatesPage = lazy(() => import('@/pages/certificates/CertificatesPage'));
@@ -82,6 +85,9 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <DashboardPage /> },
+          { path: 'servers', element: <ServersPage /> },
+          { path: 'servers/:id', element: <ServerDetailPage /> },
+          { path: 'traffic', element: <TrafficPage /> },
           { path: 'hosts', element: <Navigate to="/hosts/proxy" replace /> },
           { path: 'hosts/:kind', element: <HostsPage /> },
           { path: 'streams', element: <StreamsPage /> },

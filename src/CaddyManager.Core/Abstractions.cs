@@ -9,6 +9,7 @@ namespace CaddyManager.Core;
 //   Config   : ICaddyConfigService, ICaddyAdminClient, ICertificateInventory
 //   Platform : ICaddyHost, ICaddyBinaryManager, IReadinessService
 //   Ops      : IAuditLog, IEventSink, INotifier, ICurrentUser
+//   Round 3  : Config → IConfigChangeFeed, ICertificateMaterialStore; Cluster → IClusterRole; Telemetry → IServerTelemetry
 
 /// <summary>LiteDB-backed persistence. Collections are named after the entity type.</summary>
 public interface IStore
@@ -157,4 +158,48 @@ public interface INotifier
 {
     /// <summary>Send to all configured channels (SMTP, webhook). Returns per-channel errors (empty = success).</summary>
     Task<List<string>> SendAsync(string subject, string body, CancellationToken ct = default);
+}
+
+// ----------------------------------------------------------------- Round 3
+
+/// <summary>Implemented by the Config module (CaddyConfigService). Lets other modules react to configuration changes.</summary>
+public interface IConfigChangeFeed
+{
+    /// <summary>
+    /// Raised after every successful ICaddyConfigService.ApplyAsync (including WrittenOnly results, i.e. the stored
+    /// configuration changed even though Caddy was not running). Arguments: result, reason. Handlers must not block.
+    /// </summary>
+    event Action<ApplyResult, string>? Applied;
+}
+
+/// <summary>Implemented by the Config module: writes certificate material into the certificate store with the store's ACL.</summary>
+public interface ICertificateMaterialStore
+{
+    /// <summary>Writes fullchain.pem + privkey.pem for the certificate id under the resolved store; returns their paths.</summary>
+    (string CertPath, string KeyPath) WritePem(string certificateId, string certificatePem, string privateKeyPem);
+    /// <summary>Removes the certificate's directory from the store (no error when missing).</summary>
+    void Delete(string certificateId);
+}
+
+/// <summary>
+/// Implemented by the Cluster module. When this server is a managed node, replicated resources (hosts, streams, access
+/// lists, certificates, Caddy settings except CaddySettings.NodeLocalProperties, desired plugins) are read-only here:
+/// mutating endpoints answer 409 via <see cref="Infrastructure.ApiResults"/>-style problem
+/// { title: "Managed by the cluster primary", detail: "This server is a node managed by '&lt;PrimaryName&gt;'. Make this change on the primary." }.
+/// Resolve optionally (GetService) so modules/tests without the Cluster module keep working.
+/// </summary>
+public interface IClusterRole
+{
+    ClusterRole Role { get; }
+    bool IsManagedNode => Role == ClusterRole.Node;
+    string? PrimaryName { get; }
+}
+
+/// <summary>Implemented by the Telemetry module: facts, live resource samples and traffic statistics of THIS server.</summary>
+public interface IServerTelemetry
+{
+    Task<ServerInfo> GetInfoAsync(CancellationToken ct = default);
+    /// <summary>Samples from the in-memory ring buffer (last 10 minutes), oldest first; only those newer than <paramref name="since"/> when given.</summary>
+    IReadOnlyList<ResourceSample> GetSamples(DateTime? since = null);
+    Task<TrafficReport> GetTrafficAsync(TrafficQuery query, CancellationToken ct = default);
 }

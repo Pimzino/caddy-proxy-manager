@@ -256,6 +256,7 @@ internal sealed class EventSink(
             "certificateexpiry" => s.AlertCertificateExpiry,
             "updateavailable" => s.AlertUpdateAvailable,
             "readinessfailure" => s.AlertReadinessFailure,
+            "serveroffline" => s.AlertServerOffline,
             _ => null,
         };
         if (enabled is null)

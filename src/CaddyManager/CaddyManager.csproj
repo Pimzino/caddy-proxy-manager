@@ -24,6 +24,8 @@
     <ProjectReference Include="..\CaddyManager.Config\CaddyManager.Config.csproj" />
     <ProjectReference Include="..\CaddyManager.Platform\CaddyManager.Platform.csproj" />
     <ProjectReference Include="..\CaddyManager.Ops\CaddyManager.Ops.csproj" />
+    <ProjectReference Include="..\CaddyManager.Telemetry\CaddyManager.Telemetry.csproj" />
+    <ProjectReference Include="..\CaddyManager.Cluster\CaddyManager.Cluster.csproj" />
   </ItemGroup>
   <!-- The built SPA (web/dist) is embedded so the service is a single exe. -->
   <ItemGroup>

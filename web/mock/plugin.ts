@@ -39,8 +39,10 @@ import {
   type MockJob,
   type MockState,
 } from './fixtures.ts';
+import { round3ServersRoutes } from './round3-servers.ts';
+import { round3SettingsRoutes } from './round3-settings.ts';
 
-class HttpError extends Error {
+export class HttpError extends Error {
   readonly status: number;
   readonly title: string;
   readonly detail?: string;
@@ -54,7 +56,7 @@ class HttpError extends Error {
   }
 }
 
-interface Ctx {
+export interface Ctx {
   method: string;
   path: string;
   query: URLSearchParams;
@@ -64,8 +66,15 @@ interface Ctx {
   params: Record<string, string>;
 }
 
-type Result = { status?: number; json?: unknown; text?: string; contentType?: string; headers?: Record<string, string>; bytes?: Buffer } | undefined;
-type Handler = (ctx: Ctx, s: MockState) => Result | Promise<Result>;
+export type Result = { status?: number; json?: unknown; text?: string; contentType?: string; headers?: Record<string, string>; bytes?: Buffer } | undefined;
+export type Handler = (ctx: Ctx, s: MockState) => Result | Promise<Result>;
+export type MockRoute = [string, string, Handler];
+/** Helpers handed to the Round 3 route modules (round3-settings.ts, round3-servers.ts). */
+export interface MockHelpers {
+  HttpError: typeof HttpError;
+  ok: (json: unknown) => Result;
+  noContent: () => Result;
+}
 
 const ok = (json: unknown): Result => ({ json });
 const noContent = (): Result => ({ status: 204 });
@@ -403,6 +412,7 @@ const BLANK_HOST: SiteHostFields = {
   kind: 'proxy',
   enabled: true,
   domains: [],
+  acmeChallenge: 'default',
   tls: 'acme',
   forceHttps: true,
   hsts: false,
@@ -1324,6 +1334,9 @@ const routes: [string, string, Handler][] = [
     return ok({ restartRequired: true, message: 'The backup was validated and will be applied when the Caddy Proxy Manager service restarts.' });
   }],
 ];
+
+const helpers: MockHelpers = { HttpError, ok, noContent };
+routes.push(...round3SettingsRoutes(helpers), ...round3ServersRoutes(helpers));
 
 const compiled = routes.map(([method, pattern, handler]) => {
   const keys: string[] = [];

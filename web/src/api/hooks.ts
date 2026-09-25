@@ -1,6 +1,14 @@
+import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { api, ApiError } from './client';
 import type {
+  AddServerResult,
+  ClusterStatus,
+  DnsProviderInfo,
+  ResourceSample,
+  ServerSummary,
+  TrafficRange,
+  TrafficReport,
   AccessList,
   AccessListInput,
   AccessLogResult,
@@ -60,6 +68,11 @@ import type {
 
 export const qk = {
   me: ['me'] as const,
+  cluster: ['cluster'] as const,
+  servers: ['servers'] as const,
+  server: (id: string) => ['servers', id] as const,
+  traffic: (id: string, range: TrafficRange, host?: string) => ['servers', id, 'traffic', range, host ?? ''] as const,
+  dnsProviders: ['settings', 'caddy', 'dns-providers'] as const,
   setupStatus: ['setup-status'] as const,
   hosts: (kind?: HostKind) => (kind ? (['hosts', kind] as const) : (['hosts'] as const)),
   streams: ['streams'] as const,
@@ -762,5 +775,175 @@ export function useSaveLdapSettings() {
 export function useTestLdap() {
   return useMutation({
     mutationFn: (body: { username: string; password: string }) => api.post<LdapTestResult>('/api/settings/ldap/test', body),
+  });
+}
+
+// ---------------------------------------------------------------- Round 3: DNS providers, cluster, servers, traffic
+
+export function useDnsProviders(enabled = true) {
+  return useQuery({
+    queryKey: qk.dnsProviders,
+    queryFn: () => api.get<DnsProviderInfo[]>('/api/settings/caddy/dns-providers'),
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
+export function useCluster() {
+  return useQuery({ queryKey: qk.cluster, queryFn: () => api.get<ClusterStatus>('/api/cluster'), staleTime: 30_000 });
+}
+
+/** True when this server is a managed cluster node (replicated resources are read-only here). */
+export function useIsManagedNode(): { managed: boolean; primaryName?: string | null } {
+  const { data } = useCluster();
+  return { managed: data?.role === 'node', primaryName: data?.primaryName };
+}
+
+function invalidateAfterClusterChange(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: qk.cluster });
+  void qc.invalidateQueries({ queryKey: qk.servers });
+  invalidateConfigState(qc);
+}
+
+export function useJoinCluster() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) => api.post<ClusterStatus>('/api/cluster/join', { token }),
+    onSettled: () => invalidateAfterClusterChange(qc),
+  });
+}
+
+export function useLeaveCluster() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<ClusterStatus>('/api/cluster/leave'),
+    onSettled: () => invalidateAfterClusterChange(qc),
+  });
+}
+
+export function useServers() {
+  return useQuery({
+    queryKey: qk.servers,
+    queryFn: () => api.get<ServerSummary[]>('/api/servers'),
+    refetchInterval: 10_000,
+  });
+}
+
+export function useServer(id: string) {
+  return useQuery({
+    queryKey: qk.server(id),
+    queryFn: () => api.get<ServerSummary>(`/api/servers/${encodeURIComponent(id)}`),
+    refetchInterval: 15_000,
+  });
+}
+
+/**
+ * Live resource samples of a server: loads the recent history once, then polls
+ * GET /api/servers/{id}/samples?since=<last> every `intervalMs` and appends (keeps `maxPoints`).
+ */
+export function useServerSamples(id: string, intervalMs = 2000, maxPoints = 300) {
+  // State is keyed by server id so switching servers never shows the previous server's samples.
+  const [state, setState] = useState<{ id: string; samples: ResourceSample[]; error: unknown }>({ id, samples: [], error: null });
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let since: string | undefined;
+    const tick = async () => {
+      try {
+        const batch = await api.get<ResourceSample[]>(`/api/servers/${encodeURIComponent(id)}/samples`, { since });
+        if (cancelled) return;
+        if (batch.length) since = batch[batch.length - 1].at;
+        setState((prev) => {
+          const base = prev.id === id ? prev.samples : [];
+          const lastAt = base.length ? base[base.length - 1].at : '';
+          const merged = base.concat(batch.filter((b) => b.at > lastAt));
+          return { id, samples: merged.length > maxPoints ? merged.slice(merged.length - maxPoints) : merged, error: null };
+        });
+      } catch (err) {
+        if (!cancelled) setState((prev) => ({ id, samples: prev.id === id ? prev.samples : [], error: err }));
+      } finally {
+        if (!cancelled) timer = setTimeout(() => void tick(), document.hidden ? intervalMs * 5 : intervalMs);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [id, intervalMs, maxPoints]);
+  const samples = state.id === id ? state.samples : [];
+  return { samples, latest: samples.length ? samples[samples.length - 1] : undefined, error: state.id === id ? state.error : null };
+}
+
+export function useTraffic(id: string, range: TrafficRange, host?: string) {
+  return useQuery({
+    queryKey: qk.traffic(id, range, host),
+    queryFn: () => api.get<TrafficReport>(`/api/servers/${encodeURIComponent(id)}/traffic`, { range, host: host || undefined }),
+    refetchInterval: range === 'hour' ? 10_000 : 60_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useAddServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; url: string }) => api.post<AddServerResult>('/api/servers', input),
+    onSettled: () => invalidateAfterClusterChange(qc),
+  });
+}
+
+export function useUpdateServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: { id: string; name: string; url: string; repin?: boolean }) =>
+      api.put<ServerSummary>(`/api/servers/${encodeURIComponent(id)}`, input),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.servers }),
+  });
+}
+
+export function useRegenerateServerToken() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<{ joinToken: string }>(`/api/servers/${encodeURIComponent(id)}/token`),
+  });
+}
+
+export function useRemoveServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<null>(`/api/servers/${encodeURIComponent(id)}`),
+    onSettled: () => invalidateAfterClusterChange(qc),
+  });
+}
+
+export function useSyncServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<ServerSummary>(`/api/servers/${encodeURIComponent(id)}/sync`),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.servers }),
+  });
+}
+
+export function useServerCaddyRestart() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<CaddyStatus>(`/api/servers/${encodeURIComponent(id)}/caddy/restart`),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.servers }),
+  });
+}
+
+export function useServerCaddyUpdate() {
+  return useMutation({
+    mutationFn: ({ id, version }: { id: string; version?: string }) =>
+      api.post<JobInfo>(`/api/servers/${encodeURIComponent(id)}/caddy/update`, version ? { version } : {}),
+  });
+}
+
+/** Polls a job that runs on a (possibly remote) server until it finishes. */
+export function useServerJob(serverId: string, jobId: string | null) {
+  return useQuery({
+    queryKey: ['servers', serverId, 'jobs', jobId ?? ''] as const,
+    queryFn: () => api.get<JobInfo>(`/api/servers/${encodeURIComponent(serverId)}/jobs/${encodeURIComponent(jobId as string)}`),
+    enabled: !!jobId,
+    refetchInterval: (q) => (q.state.data?.state === 'running' || !q.state.data ? 1000 : false),
   });
 }

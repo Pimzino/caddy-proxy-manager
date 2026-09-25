@@ -42,6 +42,9 @@ public sealed class AppPaths
     public string CaddyProcessLog => Path.Combine(CaddyLogDir, "caddy.log");
     public string AccessLogDir => Path.Combine(DataDir, "logs", "access");
     public string ManagerLogDir => Path.Combine(DataDir, "logs", "manager");
+    /// <summary>Compact access log of every HTTP request, tailed by the Telemetry module for traffic statistics.</summary>
+    public string StatsLogDir => Path.Combine(DataDir, "logs", "stats");
+    public string StatsLogFile => Path.Combine(StatsLogDir, "requests.log");
     public string BackupDir => Path.Combine(DataDir, "backups");
 
     /// <summary>Default shared certificate store. Can be overridden in CaddySettings.CertificateStorePath.</summary>
@@ -62,7 +65,7 @@ public sealed class AppPaths
     public void EnsureCreated()
     {
         foreach (var d in new[] { DataDir, Path.GetDirectoryName(DbFile)!, CaddyBinDir, CaddyStagingDir, CaddyStorageDir,
-                     CaddyLogDir, AccessLogDir, ManagerLogDir, BackupDir, DefaultCertificateStore })
+                     CaddyLogDir, AccessLogDir, ManagerLogDir, StatsLogDir, BackupDir, DefaultCertificateStore })
             Directory.CreateDirectory(d);
     }
 }
