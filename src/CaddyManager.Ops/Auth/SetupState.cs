@@ -30,6 +30,7 @@ internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupStat
             if (!NeedsSetup)
             {
                 DeleteTokenFile();
+                RecordSetupCompleted();
                 return;
             }
             if (_token is null && File.Exists(paths.SetupTokenFile))
@@ -78,6 +79,26 @@ internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupStat
         {
             _token = null;
             DeleteTokenFile();
+        }
+        RecordSetupCompleted();
+    }
+
+    /// <summary>
+    /// Tells the MSI that first-run setup is done, so its finish page does not show setup-token instructions after an
+    /// upgrade or after a reinstall that kept the data folder (AppPaths.SetupCompletedValue). Best effort.
+    /// </summary>
+    private void RecordSetupCompleted()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(AppPaths.RegistryKey);
+            if (key.GetValue(AppPaths.SetupCompletedValue) is not 1)
+                key.SetValue(AppPaths.SetupCompletedValue, 1, Microsoft.Win32.RegistryValueKind.DWord);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not record setup completion in HKLM\\{Key}", AppPaths.RegistryKey);
         }
     }
 

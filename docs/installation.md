@@ -75,7 +75,9 @@ Extract the zip, then in an **elevated** PowerShell in that folder:
 ## Upgrade
 
 Run the newer MSI (or re-run `install.ps1` with the newer zip). Data, settings and certificates in
-`C:\ProgramData\CaddyProxyManager` are kept. The UI shows *Manager vX available* when **Settings › Updates ›
+`C:\ProgramData\CaddyProxyManager` are kept, and you sign in with your existing accounts — the installer's final page
+only asks for the setup token on a server that has never been set up (the manager records completed setup in
+`HKLM\SOFTWARE\Caddy Proxy Manager\SetupCompleted`; an uninstall with `-Purge` clears it). The UI shows *Manager vX available* when **Settings › Updates ›
 Manager release repository** is set.
 
 Pre-release builds from CI (`1.0.0-ci.<run>`) all carry MSI version 1.0.0 and replace each other in **either**

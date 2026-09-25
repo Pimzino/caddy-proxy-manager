@@ -11,6 +11,14 @@ public sealed class AppPaths
     public const string ManagerServiceName = "CaddyProxyManager";
     public const string CaddyServiceName = "Caddy";
 
+    /// <summary>HKLM key shared with the MSI (which stores UiPort/UiBind there).</summary>
+    public const string RegistryKey = @"SOFTWARE\Caddy Proxy Manager";
+    /// <summary>
+    /// DWORD 1 once first-run setup is complete. Written by the manager (not MSI-owned, so it survives an uninstall that
+    /// keeps the data folder); the MSI reads it to choose its finish-page text. Removed with the data by uninstall --purge.
+    /// </summary>
+    public const string SetupCompletedValue = "SetupCompleted";
+
     /// <summary>Directory containing the manager executable (e.g. C:\Program Files\Caddy Proxy Manager).</summary>
     public string InstallDir { get; }
     /// <summary>Root for all mutable data (e.g. C:\ProgramData\CaddyProxyManager).</summary>

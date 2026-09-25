@@ -490,6 +490,13 @@ public static class PlatformCli
                     await DeleteDirectoryWithRetryAsync(paths.DataDir);
                     Console.WriteLine($"Deleted {paths.DataDir} (database, certificates, Caddy storage, logs).");
                 }
+                // The data (and its administrator) is gone, so a later install must show first-run setup again.
+                try
+                {
+                    using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(AppPaths.RegistryKey, writable: true);
+                    key?.DeleteValue(AppPaths.SetupCompletedValue, throwOnMissingValue: false);
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"WARNING: could not clear the setup marker in HKLM\\{AppPaths.RegistryKey}: {ex.Message}"); }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

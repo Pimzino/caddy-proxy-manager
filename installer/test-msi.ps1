@@ -68,6 +68,43 @@ function Query-Msi([string] $sql) {
     return , $rows
 }
 
+# The Finish page (ExitDialog) is not shown in a silent install, so evaluate the MSI's own conditions for its two texts
+# with Windows Installer against the real machine state: open the package, run its AppSearch (reads the manager's
+# SetupCompleted marker) and FindRelatedProducts (sets WIX_UPGRADE_DETECTED), then EvaluateCondition
+# (msiEvaluateCondition: 0 false, 1 true, 2 none, 3 error).
+function Get-FinishTextCase {
+    $conds = @{}
+    foreach ($r in (Query-Msi 'SELECT `Action`, `Condition` FROM `InstallUISequence`')) { $conds[$r[0]] = $r[1] }
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $installer.GetType().InvokeMember('UILevel', 'SetProperty', $null, $installer, [object[]] @([int] 2)) | Out-Null
+    $pkg = $installer.GetType().InvokeMember('OpenPackage', 'InvokeMethod', $null, $installer, [object[]] @([string] $Msi, [int] 0))
+    try {
+        foreach ($action in 'AppSearch', 'FindRelatedProducts') {
+            $pkg.GetType().InvokeMember('DoAction', 'InvokeMethod', $null, $pkg, [object[]] @([string] $action)) | Out-Null
+        }
+        $eval = { param([string] $c) [int] $pkg.GetType().InvokeMember('EvaluateCondition', 'InvokeMethod', $null, $pkg, [object[]] @($c)) }
+        $props = foreach ($name in 'CPM_SETUP_DONE', 'WIX_UPGRADE_DETECTED', 'Installed') {
+            "$name=" + $pkg.GetType().InvokeMember('Property', 'GetProperty', $null, $pkg, [object[]] @([string] $name))
+        }
+        return [pscustomobject]@{
+            FirstRun = (& $eval $conds['CPM_SetExitDialogTextFirstRun']) -eq 1
+            Existing = (& $eval $conds['CPM_SetExitDialogTextExisting']) -eq 1
+            Props    = $props -join ' '
+        }
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($pkg) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer) | Out-Null
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    }
+}
+
+function Check-FinishText([string] $when, [bool] $expectFirstRun) {
+    $case = Get-FinishTextCase
+    $want = if ($expectFirstRun) { 'first-run (setup token)' } else { 'existing installation (sign in)' }
+    Check ($case.FirstRun -eq $expectFirstRun -and $case.Existing -ne $expectFirstRun) "${when}: Finish page shows the $want text ($($case.Props))"
+}
+
 function Service-Pid {
     $s = Get-CimInstance Win32_Service -Filter "Name='$service'"
     if ($s -and $s.State -eq 'Running') { return [int]$s.ProcessId } else { return 0 }
@@ -101,6 +138,9 @@ foreach ($name in 'CPM_ConfigureUi', 'CPM_ConfigureService', 'CPM_RemoveCaddySer
     $ca = @($cas | Where-Object { $_[0] -eq $name })
     Check ($ca.Count -eq 1 -and $ca[0][1] -eq 'Wix4UtilCA_X64' -and $ca[0][2] -eq 'WixQuietExec') "$name uses Wix4UtilCA_X64!WixQuietExec"
 }
+
+Write-Host '==> Finish-page text on a clean machine'
+Check-FinishText 'before the first install' $true
 
 Write-Host "==> Install (UI_PORT=$UiPort)"
 $installLog = Join-Path $LogDir 'cpm-install.log'
@@ -153,6 +193,9 @@ try {
         } catch { Write-Host "  setup failed: $($_.Exception.Message)" }
     }
     Check ($null -ne $session) 'first-run setup signed in an administrator'
+    $marker = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Caddy Proxy Manager' -Name 'SetupCompleted' -ErrorAction SilentlyContinue
+    Check ($marker -eq 1) "the manager recorded SetupCompleted=1 after first-run setup (found: $marker)"
+    Check-FinishText 'installed and set up (upgrade/repair)' $false
     if ($null -ne $session) {
         $before = Service-Pid
         $r = Invoke-WebRequest -Uri "$base/api/system/restart" -Method Post -WebSession $session -Headers @{ 'X-CPM-Request' = '1' } -UseBasicParsing
@@ -182,6 +225,8 @@ finally {
     Check (-not (Get-Service -Name 'Caddy' -ErrorAction SilentlyContinue)) 'Caddy service removed'
     Check (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) 'firewall exception removed'
     Check (-not (Test-Path -LiteralPath $shortcut)) 'Start-menu shortcut removed'
+    # The MSI keeps C:\ProgramData\CaddyProxyManager (and its administrator), so a reinstall must not ask for setup.
+    Check-FinishText 'after an uninstall that kept the data (reinstall)' $false
 }
 
 # Verifiable artifact of this run (uploaded by the workflow next to the msiexec logs).

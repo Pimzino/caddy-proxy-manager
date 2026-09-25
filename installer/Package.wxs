@@ -84,6 +84,11 @@
                  Condition="CPM_SAVED_UI_BIND AND NOT BIND" />
     <SetProperty Id="CPM_UI_BIND" Action="CPM_SetUiBindFromBind" Value="[BIND]" After="CPM_SetUiBindFromSaved" Sequence="both"
                  Condition="BIND" />
+    <!-- First-run setup already done on this server (the manager writes this DWORD; it survives an uninstall that keeps
+         the data folder, and uninstall -purge removes it). Raw DWORD values read as "#1". -->
+    <Property Id="CPM_SETUP_DONE" Secure="yes">
+      <RegistrySearch Id="SetupDoneSearch" Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="SetupCompleted" Type="raw" Bitness="always64" />
+    </Property>
     <Property Id="CPM_UI_HOST" Value="localhost" Secure="yes" />
     <SetProperty Id="CPM_UI_HOST" Action="CPM_SetUiHost" Value="[CPM_UI_BIND]" After="CPM_SetUiBindFromBind" Sequence="both"
                  Condition="CPM_UI_BIND AND NOT (CPM_UI_BIND &gt;&lt; &quot;:&quot;) AND CPM_UI_BIND &lt;&gt; &quot;0.0.0.0&quot; AND NOT (CPM_UI_BIND &lt;&lt; &quot;127.&quot;)" />
@@ -212,10 +217,16 @@
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
     <!-- ===================================================================== wizard UI -->
-    <!-- Finish page text (shown after a successful install, not after repair/uninstall). Formatted here so the port is filled in. -->
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogText"
+    <!-- Finish page text, formatted here so the port is filled in. The setup-token instructions only make sense on a first
+         install: after an upgrade (WIX_UPGRADE_DETECTED, set by MajorUpgrade's FindRelatedProducts), a repair (Installed)
+         or a reinstall over kept data (CPM_SETUP_DONE) there is an administrator and no token. Values stay under the
+         255-character limit of CustomAction.Target (ICE03). -->
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogTextFirstRun"
                  Value="Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ and create the first administrator with the setup token in C:\ProgramData\CaddyProxyManager\setup-token.txt (readable from an elevated prompt)."
-                 After="CostFinalize" Sequence="ui" />
+                 After="CostFinalize" Sequence="ui" Condition="NOT CPM_SETUP_DONE AND NOT WIX_UPGRADE_DETECTED AND NOT Installed" />
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogTextExisting"
+                 Value="Caddy Proxy Manager was updated; hosts, certificates and settings were kept. Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ and sign in as before (not set up yet? use C:\ProgramData\CaddyProxyManager\setup-token.txt)."
+                 After="CPM_SetExitDialogTextFirstRun" Sequence="ui" Condition="CPM_SETUP_DONE OR WIX_UPGRADE_DETECTED OR Installed" />
 
     <!-- Minimal wizard without a license page, built from the WixUI dialog library (WixToolset.UI.wixext):
          WelcomeDlg → VerifyReadyDlg → ProgressDlg → ExitDialog; maintenance mode offers Repair / Remove. -->
