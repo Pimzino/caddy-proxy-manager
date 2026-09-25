@@ -11,6 +11,7 @@ using CaddyManager.Platform.Readiness;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging;
 
@@ -291,7 +292,7 @@ internal static partial class PlatformEndpoints
             });
         });
 
-        g.MapPost("/restart", (IAuditLog audit, ILoggerFactory lf) =>
+        g.MapPost("/restart", (IAuditLog audit, ILoggerFactory lf, IServiceProvider sp) =>
         {
             var logger = lf.CreateLogger("System");
             audit.Record("restart", "system", AppPaths.ManagerServiceName, AppPaths.ProductName);
@@ -301,6 +302,13 @@ internal static partial class PlatformEndpoints
                 return Results.Accepted(value: new { message = "The manager runs in console mode and cannot restart itself; restart it manually." });
             }
             logger.LogWarning("Restart requested; exiting with code 1 so the service recovery actions restart the manager");
+            // The Windows service lifetime reports SERVICE_STOPPED with ServiceBase.ExitCode (0 unless set) while the
+            // process exits; with exit code 0 the SCM treats it as a clean stop and never runs the recovery actions.
+            // A non-zero service exit code + the failure-actions flag (set by install / the MSI) makes it restart us.
+            if (OperatingSystem.IsWindows()
+                && sp.GetService<Microsoft.Extensions.Hosting.IHostLifetime>() is System.ServiceProcess.ServiceBase serviceBase)
+                serviceBase.ExitCode = 1;
+            Environment.ExitCode = 1;
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(1.5)); // let the response and the audit entry flush

@@ -153,7 +153,8 @@ internal static class StreamEndpoints
                 {
                     ConfigTransaction.Audit(http, "created", "stream", body.Id, Name(body));
                     return Results.Ok(new { item = body, apply });
-                });
+                },
+                concernsStreams: true);
         }).RequireAuthorization(Policies.Operator);
 
         g.MapPut("/{id}", async (string id, StreamHost? body, IStore store, HttpContext http) =>
@@ -174,7 +175,8 @@ internal static class StreamEndpoints
                 {
                     ConfigTransaction.Audit(http, "updated", "stream", id, Name(body));
                     return Results.Ok(new { item = body, apply });
-                });
+                },
+                concernsStreams: true);
         }).RequireAuthorization(Policies.Operator);
 
         g.MapDelete("/{id}", async (string id, IStore store, HttpContext http) =>
@@ -189,7 +191,8 @@ internal static class StreamEndpoints
                 {
                     ConfigTransaction.Audit(http, "deleted", "stream", id, Name(existing));
                     return Results.Ok(new { apply });
-                });
+                },
+                concernsStreams: true);
         }).RequireAuthorization(Policies.Operator);
     }
 

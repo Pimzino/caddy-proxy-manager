@@ -480,7 +480,9 @@ export function useJob(id: string | null) {
     queryKey: qk.job(id ?? ''),
     queryFn: () => api.get<JobInfo>(`/api/jobs/${id}`),
     enabled: !!id,
-    refetchInterval: (q) => (q.state.data?.state === 'running' || !q.state.data ? 1000 : false),
+    // Poll while running. Stop on errors: jobs live in memory, so a manager restart (e.g. during an update) forgets them (404).
+    refetchInterval: (q) => (q.state.status === 'error' ? false : q.state.data?.state === 'running' || !q.state.data ? 1000 : false),
+    retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 3,
     // Keep following a running update even if the tab is in the background.
     refetchIntervalInBackground: true,
   });

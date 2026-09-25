@@ -12,7 +12,7 @@ interface ErrorDialogState {
 
 interface Feedback {
   /** Toast (or dialog) for an ApplyResult returned by a config mutation. */
-  applied: (apply: ApplyResult | undefined, successTitle?: string) => void;
+  applied: (apply: ApplyResult | undefined, successTitle?: string, warningTitle?: string) => void;
   /**
    * Standard handling for a failed mutation:
    * 422 → dialog with Caddy's error text; 400 with field errors → onFieldErrors; otherwise a toast.
@@ -28,7 +28,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<ErrorDialogState | null>(null);
 
   const applied = useCallback<Feedback['applied']>(
-    (apply, successTitle = 'Saved and applied') => {
+    (apply, successTitle = 'Saved and applied', warningTitle) => {
       if (!apply) {
         toast.success(successTitle.replace(' and applied', ''));
         return;
@@ -51,17 +51,15 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (apply.writtenOnly) {
+        // The server explains why (not running / binary missing / validated or not); only fall back to a generic line.
         toast.warning(
           'Saved — Caddy is not running',
-          <>
-            The configuration was validated and written to disk. It will be loaded when Caddy starts.
-            {warningList}
-          </>,
+          warningList ?? 'The configuration was written to disk. It will be loaded when Caddy starts.',
         );
         return;
       }
       if (warnings.length > 0) {
-        toast.warning(`${successTitle} with warnings`, warningList);
+        toast.warning(warningTitle ?? `${successTitle} with warnings`, warningList);
         return;
       }
       toast.success(successTitle);

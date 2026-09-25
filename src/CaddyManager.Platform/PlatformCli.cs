@@ -35,6 +35,7 @@ public static class PlatformCli
                 case "uninstall": return await UninstallAsync(rest);
                 case "service-status": return await ServiceStatusAsync();
                 case "uninstall-caddy-service": return await UninstallCaddyServiceAsync();
+                case "configure-service": return await ConfigureServiceAsync();
                 case "configure": return Configure(rest);
                 case "version" or "--version": return Version();
                 case "help" or "--help" or "-h" or "/?": return Help();
@@ -408,21 +409,51 @@ public static class PlatformCli
         }
     }
 
-    /// <summary>Hidden verb for the MSI uninstall custom action: stop and delete the Caddy service only.</summary>
+    /// <summary>
+    /// Hidden verb for the MSI uninstall custom action: stop and delete the Caddy service and remove the firewall rules
+    /// of the product's rule group (created by readiness fixes). Best effort; the MSI ignores the exit code.
+    /// </summary>
     private static async Task<int> UninstallCaddyServiceAsync()
     {
         if (!OperatingSystem.IsWindows()) return WindowsOnly("uninstall-caddy-service");
+        var code = 0;
         try
         {
             await WindowsServiceManager.DeleteAsync(AppPaths.CaddyServiceName);
             Console.WriteLine($"Service '{AppPaths.CaddyServiceName}' removed (or was not installed).");
-            return 0;
         }
         catch (Exception ex) when (ex is InvalidOperationException or TimeoutException)
         {
             Console.Error.WriteLine($"Could not remove the service '{AppPaths.CaddyServiceName}': {ex.Message}");
-            return 1;
+            code = 1;
         }
+        try
+        {
+            var r = await new PowerShellRunner(NullLogger<PowerShellRunner>.Instance).RunJsonAsync(ReadinessScripts.RemoveFirewallGroup());
+            var removed = r.TryGetProperty("removed", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array ? arr.GetArrayLength() : 0;
+            Console.WriteLine($"Removed {removed} firewall rule(s) of the group '{ReadinessScripts.FirewallGroup}'.");
+        }
+        catch (Exception ex) when (ex is PowerShellException or TimeoutException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"Could not remove the firewall rules of the group '{ReadinessScripts.FirewallGroup}': {ex.Message}");
+            code = 1;
+        }
+        return code;
+    }
+
+    /// <summary>
+    /// Hidden verb for the MSI (deferred, after InstallServices): applies Automatic (Delayed Start), the recovery actions
+    /// and the failure-actions flag to the manager service registered by ServiceInstall. The MSI's own MsiServiceConfig
+    /// table is documented as unreliable, and without the flag a restart via exit code 1 would not be recovered.
+    /// </summary>
+    private static async Task<int> ConfigureServiceAsync()
+    {
+        if (!OperatingSystem.IsWindows()) return WindowsOnly("configure-service");
+        var exe = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot determine the path of this executable.");
+        var changes = await WindowsServiceManager.CreateOrRepairAsync(ManagerServiceDefinition(exe));
+        foreach (var c in changes) Console.WriteLine(c);
+        Console.WriteLine($"Service '{AppPaths.ManagerServiceName}': Automatic (Delayed Start), LocalSystem, restart on failure.");
+        return 0;
     }
 
     // ------------------------------------------------------------------ service-status

@@ -7,6 +7,7 @@ import { Button, Callout, Card, Checkbox, PageHeader, SearchInput, Segmented, Se
 import { cn } from '@/lib/cn';
 import { readStorage, writeStorage } from '@/lib/storage';
 import { useDebounced } from '@/lib/useDebounced';
+import { pluralize } from '@/lib/format';
 
 type LogTab = 'caddy' | 'access' | 'manager';
 const LINE_OPTIONS = [100, 500, 1000, 2000, 5000];
@@ -218,7 +219,7 @@ function LogFrame({
       )}
       <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-fg-subtle">
         <span className="mono truncate">{file ?? ''}</span>
-        <span className="shrink-0">{lines.length} lines</span>
+        <span className="shrink-0">{pluralize(lines.length, 'line')}</span>
       </div>
     </Card>
   );
@@ -235,20 +236,30 @@ const LEVEL_CLASS: Record<string, string> = {
   critical: 'text-danger',
 };
 
+// Manager log lines look like "2026-09-25 14:50:32.596 WRN Category: message".
+const MANAGER_LEVEL = /^\S+ \S+ (TRC|DBG|INF|WRN|ERR|CRT) /;
+
 function levelOf(line: string): string | null {
+  const mgr = MANAGER_LEVEL.exec(line);
+  if (mgr) return { TRC: 'debug', DBG: 'debug', INF: 'info', WRN: 'warn', ERR: 'error', CRT: 'critical' }[mgr[1]] ?? null;
   const m = /"level"\s*:\s*"(\w+)"/.exec(line) ?? /\b(DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b|\[(dbug|info|warn|fail|crit)\]/i.exec(line);
   if (!m) return null;
   const v = (m[1] ?? m[2] ?? '').toLowerCase();
   return { fail: 'error', crit: 'critical', dbug: 'debug' }[v] ?? v;
 }
 
+const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+
+/** Caddy logs Unix timestamps; show them in the browser's local time like the manager log and the rest of the UI. */
+function toDate(ts: unknown): Date | null {
+  const d = typeof ts === 'number' ? new Date(ts > 1e12 ? ts : ts * 1000) : typeof ts === 'string' ? new Date(ts) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+
 function formatTs(ts: unknown): string {
-  if (typeof ts === 'number') {
-    const d = new Date(ts > 1e12 ? ts : ts * 1000);
-    return d.toISOString().replace('T', ' ').slice(0, 23);
-  }
-  if (typeof ts === 'string') return ts.replace('T', ' ').replace(/Z$/, '').slice(0, 23);
-  return '';
+  const d = toDate(ts);
+  if (!d) return typeof ts === 'string' ? ts : '';
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
 function PrettyLine({ line }: { line: string }) {
@@ -267,10 +278,13 @@ function PrettyLine({ line }: { line: string }) {
   if (req) delete extra.request;
   return (
     <>
-      <span className="text-fg-subtle">{formatTs(ts)} </span>
+      <span className="text-fg-subtle" title={toDate(ts)?.toISOString()}>
+        {formatTs(ts)}{' '}
+      </span>
       {lvl && <span className={cn('font-semibold uppercase', LEVEL_CLASS[lvl])}>{lvl.padEnd(5)} </span>}
-      {typeof logger === 'string' && <span className="text-accent-text">{logger} </span>}
-      {typeof msg === 'string' && <span className="text-fg">{msg} </span>}
+      {/* Access entries: the logger (http.log.access.cpm_access_<id>) and "handled request" repeat on every line. */}
+      {!req && typeof logger === 'string' && <span className="text-accent-text">{logger} </span>}
+      {!req && typeof msg === 'string' && <span className="text-fg">{msg} </span>}
       {req && (
         <span className="text-fg">
           {req.remote_ip} {req.method} {req.host}
@@ -327,11 +341,14 @@ function LogViewer({ lines, pretty, wrap, loading, emptyText }: { lines: string[
       ) : lines.length === 0 ? (
         <p className="py-8 text-center font-sans text-sm text-fg-subtle">{emptyText}</p>
       ) : (
-        lines.map((l, i) => (
-          <div key={i} className="hover:bg-surface-2/60">
-            {pretty ? <PrettyLine line={l} /> : <RawLine line={l} />}
-          </div>
-        ))
+        lines.map((raw, i) => {
+          const l = i === 0 ? raw.replace(/^\uFEFF/, '') : raw; // the manager log file starts with a UTF-8 BOM
+          return (
+            <div key={i} className="hover:bg-surface-2/60">
+              {pretty ? <PrettyLine line={l} /> : <RawLine line={l} />}
+            </div>
+          );
+        })
       )}
     </div>
   );

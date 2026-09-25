@@ -6,7 +6,7 @@ import { MIN_PASSWORD_LENGTH } from '@/lib/validation';
 
 export function ChangePasswordDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
-    <Dialog open={open} onClose={onClose} title="Change password" description="Other sessions stay signed in until they expire." size="sm">
+    <Dialog open={open} onClose={onClose} title="Change password" description="Your other sessions (other browsers or devices) are signed out; this one stays signed in." size="sm">
       <ChangePasswordForm onDone={onClose} />
     </Dialog>
   );

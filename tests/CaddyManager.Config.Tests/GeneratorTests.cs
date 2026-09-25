@@ -50,6 +50,12 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(_env.Paths.CaddyProcessLog, def["writer"]!["filename"]!.GetValue<string>());
         Assert.Equal(20, def["writer"]!["roll_size_mb"]!.GetValue<int>());
         Assert.Equal(10, def["writer"]!["roll_keep"]!.GetValue<int>());
+        // Admin API request logging (the manager polls every few seconds) is split off at WARN into the same file.
+        Assert.Equal(["admin.api"], Strings(def["exclude"]));
+        var adminLog = cfg["logging"]!["logs"]!["cpm_admin_api"]!;
+        Assert.Equal(["admin.api"], Strings(adminLog["include"]));
+        Assert.Equal("WARN", adminLog["level"]!.GetValue<string>());
+        Assert.Equal(_env.Paths.CaddyProcessLog, adminLog["writer"]!["filename"]!.GetValue<string>());
         Assert.Equal(80, cfg["apps"]!["http"]!["http_port"]!.GetValue<int>());
         Assert.Equal(443, cfg["apps"]!["http"]!["https_port"]!.GetValue<int>());
     }
@@ -59,6 +65,51 @@ public sealed class GeneratorTests : IDisposable
     {
         var cfg = CaddyConfigGenerator.BuildBootConfig(new CaddySettings(), _env.Paths);
         Assert.Equal(["admin", "logging", "storage"], cfg.Select(p => p.Key).ToArray());
+        Assert.Equal(["admin.api"], Strings(cfg["logging"]!["logs"]!["default"]!["exclude"]));
+        Assert.Equal("WARN", cfg["logging"]!["logs"]!["cpm_admin_api"]!["level"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Adapted_caddyfile_config_gets_admin_storage_and_logging_when_missing()
+    {
+        var settings = new CaddySettings { AdminListen = "127.0.0.1:2999" };
+        var warnings = new List<string>();
+        var json = CaddyConfigGenerator.CompleteAdaptedConfig("""{"apps":{"http":{"servers":{"srv0":{"listen":[":80"]}}}}}""", settings, _env.Paths, warnings);
+        var cfg = JsonNode.Parse(json)!;
+        Assert.Equal("127.0.0.1:2999", cfg["admin"]!["listen"]!.GetValue<string>());
+        Assert.Equal(_env.Paths.CaddyStorageDir, cfg["storage"]!["root"]!.GetValue<string>());
+        Assert.Equal(["admin.api"], Strings(cfg["logging"]!["logs"]!["default"]!["exclude"]));
+        Assert.NotNull(cfg["apps"]!["http"]);
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void Adapted_caddyfile_config_keeps_user_globals_and_warns_about_a_foreign_admin_endpoint()
+    {
+        var settings = new CaddySettings { AdminListen = "127.0.0.1:2019" };
+        var warnings = new List<string>();
+        var json = CaddyConfigGenerator.CompleteAdaptedConfig(
+            """{"admin":{"listen":"localhost:3000"},"storage":{"module":"file_system","root":"D:/certs"},"logging":{"logs":{"default":{"level":"ERROR"}}}}""",
+            settings, _env.Paths, warnings);
+        var cfg = JsonNode.Parse(json)!;
+        Assert.Equal("localhost:3000", cfg["admin"]!["listen"]!.GetValue<string>());
+        Assert.Equal("D:/certs", cfg["storage"]!["root"]!.GetValue<string>());
+        Assert.Equal("ERROR", cfg["logging"]!["logs"]!["default"]!["level"]!.GetValue<string>());
+        Assert.Contains(warnings, w => w.Contains("localhost:3000") && w.Contains("127.0.0.1:2019"));
+
+        // admin block without listen (e.g. only "admin { origins ... }") gets the manager's address
+        var partial = JsonNode.Parse(CaddyConfigGenerator.CompleteAdaptedConfig("""{"admin":{"origins":["x"]}}""", settings, _env.Paths, []))!;
+        Assert.Equal("127.0.0.1:2019", partial["admin"]!["listen"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Admin_api_log_level_never_drops_below_warn_but_follows_error()
+    {
+        var debug = Gen(new CaddySettings { LogLevel = "debug" }).Config["logging"]!["logs"]!;
+        Assert.Equal("DEBUG", debug["default"]!["level"]!.GetValue<string>());
+        Assert.Equal("WARN", debug["cpm_admin_api"]!["level"]!.GetValue<string>());
+        var error = Gen(new CaddySettings { LogLevel = "error" }).Config["logging"]!["logs"]!;
+        Assert.Equal("ERROR", error["cpm_admin_api"]!["level"]!.GetValue<string>());
     }
 
     [Fact]
@@ -575,7 +626,7 @@ public sealed class GeneratorTests : IDisposable
         Assert.Equal(Path.Combine(_env.Paths.AccessLogDir, "wildcard.logs.example.com.log"), logger["writer"]!["filename"]!.GetValue<string>());
         Assert.Equal("json", logger["encoder"]!["format"]!.GetValue<string>());
         Assert.Equal(["http.log.access.cpm_access_h1"], Strings(logger["include"]));
-        Assert.Equal(["http.log.access.cpm_access_h1"], Strings(logs["default"]!["exclude"]));
+        Assert.Equal(["admin.api", "http.log.access.cpm_access_h1"], Strings(logs["default"]!["exclude"]));
         var srvLogs = Srv(cfg, "srv0")["logs"]!;
         Assert.Equal(["cpm_access_h1"], Strings(srvLogs["logger_names"]!["*.logs.example.com"]));
         Assert.True(srvLogs["skip_unmapped_hosts"]!.GetValue<bool>());

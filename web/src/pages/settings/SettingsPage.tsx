@@ -147,7 +147,24 @@ function validateCaddy(f: CaddySettingsInput): FieldErrors {
   if (!/^(\[[0-9a-f:]+\]|[a-z0-9.-]+):\d{1,5}$/i.test(f.adminListen.trim())) e.adminListen = 'Use host:port, e.g. 127.0.0.1:2019.';
   const jsonErr = jsonObjectError(f.serverOptionsJson);
   if (jsonErr) e.serverOptionsJson = jsonErr;
+  if (f.disableHttpChallenge && f.disableTlsAlpnChallenge)
+    e.disableTlsAlpnChallenge = 'Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.';
+  if (!!f.eabKeyId?.trim() && f.eabMacKey === '') e.eabKeyId = 'External account binding needs both the key ID and the HMAC key.';
   return e;
+}
+
+/** Field keys the Caddy settings form shows next to a field; other server errors go to a summary. */
+const CADDY_FIELDS = [
+  'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort',
+  'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
+];
+
+/** The message for a field, including item errors such as "trustedProxies.1" for list fields. */
+function fieldError(errors: FieldErrors, key: string): string | undefined {
+  const msgs = Object.entries(errors)
+    .filter(([k]) => k === key || k.startsWith(`${key}.`))
+    .map(([, m]) => m);
+  return msgs.length ? msgs.join(' ') : undefined;
 }
 
 function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
@@ -164,6 +181,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
     setForm((f) => ({ ...f, [k]: v }));
     setServerErrors({});
   };
+  const unplaced = Object.entries(errors).filter(([k]) => !CADDY_FIELDS.some((f) => k === f || k.startsWith(`${f}.`)));
   const adminHost = form.adminListen.split(':').slice(0, -1).join(':').replace(/^\[|\]$/g, '');
   const adminLoopback = ['127.0.0.1', 'localhost', '::1'].includes(adminHost);
 
@@ -194,6 +212,15 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
     <form onSubmit={(e) => void submit(e)} noValidate>
       <Card className="p-5">
         <fieldset disabled={!isAdmin || save.isPending} className="min-w-0">
+          {unplaced.length > 0 && (
+            <Callout tone="danger" className="mb-4" title="The settings were not saved">
+              <ul className="list-disc pl-4">
+                {unplaced.map(([k, m]) => (
+                  <li key={k}>{m}</li>
+                ))}
+              </ul>
+            </Callout>
+          )}
           <FormSection title="Certificates (ACME)" description="Used by hosts with Automatic TLS. Let’s Encrypt needs inbound port 80 (HTTP challenge) or 443 (TLS-ALPN) from the Internet.">
             <Field label="Account e-mail" error={errors.acmeEmail} hint="Receives expiry warnings from the CA. Strongly recommended.">
               <Input type="email" placeholder="hostmaster@example.com" value={form.acmeEmail} onChange={(e) => set('acmeEmail', e.target.value)} />
@@ -212,13 +239,13 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 <Field label="ACME directory URL" required error={errors.customAcmeDirectory}>
                   <Input mono type="url" value={form.customAcmeDirectory ?? ''} onChange={(e) => set('customAcmeDirectory', e.target.value)} />
                 </Field>
-                <Field label="CA root certificate (path)" hint="PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.">
+                <Field label="CA root certificate (path)" error={errors.customAcmeRootPath} hint="PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.">
                   <Input mono placeholder="C:\ProgramData\pki\root.pem" value={form.customAcmeRootPath ?? ''} onChange={(e) => set('customAcmeRootPath', e.target.value)} />
                 </Field>
               </>
             )}
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="EAB key ID" hint="External account binding (ZeroSSL, some commercial and private CAs).">
+              <Field label="EAB key ID" error={errors.eabKeyId} hint="External account binding (ZeroSSL, some commercial and private CAs).">
                 <Input mono autoComplete="off" value={form.eabKeyId ?? ''} onChange={(e) => set('eabKeyId', e.target.value)} />
               </Field>
               <Field label="EAB HMAC key">
@@ -228,7 +255,9 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             <SwitchField label="Disable HTTP-01 challenge" description="Use when port 80 is not reachable from the Internet." checked={form.disableHttpChallenge} onChange={(v) => set('disableHttpChallenge', v)} />
             <SwitchField label="Disable TLS-ALPN-01 challenge" description="Use when port 443 is behind a TLS-terminating load balancer." checked={form.disableTlsAlpnChallenge} onChange={(v) => set('disableTlsAlpnChallenge', v)} />
             {form.disableHttpChallenge && form.disableTlsAlpnChallenge && (
-              <Callout tone="warning">With both challenges disabled, ACME certificates can only be issued via a DNS provider plugin.</Callout>
+              <Callout tone={errors.disableTlsAlpnChallenge ? 'danger' : 'warning'}>
+                Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.
+              </Callout>
             )}
           </FormSection>
 
@@ -242,7 +271,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
               </Field>
             </div>
             <SwitchField label="HTTP/3 (QUIC)" description={`Also listen on UDP ${form.httpsPort || 443}. Requires an inbound UDP firewall rule.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
-            <Field label="Bind addresses" hint="Leave empty to listen on all interfaces.">
+            <Field label="Bind addresses" error={fieldError(errors, 'bindAddresses')} hint="Leave empty to listen on all interfaces.">
               <ChipInput
                 value={form.bindAddresses}
                 onChange={(v) => set('bindAddresses', v)}
@@ -271,7 +300,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
           </FormSection>
 
           <FormSection title="Client IPs" description="When Caddy is behind a load balancer or CDN, trust its X-Forwarded-For header to get the real client IP (used by access lists and logs).">
-            <Field label="Trusted proxies">
+            <Field label="Trusted proxies" error={fieldError(errors, 'trustedProxies')}>
               <ChipInput
                 value={form.trustedProxies}
                 onChange={(v) => set('trustedProxies', v)}
@@ -283,7 +312,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
           </FormSection>
 
           <FormSection title="Logging & storage">
-            <Field label="Caddy log level" className="max-w-xs">
+            <Field label="Caddy log level" error={errors.logLevel} className="max-w-xs">
               <Select value={form.logLevel} onChange={(e) => set('logLevel', e.target.value)}>
                 <option value="debug">Debug (verbose)</option>
                 <option value="info">Info</option>
@@ -293,6 +322,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             </Field>
             <Field
               label="Certificate store path"
+              error={errors.certificateStorePath}
               hint="Where uploaded certificates are written. Leave empty for the default under ProgramData. A UNC share must be readable by this computer’s account."
             >
               <Input mono placeholder="C:\ProgramData\CaddyProxyManager\certificates" value={form.certificateStorePath ?? ''} onChange={(e) => set('certificateStorePath', e.target.value)} />
@@ -415,9 +445,12 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
 function UiTab() {
   const q = useUiSettings();
   const system = useSystemInfo();
+  const [restart, setRestart] = useState<{ nextUrl: string } | null>(null);
   return (
     <div className="flex flex-col gap-4">
-      <Loader query={q}>{(data) => <UiForm key={JSON.stringify(data)} settings={data} />}</Loader>
+      {/* Lives outside the form: the form re-mounts with the saved values after every save. */}
+      {restart && <RestartPanel reason="The new listener settings take effect when the management service restarts." nextUrl={restart.nextUrl} />}
+      <Loader query={q}>{(data) => <UiForm key={JSON.stringify(data)} settings={data} onRestartRequired={(nextUrl) => setRestart({ nextUrl })} />}</Loader>
       {system.data && (
         <Card>
           <CardHeader title="About this installation" />
@@ -442,11 +475,10 @@ function UiTab() {
   );
 }
 
-function UiForm({ settings }: { settings: UiSettings }) {
+function UiForm({ settings, onRestartRequired }: { settings: UiSettings; onRestartRequired: (nextUrl: string) => void }) {
   const initial = uiSettingsInput(settings);
   const [form, setForm] = useState<UiSettingsInput>(initial);
   const [submitted, setSubmitted] = useState(false);
-  const [restart, setRestart] = useState<{ nextUrl: string } | null>(null);
   const [bindMode, setBindMode] = useState<'all' | 'local' | 'custom'>(
     settings.bindAddress === '0.0.0.0' ? 'all' : settings.bindAddress === '127.0.0.1' ? 'local' : 'custom',
   );
@@ -485,7 +517,7 @@ function UiForm({ settings }: { settings: UiSettings }) {
         httpsPfxPassword: secretPayload(form.httpsPfxPassword),
       });
       toast.success('Management UI settings saved');
-      if (res.restartRequired) setRestart({ nextUrl: url });
+      if (res.restartRequired) onRestartRequired(url);
     } catch (err) {
       feedback.failed(err);
     }
@@ -493,7 +525,6 @@ function UiForm({ settings }: { settings: UiSettings }) {
 
   return (
     <form onSubmit={(e) => void submit(e)} noValidate className="flex flex-col gap-4">
-      {restart && <RestartPanel reason="The new listener settings take effect when the management service restarts." nextUrl={restart.nextUrl} />}
       <Card className="p-5">
         <fieldset disabled={save.isPending} className="min-w-0">
           <FormSection title="General">
@@ -609,7 +640,7 @@ function BackupTab() {
   return (
     <div className="flex flex-col gap-4">
       {restartNeeded && <RestartPanel reason="A restored backup is staged and will be applied when the management service restarts." />}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader icon={<Archive size={16} />} title="Download a backup" />
           <CardBody className="flex flex-col gap-4">

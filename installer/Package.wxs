@@ -10,9 +10,15 @@
   Public properties:
     UI_PORT   TCP port of the management UI (default: keep the configured port; 81 on a new install).
               msiexec /i CaddyProxyManager-1.0.0-x64.msi UI_PORT=8081 /qn
+              The port is remembered (HKLM\SOFTWARE\Caddy Proxy Manager\UiPort) so upgrades keep the firewall
+              exception on the same port.
 
-  Uninstall removes the manager service, the firewall exception and the Caddy service (via
-  "CaddyManager.exe uninstall-caddy-service"). Data in C:\ProgramData\CaddyProxyManager is kept.
+  Every install/upgrade runs "CaddyManager.exe configure" (deferred, as LocalSystem) before the service starts: it
+  creates C:\ProgramData\CaddyProxyManager, restricts it to SYSTEM + Administrators and stores UI_PORT when given.
+
+  Uninstall removes the manager service, the firewall exception, the Caddy service and the firewall rules of the
+  "Caddy Proxy Manager" group (via "CaddyManager.exe uninstall-caddy-service"). Data in
+  C:\ProgramData\CaddyProxyManager is kept.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
@@ -29,7 +35,8 @@
 
     <SummaryInformation Description="Caddy Proxy Manager $(var.ProductVersion)" Manufacturer="Caddy Proxy Manager" />
 
-    <MajorUpgrade Schedule="afterInstallInitialize"
+    <!-- AllowSameVersionUpgrades: CI builds (1.0.0-ci.N) share the MSI version 1.0.0 and must still replace each other. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed. Uninstall it first to downgrade." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
@@ -40,8 +47,15 @@
     <!-- ===================================================================== properties -->
     <!-- UI_PORT given on the command line reconfigures the UI listener; otherwise the stored setting is kept. -->
     <Property Id="UI_PORT" Secure="yes" />
+    <!-- Port of the firewall exception: UI_PORT, else the port remembered by a previous install, else 81. -->
+    <Property Id="CPM_SAVED_UI_PORT" Secure="yes">
+      <RegistrySearch Id="SavedUiPortSearch" Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiPort" Type="raw" Bitness="always64" />
+    </Property>
     <Property Id="CPM_FIREWALL_PORT" Value="81" Secure="yes" />
-    <SetProperty Id="CPM_FIREWALL_PORT" Value="[UI_PORT]" After="AppSearch" Sequence="both" Condition="UI_PORT" />
+    <SetProperty Id="CPM_FIREWALL_PORT" Action="CPM_SetFirewallPortFromSaved" Value="[CPM_SAVED_UI_PORT]" After="AppSearch" Sequence="both"
+                 Condition="CPM_SAVED_UI_PORT AND NOT UI_PORT" />
+    <SetProperty Id="CPM_FIREWALL_PORT" Action="CPM_SetFirewallPortFromUiPort" Value="[UI_PORT]" After="AppSearch" Sequence="both"
+                 Condition="UI_PORT" />
 
     <!-- Add/Remove Programs -->
     <Property Id="ARPCOMMENTS" Value="Web UI to install, configure and monitor the Caddy web server / reverse proxy on Windows Server." />
@@ -57,7 +71,7 @@
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="ManagerExecutable">
-        <File Id="CaddyManagerExe" Source="$(var.PublishDir)CaddyManager.exe" KeyPath="yes" />
+        <File Id="CaddyManagerExe" Source="$(var.PublishDir)\CaddyManager.exe" KeyPath="yes" />
 
         <ServiceInstall Id="ManagerServiceInstall"
                         Name="CaddyProxyManager"
@@ -68,9 +82,9 @@
                         ErrorControl="normal"
                         Account="LocalSystem"
                         Vital="yes">
-          <!-- Automatic (Delayed Start); run the recovery actions also when the service exits with an error code. -->
-          <ServiceConfig DelayedAutoStart="yes" FailureActionsWhen="failedToStopOrReturnedError" OnInstall="yes" OnReinstall="yes" />
-          <!-- Restart on failure: 5s / 10s / 30s, reset the failure counter after 1 day. -->
+          <!-- Automatic (Delayed Start) and "run recovery actions also on a non-zero exit code" are applied by the
+               CPM_ConfigureService custom action (the core ServiceConfig / MsiServiceConfig table is unreliable, WIX1149).
+               Restart on failure (baseline; CPM_ConfigureService sets 5s / 10s / 30s), reset the failure counter after 1 day. -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"
@@ -90,8 +104,9 @@
                                 IgnoreFailure="yes" />
       </Component>
 
-      <Component Id="AppSettings">
-        <File Id="AppSettingsJson" Source="$(var.PublishDir)appsettings.json" KeyPath="yes" />
+      <!-- The publish output is the single CaddyManager.exe (settings live in the database, not in appsettings.json). -->
+      <Component Id="RememberUiPort">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiPort" Type="string" Value="[CPM_FIREWALL_PORT]" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
@@ -100,16 +115,21 @@
     </Feature>
 
     <!-- ===================================================================== custom actions -->
-    <!-- Store UI_PORT in the manager's settings before the service starts (only when UI_PORT was given). -->
-    <SetProperty Id="CPM_ConfigureUi"
+    <!-- Before the service starts: create + lock down the data directory, and store UI_PORT when it was given. -->
+    <SetProperty Id="CPM_ConfigureUi" Action="CPM_SetConfigureUiWithPort"
                  Value="&quot;[#CaddyManagerExe]&quot; configure --ui-port [UI_PORT]"
                  Before="CPM_ConfigureUi" Sequence="execute"
                  Condition="UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
+    <SetProperty Id="CPM_ConfigureUi" Action="CPM_SetConfigureUiDefault"
+                 Value="&quot;[#CaddyManagerExe]&quot; configure"
+                 Before="CPM_ConfigureUi" Sequence="execute"
+                 Condition="NOT UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
     <CustomAction Id="CPM_ConfigureUi"
                   BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="check" />
 
-    <!-- On a real uninstall (not a major upgrade) also stop and delete the "Caddy" service the manager created. -->
+    <!-- On a real uninstall (not a major upgrade) also stop and delete the "Caddy" service the manager created and the
+         firewall rules of the "Caddy Proxy Manager" group created by readiness fixes. -->
     <SetProperty Id="CPM_RemoveCaddyService"
                  Value="&quot;[#CaddyManagerExe]&quot; uninstall-caddy-service"
                  Before="CPM_RemoveCaddyService" Sequence="execute"
@@ -118,8 +138,18 @@
                   BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
+    <!-- After the service is registered and before it starts: delayed start, recovery actions, failure-actions flag. -->
+    <SetProperty Id="CPM_ConfigureService"
+                 Value="&quot;[#CaddyManagerExe]&quot; configure-service"
+                 Before="CPM_ConfigureService" Sequence="execute"
+                 Condition="NOT (REMOVE=&quot;ALL&quot;)" />
+    <CustomAction Id="CPM_ConfigureService"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
     <InstallExecuteSequence>
-      <Custom Action="CPM_ConfigureUi" After="InstallFiles" Condition="UI_PORT AND NOT (REMOVE=&quot;ALL&quot;)" />
+      <Custom Action="CPM_ConfigureService" After="InstallServices" Condition="NOT (REMOVE=&quot;ALL&quot;)" />
+      <Custom Action="CPM_ConfigureUi" After="InstallFiles" Condition="NOT (REMOVE=&quot;ALL&quot;)" />
       <Custom Action="CPM_RemoveCaddyService" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Package>

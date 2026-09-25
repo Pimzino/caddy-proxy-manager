@@ -135,7 +135,7 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
           Choose “Rebuild &amp; install” to download a matching Caddy build.
         </Callout>
       )}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
         <Card className="self-start">
           <CardHeader
             icon={<Puzzle size={16} />}

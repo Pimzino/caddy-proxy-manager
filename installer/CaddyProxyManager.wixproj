@@ -17,8 +17,10 @@
     <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
     <ProductVersion>$([System.Text.RegularExpressions.Regex]::Match('$(ProductVersion)', '^\d+(\.\d+){0,3}').Value)</ProductVersion>
     <CpmPublishDir Condition="'$(CpmPublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\publish\</CpmPublishDir>
-    <CpmPublishDir Condition="!HasTrailingSlash('$(CpmPublishDir)')">$(CpmPublishDir)\</CpmPublishDir>
-    <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(CpmPublishDir)</DefineConstants>
+    <!-- No trailing backslash in the define: wix.exe gets it on its command line, where a quoted value (path with spaces)
+         ending in \" would swallow the closing quote. Package.wxs adds the separator. -->
+    <CpmPublishDirDefine>$(CpmPublishDir.TrimEnd('\').TrimEnd('/'))</CpmPublishDirDefine>
+    <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(CpmPublishDirDefine)</DefineConstants>
     <!-- Not a .NET project: keep repo-wide settings from Directory.Build.props from leaking in. -->
     <Nullable />
     <ImplicitUsings />

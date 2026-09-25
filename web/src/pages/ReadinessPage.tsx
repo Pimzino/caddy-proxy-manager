@@ -24,7 +24,7 @@ import {
   type Tone,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { formatDateTime, formatRelative } from '@/lib/format';
+import { formatDateTime, formatRelative, pluralize } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
 
 const CATEGORY_ORDER = ['System', 'Caddy', 'Firewall', 'Network', 'Domain', 'Ports', 'Connectivity', 'DNS'];
@@ -135,7 +135,7 @@ function Report({ report }: { report: ReadinessReport }) {
           No failed checks or warnings.
         </Callout>
       )}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="flex min-w-0 flex-col gap-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg">Checks</h2>
@@ -186,7 +186,7 @@ function CheckGroup({ category, checks }: { category: string; checks: ReadinessC
     <Card>
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <h3 className="text-sm font-semibold text-fg">{category}</h3>
-        <span className="text-xs text-fg-subtle">{checks.length} checks</span>
+        <span className="text-xs text-fg-subtle">{pluralize(checks.length, 'check')}</span>
         <div className="flex-1" />
         {fails > 0 && <Badge tone="danger">{fails} failed</Badge>}
         {warns > 0 && <Badge tone="warning">{warns} warning{warns === 1 ? '' : 's'}</Badge>}

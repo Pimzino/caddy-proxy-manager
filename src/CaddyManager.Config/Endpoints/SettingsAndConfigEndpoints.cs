@@ -130,10 +130,32 @@ internal static class ConfigEndpoints
     {
         var g = app.MapGroup("/api/config").RequireAuthorization(Policies.Viewer);
 
-        g.MapGet("/preview", (CaddyConfigService config) =>
+        // What an apply would load: the generated config in Managed mode, the adapted Caddyfile in Caddyfile mode.
+        g.MapGet("/preview", async (CaddyConfigService config, IStore store, AppPaths paths, CancellationToken ct) =>
         {
+            var settings = store.GetSettings<CaddySettings>();
+            if (settings.Mode == ConfigMode.Caddyfile)
+            {
+                if (string.IsNullOrWhiteSpace(settings.RawCaddyfile))
+                    return ApiResults.Failed("The Caddyfile is empty", "Caddyfile mode is enabled but no Caddyfile has been saved.");
+                try
+                {
+                    var adapted = await config.AdaptCaddyfileAsync(settings.RawCaddyfile, ct);
+                    if (adapted is null)
+                        return Results.Problem(title: "Cannot adapt the Caddyfile",
+                            detail: "Caddy is not running and its binary is not installed, so the Caddyfile cannot be converted.",
+                            statusCode: StatusCodes.Status503ServiceUnavailable);
+                    var warnings = adapted.Value.Warnings.ToList();
+                    var json = CaddyConfigGenerator.CompleteAdaptedConfig(adapted.Value.Json, settings, paths, warnings);
+                    return Results.Ok(new { json = CaddyJson.Reformat(json), warnings, mode = "caddyfile" });
+                }
+                catch (CaddyAdminException ex)
+                {
+                    return ApiResults.Failed("The Caddyfile is invalid", ex.Message);
+                }
+            }
             var result = config.Generate();
-            return Results.Ok(new { json = result.ToJson(), warnings = result.Warnings });
+            return Results.Ok(new { json = result.ToJson(), warnings = result.Warnings, mode = "managed" });
         });
 
         g.MapGet("/running", async (ICaddyAdminClient admin, CancellationToken ct) =>

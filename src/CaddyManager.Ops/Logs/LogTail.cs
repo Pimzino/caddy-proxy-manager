@@ -13,8 +13,11 @@ internal static class LogTail
     private const int ChunkSize = 64 * 1024;
     /// <summary>Longest single line kept; longer lines keep their last part and are prefixed with "…".</summary>
     internal const int MaxLineBytes = 64 * 1024;
-    /// <summary>Upper bound on bytes scanned when a filter is applied (keeps the worst case bounded).</summary>
-    public const long MaxScanBytesFiltered = 256L * 1024 * 1024;
+    /// <summary>
+    /// Upper bound on bytes scanned when a filter is applied (keeps the worst case bounded). Caddy rolls its logs
+    /// at 20 MB, so 64 MB covers a whole active file while bounding the cost of a viewer's request.
+    /// </summary>
+    public const long MaxScanBytesFiltered = 64L * 1024 * 1024;
 
     public static List<string> Read(string path, int lines, string? filter = null, long maxScanBytes = MaxScanBytesFiltered)
     {

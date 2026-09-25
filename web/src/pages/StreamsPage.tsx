@@ -33,6 +33,7 @@ import {
   useConfirm,
 } from '@/components/ui';
 import { isValidPort, isValidUpstreamHost, type FieldErrors } from '@/lib/validation';
+import { pluralize } from '@/lib/format';
 
 const emptyStream: StreamHostFields = {
   enabled: true,
@@ -78,7 +79,12 @@ export default function StreamsPage() {
     save.mutate(
       { id, stream: { ...fields, enabled } },
       {
-        onSuccess: (res) => feedback.applied(res.apply, enabled ? 'Stream enabled and applied' : 'Stream disabled and applied'),
+        onSuccess: (res) =>
+          feedback.applied(
+            res.apply,
+            enabled ? 'Stream enabled and applied' : 'Stream disabled and applied',
+            enabled && res.apply.warnings?.some((w) => w.includes('layer4')) ? 'Stream enabled but not active' : undefined,
+          ),
         onError: (err) => feedback.failed(err),
       },
     );
@@ -142,7 +148,7 @@ export default function StreamsPage() {
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
           <SearchInput value={q} onChange={setQ} placeholder="Search ports, hosts, notes…" />
-          <span className="ml-auto text-sm text-fg-subtle">{streams.data?.length ?? 0} streams</span>
+          <span className="ml-auto text-sm text-fg-subtle">{streams.data && pluralize(streams.data.length, 'stream')}</span>
         </div>
         {streams.isPending ? (
           <TableSkeleton rows={3} cols={5} />
@@ -270,7 +276,9 @@ function StreamEditor({ stream, others, onClose }: { stream?: StreamHost; others
       { id: stream?.id, stream: { ...form, upstreamHost: form.upstreamHost.trim(), notes: form.notes?.trim() || null } },
       {
         onSuccess: (res) => {
-          feedback.applied(res.apply, stream ? 'Saved and applied' : 'Stream created and applied');
+          // Without the layer4 module the stream is stored but not active; don't claim it was applied.
+          const inactive = res.apply.warnings?.some((w) => w.includes('layer4'));
+          feedback.applied(res.apply, stream ? 'Saved and applied' : 'Stream created and applied', inactive ? 'Stream saved but not active' : undefined);
           onClose();
         },
         onError: (err) => {

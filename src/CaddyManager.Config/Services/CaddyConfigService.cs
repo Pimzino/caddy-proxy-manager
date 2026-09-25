@@ -185,8 +185,8 @@ public sealed partial class CaddyConfigService(
                     logger.LogWarning("Apply ({Reason}): Caddyfile not adapted — Caddy not running and binary missing", reason);
                     return new ApplyResult { Success = true, WrittenOnly = true, Warnings = warnings };
                 }
-                json = adapted.Value.Json;
                 warnings.AddRange(adapted.Value.Warnings);
+                json = CaddyConfigGenerator.CompleteAdaptedConfig(adapted.Value.Json, settings, paths, warnings);
             }
             catch (CaddyAdminException ex)
             {

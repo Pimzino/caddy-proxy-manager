@@ -275,7 +275,18 @@ public sealed class EndpointTests
 
         Assert.Equal(HttpStatusCode.OK, (await c.PutAsJsonAsync($"/api/streams/{id}", new { protocol = "tcp", listenPort = 3390, upstreamHost = "10.0.0.5", upstreamPort = 3389 }, Json)).StatusCode);
         Assert.Equal(2, (await c.GetFromJsonAsync<JsonArray>("/api/streams", Json))!.Count);
-        Assert.Equal(HttpStatusCode.OK, (await c.DeleteAsync($"/api/streams/{id}")).StatusCode);
+
+        // The standing "streams skipped" warning belongs to stream changes, the preview and manual applies — not to every host save.
+        var host = await Body(await c.PostAsJsonAsync("/api/hosts", ProxyHost("nostreamwarning.example.com"), Json));
+        Assert.DoesNotContain(host["apply"]!["warnings"]!.AsArray(), w => w!.GetValue<string>().Contains("layer4"));
+        var manual = await Body(await c.PostAsync("/api/config/apply", null));
+        Assert.Contains(manual["warnings"]!.AsArray(), w => w!.GetValue<string>().Contains("layer4"));
+        var preview = await c.GetFromJsonAsync<JsonObject>("/api/config/preview", Json);
+        Assert.Contains(preview!["warnings"]!.AsArray(), w => w!.GetValue<string>().Contains("layer4"));
+
+        var deleted = await c.DeleteAsync($"/api/streams/{id}");
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+        Assert.Contains((await Body(deleted))["apply"]!["warnings"]!.AsArray(), w => w!.GetValue<string>().Contains("layer4")); // one stream left
     }
 
     // ------------------------------------------------------------------ access lists
@@ -512,5 +523,33 @@ public sealed class EndpointTests
         Assert.NotNull(body["warnings"]);
         var bad = await api.Client.PostAsJsonAsync("/api/config/caddyfile/adapt", new { caddyfile = "a.test {\n nonsense_directive\n}\n" }, Json);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, bad.StatusCode);
+    }
+
+    [CaddyFact]
+    public async Task Config_preview_follows_the_active_mode()
+    {
+        await using var api = ApiHost.Start(installBinary: true);
+        var c = api.Client;
+        await c.PostAsJsonAsync("/api/hosts", ProxyHost("managed.example.com"), Json);
+
+        var managed = await c.GetFromJsonAsync<JsonObject>("/api/config/preview", Json);
+        Assert.Equal("managed", managed!["mode"]!.GetValue<string>());
+        Assert.Contains("managed.example.com", managed["json"]!.GetValue<string>());
+
+        // Caddyfile mode: the preview is what an apply would load (the adapted Caddyfile), not the managed hosts.
+        var s = api.Store.GetSettings<CaddySettings>();
+        s.Mode = ConfigMode.Caddyfile;
+        s.RawCaddyfile = "http://cf.example.com {\n respond \"from caddyfile\"\n}\n";
+        api.Store.SaveSettings(s);
+        var adapted = await c.GetFromJsonAsync<JsonObject>("/api/config/preview", Json);
+        Assert.Equal("caddyfile", adapted!["mode"]!.GetValue<string>());
+        Assert.Contains("cf.example.com", adapted["json"]!.GetValue<string>());
+        Assert.DoesNotContain("managed.example.com", adapted["json"]!.GetValue<string>());
+        // completed with the manager's admin endpoint, as an apply would load it
+        Assert.Contains(s.AdminListen, adapted["json"]!.GetValue<string>());
+
+        s.RawCaddyfile = "a.test {\n nonsense_directive\n}\n";
+        api.Store.SaveSettings(s);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await c.GetAsync("/api/config/preview")).StatusCode);
     }
 }

@@ -29,8 +29,8 @@ public static class ReadinessScripts
     private static string N(int n) => n.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Network profiles, domain membership + computer DN (ADSI), listeners on the given ports with owning
-    /// processes, http.sys URL registrations, IIS (W3SVC) state and the WinHTTP proxy.
+    /// Network profiles, domain membership, listeners on the given ports with owning processes, http.sys URL
+    /// registrations, IIS (W3SVC) state and the WinHTTP proxy.
     /// </summary>
     public static string SystemFacts(IEnumerable<int> tcpPorts, IEnumerable<int> udpPorts) => $$"""
         $tcpPorts = @({{string.Join(",", tcpPorts.Distinct().Select(N))}})
@@ -47,28 +47,13 @@ public static class ReadinessScripts
             }
         })
 
-        # --- Domain membership
+        # --- Domain membership (the computer DN is looked up by ComputerDn(), in its own process with its own timeout)
         $cs = Get-CimInstance -ClassName Win32_ComputerSystem
-        $domain = [ordered]@{
+        $out.domain = [ordered]@{
             partOfDomain = [bool]$cs.PartOfDomain
             domain       = [string]$cs.Domain
             domainRole   = [int]$cs.DomainRole
-            computerDn   = $null
-            dnError      = $null
         }
-        if ($cs.PartOfDomain) {
-            try {
-                $searcher = [adsisearcher]"(&(objectCategory=computer)(sAMAccountName=$($env:COMPUTERNAME)`$))"
-                $searcher.ClientTimeout = [TimeSpan]::FromSeconds(15)
-                [void]$searcher.PropertiesToLoad.Add('distinguishedName')
-                $found = $searcher.FindOne()
-                if ($found) { $domain.computerDn = [string]$found.Properties['distinguishedname'][0] }
-                else { $domain.dnError = 'Computer account not found in Active Directory.' }
-            } catch {
-                $domain.dnError = [string]$_.Exception.Message
-            }
-        }
-        $out.domain = $domain
 
         # --- Listeners on the Caddy ports and their processes
         $listeners = @()
@@ -108,8 +93,31 @@ public static class ReadinessScripts
         """;
 
     /// <summary>
+    /// Distinguished name of the computer account (ADSI, as the computer account when run as LocalSystem). Kept out of
+    /// <see cref="SystemFacts"/> because an LDAP bind to an unreachable domain controller can block for a long time.
+    /// </summary>
+    public static string ComputerDn() => """
+        $r = [ordered]@{ computerDn = $null; dnError = $null }
+        if (-not (Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain) { return $r }
+        try {
+            $searcher = [adsisearcher]"(&(objectCategory=computer)(sAMAccountName=$($env:COMPUTERNAME)`$))"
+            $searcher.ClientTimeout = [TimeSpan]::FromSeconds(15)
+            $searcher.ServerTimeLimit = [TimeSpan]::FromSeconds(15)
+            [void]$searcher.PropertiesToLoad.Add('distinguishedName')
+            $found = $searcher.FindOne()
+            if ($found) { $r.computerDn = [string]$found.Properties['distinguishedname'][0] }
+            else { $r.dnError = 'Computer account not found in Active Directory.' }
+        } catch {
+            $r.dnError = [string]$_.Exception.Message
+        }
+        $r
+        """;
+
+    /// <summary>
     /// Firewall service + profiles (ActiveStore), GPO "AllowLocalPolicyMerge" registry values, and every enabled
     /// inbound rule of the ActiveStore (local + GPO rules) whose port filter could match the given ports.
+    /// Servers can have thousands of rules, so the port filters are enumerated first (one CIM query) and only the
+    /// matching rules are joined with their application/service/address filters.
     /// </summary>
     public static string FirewallFacts(IEnumerable<int> ports) => $$"""
         $ports = @({{string.Join(",", ports.Distinct().Select(N))}})
@@ -122,6 +130,7 @@ public static class ReadinessScripts
                 name                    = [string]$_.Name
                 enabled                 = [string]$_.Enabled
                 defaultInboundAction    = [string]$_.DefaultInboundAction
+                allowInboundRules       = [string]$_.AllowInboundRules
                 allowLocalFirewallRules = [string]$_.AllowLocalFirewallRules
             }
         })
@@ -133,16 +142,9 @@ public static class ReadinessScripts
             [ordered]@{ profile = $_; value = if ($null -eq $v) { -1 } else { [int]$v } }
         })
 
-        $rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction SilentlyContinue)
-        $portF = @{}; Get-NetFirewallPortFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { $portF[[string]$_.InstanceID] = $_ }
-        $appF = @{};  Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { $appF[[string]$_.InstanceID] = $_ }
-        $svcF = @{};  Get-NetFirewallServiceFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { $svcF[[string]$_.InstanceID] = $_ }
-        $addrF = @{}; Get-NetFirewallAddressFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { $addrF[[string]$_.InstanceID] = $_ }
-
-        $relevant = foreach ($r in $rules) {
-            $id = [string]$r.InstanceID
-            $pf = $portF[$id]
-            if (-not $pf) { continue }
+        # 1. Port filters that can match one of the ports (keyed by the rule's InstanceID).
+        $candidates = @{}
+        foreach ($pf in @(Get-NetFirewallPortFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) {
             $proto = [string]$pf.Protocol
             if (@('TCP', 'UDP', 'Any', '6', '17') -notcontains $proto) { continue }
             $lp = @($pf.LocalPort | ForEach-Object { [string]$_ })
@@ -153,14 +155,42 @@ public static class ReadinessScripts
                     foreach ($want in $ports) { if ($want -ge [int]$Matches[1] -and $want -le [int]$Matches[2]) { $match = $true } }
                 } elseif ($p -match '^\d+$' -and $ports -contains [int]$p) { $match = $true }
             }
-            if (-not $match) { continue }
+            if ($match) { $candidates[[string]$pf.InstanceID] = @{ protocol = $proto; localPorts = $lp } }
+        }
+
+        # 2. Enabled inbound rules with such a port filter.
+        $rules = @()
+        if ($candidates.Count -gt 0) {
+            $rules = @(foreach ($r in @(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction SilentlyContinue)) {
+                if ($candidates.ContainsKey([string]$r.InstanceID)) { $r }
+            })
+        }
+
+        # 3. Their application / service / address filters: per rule when there are few, one bulk query each otherwise.
+        $appF = @{}; $svcF = @{}; $addrF = @{}
+        if ($rules.Count -gt 40) {
+            foreach ($f in @(Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) { $id = [string]$f.InstanceID; if ($candidates.ContainsKey($id)) { $appF[$id] = $f } }
+            foreach ($f in @(Get-NetFirewallServiceFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) { $id = [string]$f.InstanceID; if ($candidates.ContainsKey($id)) { $svcF[$id] = $f } }
+            foreach ($f in @(Get-NetFirewallAddressFilter -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) { $id = [string]$f.InstanceID; if ($candidates.ContainsKey($id)) { $addrF[$id] = $f } }
+        } else {
+            foreach ($r in $rules) {
+                $id = [string]$r.InstanceID
+                $appF[$id] = $r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Select-Object -First 1
+                $svcF[$id] = $r | Get-NetFirewallServiceFilter -ErrorAction SilentlyContinue | Select-Object -First 1
+                $addrF[$id] = $r | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue | Select-Object -First 1
+            }
+        }
+
+        $out.rules = @(foreach ($r in $rules) {
+            $id = [string]$r.InstanceID
+            $c = $candidates[$id]
             [ordered]@{
                 name            = [string]$r.Name
                 displayName     = [string]$r.DisplayName
                 action          = [string]$r.Action
                 profile         = [string]$r.Profile
-                protocol        = $proto
-                localPorts      = $lp
+                protocol        = $c.protocol
+                localPorts      = $c.localPorts
                 program         = if ($appF[$id]) { [string]$appF[$id].Program } else { 'Any' }
                 service         = if ($svcF[$id]) { [string]$svcF[$id].Service } else { 'Any' }
                 remoteAddresses = if ($addrF[$id]) { @($addrF[$id].RemoteAddress | ForEach-Object { [string]$_ }) } else { @('Any') }
@@ -168,8 +198,7 @@ public static class ReadinessScripts
                 sourceName      = [string]$r.PolicyStoreSource
                 group           = [string]$r.Group
             }
-        }
-        $out.rules = @($relevant)
+        })
         $out
         """;
 

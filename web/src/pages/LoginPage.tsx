@@ -52,7 +52,12 @@ export default function LoginPage() {
     <AuthLayout
       title="Sign in"
       description="Use your Caddy Proxy Manager account."
-      footer="Forgot the admin password? On the server run: CaddyManager.exe reset-password"
+      footer={
+        <>
+          Forgot the admin password? On the server, in an elevated prompt run{' '}
+          <span className="mono whitespace-nowrap">CaddyManager.exe reset-password --email &lt;e-mail&gt;</span>
+        </>
+      }
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         {error && <Callout tone="danger">{error}</Callout>}

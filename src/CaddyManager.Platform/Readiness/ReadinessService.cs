@@ -109,14 +109,17 @@ public sealed partial class ReadinessService(
             var udpPorts = ctx.Caddy.EnableHttp3 ? new[] { ctx.Caddy.HttpsPort } : [];
             var sysTask = windows ? Capture(() => RunSystemFactsAsync(tcpPorts, udpPorts, ct)) : Task.FromResult<(SystemFacts?, string?)>((null, null));
             var fwTask = windows ? Capture(() => RunFirewallFactsAsync(ctx.Rules.Select(r => r.Port), ct)) : Task.FromResult<(FirewallFacts?, string?)>((null, null));
+            var dnTask = windows ? ComputerDnAsync(ct) : Task.FromResult<(string?, string?)>((null, null));
             var statusTask = host.GetStatusAsync(ct);
             var clockTask = ClockCheckAsync(ct);
             var connTask = ConnectivityChecksAsync(ctx, ct);
             var dnsTask = DnsChecksAsync(ctx, ct);
             var fqdnTask = FqdnAsync();
-            await Task.WhenAll(sysTask, fwTask, statusTask, clockTask, connTask, dnsTask, fqdnTask);
+            await Task.WhenAll(sysTask, fwTask, dnTask, statusTask, clockTask, connTask, dnsTask, fqdnTask);
 
             var (sys, sysError) = sysTask.Result;
+            if (sys is { Domain.PartOfDomain: true } && dnTask.Result is var (dn, dnError))
+                sys = sys with { Domain = sys.Domain with { ComputerDn = dn, DnError = dnError } };
             var (fw, fwError) = fwTask.Result;
             var status = statusTask.Result;
 
@@ -185,8 +188,24 @@ public sealed partial class ReadinessService(
     private async Task<SystemFacts> RunSystemFactsAsync(int[] tcp, int[] udp, CancellationToken ct) =>
         WindowsFactsParser.ParseSystem(await powershell.RunJsonAsync(ReadinessScripts.SystemFacts(tcp, udp), ct: ct));
 
+    /// <summary>Servers with thousands of firewall rules need more than the default 60s to enumerate the ActiveStore.</summary>
+    private static readonly TimeSpan FirewallFactsTimeout = TimeSpan.FromSeconds(150);
+
     private async Task<FirewallFacts> RunFirewallFactsAsync(IEnumerable<int> ports, CancellationToken ct) =>
-        WindowsFactsParser.ParseFirewall(await powershell.RunJsonAsync(ReadinessScripts.FirewallFacts(ports), ct: ct));
+        WindowsFactsParser.ParseFirewall(await powershell.RunJsonAsync(ReadinessScripts.FirewallFacts(ports), FirewallFactsTimeout, ct));
+
+    /// <summary>Computer DN via ADSI in its own PowerShell process: an unreachable DC must not stall the other facts.</summary>
+    private async Task<(string? ComputerDn, string? DnError)> ComputerDnAsync(CancellationToken ct)
+    {
+        try
+        {
+            return WindowsFactsParser.ParseComputerDn(await powershell.RunJsonAsync(ReadinessScripts.ComputerDn(), TimeSpan.FromSeconds(45), ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (null, ex is TimeoutException ? "The Active Directory lookup timed out (is a domain controller reachable?)." : ex.Message);
+        }
+    }
 
     private Context BuildContext()
     {
@@ -449,7 +468,7 @@ public sealed partial class ReadinessService(
         var active = FirewallEvaluator.ActiveProfiles(sys?.Profiles ?? []);
         foreach (var p in fw.Profiles)
         {
-            var enabled = p.Enabled.Equals("True", StringComparison.OrdinalIgnoreCase);
+            var enabled = p.IsEnabled; // "NotConfigured" = default = enabled
             var isActive = active.Contains(p.Name, StringComparer.OrdinalIgnoreCase);
             yield return new ReadinessCheck
             {

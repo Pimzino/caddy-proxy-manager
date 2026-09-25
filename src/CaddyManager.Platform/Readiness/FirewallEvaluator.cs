@@ -38,13 +38,14 @@ public static class FirewallEvaluator
         var deniedProfiles = new List<string>();
         var blocked = false;
         var anyLocalIgnored = false;
+        var blockAllInbound = new List<string>();
 
         foreach (var profile in activeProfiles)
         {
             var prof = f.Profiles.FirstOrDefault(p => p.Name.Equals(profile, StringComparison.OrdinalIgnoreCase));
             var localIgnored = LocalRulesIgnored(f, profile);
             anyLocalIgnored |= localIgnored;
-            if (prof is not null && prof.Enabled.Equals("False", StringComparison.OrdinalIgnoreCase))
+            if (prof is not null && !prof.IsEnabled)
             {
                 allowedProfiles.Add(profile);
                 details.AppendLine($"{profile}: firewall profile is disabled, traffic is not filtered.");
@@ -58,6 +59,12 @@ public static class FirewallEvaluator
                 blocked = true;
                 deniedProfiles.Add(profile);
                 details.AppendLine($"{profile}: BLOCKED by {Describe(blocks)} (block rules override allow rules).");
+            }
+            else if (prof is not null && !prof.AllowsInboundRules)
+            {
+                blockAllInbound.Add(profile);
+                deniedProfiles.Add(profile);
+                details.AppendLine($"{profile}: the profile blocks all incoming connections (AllowInboundRules = False, \"Block all connections\"), so allow rules are ignored.");
             }
             else if (allows.Count > 0)
             {
@@ -81,7 +88,7 @@ public static class FirewallEvaluator
         var status = deniedProfiles.Count == 0 ? CheckStatus.Pass
             : allowedProfiles.Count == 0 ? CheckStatus.Fail
             : CheckStatus.Warn;
-        var fixable = status != CheckStatus.Pass && !blocked && !anyLocalIgnored;
+        var fixable = status != CheckStatus.Pass && !blocked && !anyLocalIgnored && blockAllInbound.Count == 0;
         string summary = status switch
         {
             CheckStatus.Pass => $"Inbound {what} is allowed for the active profile(s): {string.Join(", ", activeProfiles)}.",
@@ -90,9 +97,10 @@ public static class FirewallEvaluator
         };
         string? remediation = status == CheckStatus.Pass ? null
             : blocked ? "Disable or narrow the blocking rule(s) listed in the details (if they come from Group Policy, change the GPO)."
+            : blockAllInbound.Count > 0 ? $"The {string.Join(", ", blockAllInbound)} profile blocks all incoming connections. Allow inbound rules again: Set-NetFirewallProfile -Name {string.Join(",", blockAllInbound)} -AllowInboundRules True (or change the Group Policy setting \"Inbound connections: Block (default)\" / \"Block all connections\")."
             : anyLocalIgnored ? "Group Policy ignores local firewall rules on this server. Add the rule to a GPO — use the script from the Domain check (GPO script)."
             : $"Create the rule '{req.DisplayName}' (click Fix, or run the script).";
-        string? script = status == CheckStatus.Pass || blocked ? null
+        string? script = status == CheckStatus.Pass || blocked || blockAllInbound.Count > 0 ? null
             : anyLocalIgnored ? "# Local rules are ignored by Group Policy on this server; deploy the rule via GPO:\n# GET /api/readiness/gpo-script (Readiness page → GPO script)"
             : ReadinessScripts.CreateFirewallRuleCommand(req);
 

@@ -58,7 +58,7 @@ export default function ServicePage() {
   return (
     <>
       <PageHeader title="Service & Updates" description="Control the Caddy service and keep the Caddy binary up to date." />
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ServiceCard status={status.data} error={status.error} loading={status.isPending} />
         <BinaryCard onJob={setJobId} onPickVersion={() => setVersionDialog(true)} />
       </div>

@@ -213,7 +213,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
             <TlsTab form={form} set={set} errors={errors} />
           </TabPanel>
           <TabPanel idBase={idBase} value="access" active={tab === 'access'}>
-            <AccessTab form={form} set={set} />
+            <AccessTab form={form} set={set} errors={errors} />
           </TabPanel>
           <TabPanel idBase={idBase} value="headers" active={tab === 'headers'}>
             <HeadersTab form={form} set={set} errors={errors} kind={kind} />
@@ -617,7 +617,7 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
 
 // ---------------------------------------------------------------- Access
 
-function AccessTab({ form, set }: { form: SiteHostFields; set: Setter }) {
+function AccessTab({ form, set, errors }: { form: SiteHostFields; set: Setter; errors: FieldErrors }) {
   const lists = useAccessLists();
   const selected = lists.data?.find((l) => l.id === form.accessListId);
   return (
@@ -625,6 +625,7 @@ function AccessTab({ form, set }: { form: SiteHostFields; set: Setter }) {
       <Section title="Access list" description="Restrict who can reach this host by IP address and/or basic authentication.">
         <Field
           label="Access list"
+          error={errors.accessListId}
           hint={
             <>
               Manage lists on the{' '}

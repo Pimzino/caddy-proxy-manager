@@ -35,9 +35,8 @@ const emptyForm: FormState = {
   keyPath: '',
 };
 
-function validate(method: Method, f: FormState, requireName: boolean): FieldErrors {
+function validate(method: Method, f: FormState): FieldErrors {
   const e: FieldErrors = {};
-  if (requireName && !f.name.trim()) e.name = 'Enter a name to recognise this certificate.';
   if (method === 'pem') {
     if (!f.certFile) e.certFile = 'Choose the certificate (chain) file.';
     if (!f.keyFile) e.keyFile = 'Choose the private key file.';
@@ -80,7 +79,7 @@ function Inner({ onClose, replace }: { onClose: () => void; replace?: Certificat
   const feedback = useFeedback();
   const pending = create.isPending || replaceMut.isPending;
 
-  const errors = { ...serverErrors, ...(submitted ? validate(method, form, !replace) : {}) };
+  const errors = { ...serverErrors, ...(submitted ? validate(method, form) : {}) };
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
     setServerErrors({});
@@ -91,7 +90,7 @@ function Inner({ onClose, replace }: { onClose: () => void; replace?: Certificat
     e.preventDefault();
     setSubmitted(true);
     setServerMessage(null);
-    if (Object.keys(validate(method, form, !replace)).length) return;
+    if (Object.keys(validate(method, form)).length) return;
 
     const onError = (err: unknown) => {
       if (err instanceof ApiError && (err.status === 400 || err.status === 422)) {
@@ -172,7 +171,11 @@ function Inner({ onClose, replace }: { onClose: () => void; replace?: Certificat
         />
         {serverMessage && <Callout tone="danger" title="The certificate was not accepted">{serverMessage}</Callout>}
         {!replace && (
-          <Field label="Name" required error={errors.name} hint="Shown in host editors, e.g. “Wildcard corp.example.com 2026”.">
+          <Field
+            label="Name"
+            error={errors.name}
+            hint="Shown in host editors, e.g. “Wildcard corp.example.com 2026”. Leave empty to use the certificate’s first domain name."
+          >
             <Input value={form.name} onChange={(e) => set('name', e.target.value)} />
           </Field>
         )}

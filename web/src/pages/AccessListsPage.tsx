@@ -29,7 +29,7 @@ import {
   TR,
   useConfirm,
 } from '@/components/ui';
-import { formatDate } from '@/lib/format';
+import { formatDate, pluralize } from '@/lib/format';
 import { isValidCidr, type FieldErrors } from '@/lib/validation';
 
 export default function AccessListsPage() {
@@ -53,6 +53,7 @@ export default function AccessListsPage() {
         title: 'Access list in use',
         message: `“${l.name}” is used by ${l.usedBy} host${l.usedBy === 1 ? '' : 's'}. Remove it from those hosts before deleting it.`,
         confirmLabel: 'OK',
+        alertOnly: true,
       });
       return;
     }
@@ -85,7 +86,7 @@ export default function AccessListsPage() {
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
           <SearchInput value={q} onChange={setQ} placeholder="Search names, CIDRs, users…" />
-          <span className="ml-auto text-sm text-fg-subtle">{lists.data?.length ?? 0} lists</span>
+          <span className="ml-auto text-sm text-fg-subtle">{lists.data && pluralize(lists.data.length, 'list')}</span>
         </div>
         {lists.isPending ? (
           <TableSkeleton rows={3} cols={5} />

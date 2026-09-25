@@ -1,4 +1,3 @@
-using System.Net;
 using System.Reflection;
 using CaddyManager;
 using CaddyManager.Config;
@@ -6,6 +5,7 @@ using CaddyManager.Core;
 using CaddyManager.Core.Infrastructure;
 using CaddyManager.Core.Models;
 using CaddyManager.Ops;
+using CaddyManager.Ops.Settings;
 using CaddyManager.Platform;
 using Microsoft.Extensions.FileProviders;
 
@@ -15,6 +15,11 @@ if (await OpsCli.TryRunAsync(args) is int opsExit) return opsExit;
 
 var paths = new AppPaths();
 paths.EnsureCreated();
+// DataDir holds the database, key ring, private keys and the setup token. The installer restricts it to
+// SYSTEM + Administrators; re-apply that when it still inherits ProgramData's "Users: read/create" ACL
+// (e.g. the service was registered by hand), so local non-admin users cannot read or plant files there.
+var startupWarnings = new List<string>();
+if (DataDirSecurity.EnsureRestricted(paths.DataDir) is { } aclWarning) startupWarnings.Add(aclWarning);
 // A backup restore uploaded through the UI is staged, then applied here before the database is opened.
 CaddyManager.Ops.Backup.RestoreStager.ApplyPendingRestore(paths);
 
@@ -39,18 +44,26 @@ builder.Services
 builder.Services.ConfigureHttpJsonOptions(o => JsonDefaults.Configure(o.SerializerOptions));
 builder.Services.AddProblemDetails();
 
-// ---- Management UI listener (from UiSettings; CM_UI_PORT overrides for development)
-var ui = store.GetSettings<UiSettings>();
-var uiPort = int.TryParse(Environment.GetEnvironmentVariable("CM_UI_PORT"), out var p) ? p : ui.Port;
-var bind = IPAddress.TryParse(ui.BindAddress, out var ip) ? ip : IPAddress.Any;
+// ---- Management UI listener (from UiSettings; CM_UI_PORT overrides for development).
+// Never throws: invalid settings, an unavailable address/port or a broken PFX fall back to defaults with a
+// warning instead of crash-looping the service (which would lock administrators out of the UI).
+UiSettings ui;
+try { ui = store.GetSettings<UiSettings>(); }
+catch (Exception ex)
+{
+    startupWarnings.Add($"UI settings could not be read ({ex.Message}); using defaults.");
+    ui = new UiSettings();
+}
+var listener = UiListener.Plan(paths, ui, Environment.GetEnvironmentVariable("CM_UI_PORT"), new SecretProtector(paths));
+startupWarnings.AddRange(listener.Warnings);
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.AddServerHeader = false;
-    k.Listen(bind, uiPort);
-    if (ui.HttpsEnabled)
+    k.Listen(listener.Http);
+    if (listener.Https is not null && listener.Certificate is not null)
     {
-        var cert = UiCertificate.Load(paths, ui, new SecretProtector(paths));
-        k.Listen(bind, ui.HttpsPort, o => o.UseHttps(cert));
+        var cert = listener.Certificate;
+        k.Listen(listener.Https, o => o.UseHttps(cert));
     }
 });
 
@@ -63,9 +76,44 @@ app.Use(async (ctx, next) =>
     h["X-Content-Type-Options"] = "nosniff";
     h["X-Frame-Options"] = "DENY";
     h["Referrer-Policy"] = "same-origin";
+    h["Cross-Origin-Opener-Policy"] = "same-origin";
+    h["Cross-Origin-Resource-Policy"] = "same-origin";
+    h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
     h["Content-Security-Policy"] =
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'";
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; " +
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+    // API responses carry configuration, users and audit data: keep them out of browser/proxy caches.
+    if (ctx.Request.Path.StartsWithSegments("/api")) h.CacheControl = "no-store";
     await next();
+});
+
+// ---- Web UI: embedded SPA build (web/dist). CM_WEB_DIR serves from disk for development.
+// Static assets are public and served before authentication: the authorization fallback policy
+// (authenticated user required for anything not explicitly anonymous) must not apply to them.
+IFileProvider web = Environment.GetEnvironmentVariable("CM_WEB_DIR") is { Length: > 0 } dir
+    ? new PhysicalFileProvider(Path.GetFullPath(dir))
+    : new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot");
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = web,
+    OnPrepareResponse = c =>
+    {
+        // Vite emits content-hashed assets; index.html must never be cached.
+        c.Context.Response.Headers.CacheControl = c.File.Name == "index.html"
+            ? "no-cache" : "public, max-age=31536000, immutable";
+    },
+});
+
+// A file-like path (e.g. /assets/x.js) that is not an embedded file matches no endpoint: answer 404 here
+// rather than letting the authorization fallback policy turn it into a 401.
+app.Use((ctx, next) =>
+{
+    if (ctx.GetEndpoint() is null)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return Task.CompletedTask;
+    }
+    return next(ctx);
 });
 
 app.UseAuthentication();
@@ -83,20 +131,6 @@ app.MapConfigEndpoints();
 app.MapPlatformEndpoints();
 app.MapOpsEndpoints();
 
-// ---- Web UI: embedded SPA build (web/dist). CM_WEB_DIR serves from disk for development.
-IFileProvider web = Environment.GetEnvironmentVariable("CM_WEB_DIR") is { Length: > 0 } dir
-    ? new PhysicalFileProvider(Path.GetFullPath(dir))
-    : new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot");
-app.UseStaticFiles(new StaticFileOptions
-{
-    FileProvider = web,
-    OnPrepareResponse = c =>
-    {
-        // Vite emits content-hashed assets; index.html must never be cached.
-        c.Context.Response.Headers.CacheControl = c.File.Name == "index.html"
-            ? "no-cache" : "public, max-age=31536000, immutable";
-    },
-});
 app.MapFallback(async ctx =>
 {
     if (ctx.Request.Path.StartsWithSegments("/api"))
@@ -115,8 +149,19 @@ app.MapFallback(async ctx =>
     ctx.Response.Headers.CacheControl = "no-cache";
     await using var s = index.CreateReadStream();
     await s.CopyToAsync(ctx.Response.Body);
-});
+}).AllowAnonymous();
 
-app.Logger.LogInformation("{Product} starting. Data: {Data}. UI: http://{Bind}:{Port}", AppPaths.ProductName, paths.DataDir, bind, uiPort);
+var httpsNote = listener.Https is not null ? $" and https://{listener.Https}" : "";
+app.Logger.LogInformation("{Product} starting. Data: {Data}. UI: http://{Http}{Https}", AppPaths.ProductName, paths.DataDir, listener.Http, httpsNote);
+if (startupWarnings.Count > 0)
+{
+    foreach (var w in startupWarnings) app.Logger.LogError("Startup: {Warning}", w);
+    try
+    {
+        app.Services.GetRequiredService<IEventSink>().Raise(EventSeverity.Warning, "system",
+            "Management UI started with fallback settings", string.Join(Environment.NewLine, startupWarnings));
+    }
+    catch (Exception ex) { app.Logger.LogWarning(ex, "Could not record the startup warnings as an event"); }
+}
 await app.RunAsync();
 return 0;

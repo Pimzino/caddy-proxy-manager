@@ -36,7 +36,8 @@ public partial class PowerShellRunner(ILogger<PowerShellRunner> logger)
         "$ErrorActionPreference = 'Stop'\n" +
         "$ProgressPreference = 'SilentlyContinue'\n" +
         "$WarningPreference = 'SilentlyContinue'\n" +
-        "try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }\n" +
+        // [Console]::OutputEncoding is deliberately left at the OEM code page: PowerShell decodes the output of native
+        // tools (netsh.exe) with it, and the JSON written below is pure ASCII, so it survives any code page.
         // Windows PowerShell 5.1 ETS quirk: arrays may serialise as {"value":[...],"Count":n} unless this type data is removed.
         "try { Remove-TypeData -TypeName System.Array -ErrorAction Stop } catch { }\n" +
         // Escape non-ASCII characters so the result survives any console code page (localised names).

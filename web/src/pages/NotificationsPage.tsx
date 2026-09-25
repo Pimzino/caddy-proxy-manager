@@ -123,7 +123,7 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
         <Callout
           tone={testResult.ok ? 'success' : 'danger'}
           className="mb-4"
-          title={testResult.ok ? 'Test notification sent through all enabled channels' : 'Some channels failed'}
+          title={testResult.ok ? 'Test notification sent through all enabled channels' : 'The test notification could not be delivered'}
         >
           {testResult.errors.length > 0 && (
             <ul className="list-disc pl-4">

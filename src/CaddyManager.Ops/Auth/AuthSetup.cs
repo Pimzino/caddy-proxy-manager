@@ -4,12 +4,12 @@ using CaddyManager.Core;
 using CaddyManager.Core.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -73,35 +73,16 @@ internal static class AuthSetup
         services.AddAuthorizationBuilder()
             .AddPolicy(Policies.Viewer, p => p.RequireAuthenticatedUser().RequireRole("viewer", "operator", "admin"))
             .AddPolicy(Policies.Operator, p => p.RequireAuthenticatedUser().RequireRole("operator", "admin"))
-            .AddPolicy(Policies.Admin, p => p.RequireAuthenticatedUser().RequireRole("admin"));
+            .AddPolicy(Policies.Admin, p => p.RequireAuthenticatedUser().RequireRole("admin"))
+            // Defence in depth: an endpoint that forgets RequireAuthorization/AllowAnonymous requires a
+            // signed-in user instead of being public. (The host serves static files before UseAuthorization.)
+            .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
 
-        services.AddRateLimiter(o =>
-        {
-            o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-            {
-                if (!IsCredentialEndpoint(ctx.Request)) return RateLimitPartition.GetNoLimiter("_");
-                var permits = ctx.RequestServices.GetRequiredService<IOptions<OpsOptions>>().Value.LoginAttemptsPerMinute;
-                var ip = CurrentUser.FormatIp(ctx.Connection.RemoteIpAddress) ?? "unknown";
-                return RateLimitPartition.GetFixedWindowLimiter("login:" + ip, _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = Math.Max(1, permits),
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueLimit = 0,
-                    AutoReplenishment = true,
-                });
-            });
-            o.OnRejected = async (ctx, ct) =>
-            {
-                var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("CaddyManager.Ops.Auth");
-                logger.LogWarning("Too many sign-in attempts from {Ip}; request to {Path} rejected",
-                    CurrentUser.FormatIp(ctx.HttpContext.Connection.RemoteIpAddress), ctx.HttpContext.Request.Path);
-                if (ctx.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
-                    ctx.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retry.TotalSeconds)).ToString();
-                await WriteProblem(ctx.HttpContext, StatusCodes.Status429TooManyRequests, "Too many attempts",
-                    "Too many sign-in attempts from this address. Wait a minute and try again.");
-            };
-        });
+        // Credential endpoints (login, setup) are throttled per client address by an endpoint filter
+        // (LoginThrottle) — bound to the endpoint, so path variants such as "/api/auth/login/" or
+        // "/API/AUTH/LOGIN" cannot bypass it the way a path-string check could.
+        services.AddSingleton<LoginThrottle>();
+        services.AddSingleton<SessionRevocations>();
 
         services.AddTransient<IStartupFilter, OpsStartupFilter>();
         return services;
@@ -133,10 +114,6 @@ internal static class AuthSetup
         }
     }
 
-    private static bool IsCredentialEndpoint(HttpRequest r) =>
-        HttpMethods.IsPost(r.Method) &&
-        (r.Path.Equals(LoginPath, StringComparison.OrdinalIgnoreCase) || r.Path.Equals(SetupPath, StringComparison.OrdinalIgnoreCase));
-
     internal static Task WriteProblem(HttpContext ctx, int status, string title, string detail)
     {
         if (ctx.Response.HasStarted) return Task.CompletedTask;
@@ -165,7 +142,15 @@ internal static class AuthSetup
             }
         }
 
-        if (user is null || user.Disabled || stamp != user.SecurityStamp.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        var sid = principal?.FindFirstValue(CpmClaims.SessionId);
+        var revoked = false;
+        if (!string.IsNullOrEmpty(sid))
+        {
+            try { revoked = ctx.HttpContext.RequestServices.GetRequiredService<SessionRevocations>().IsRevoked(sid); }
+            catch { revoked = true; /* fail closed */ }
+        }
+
+        if (revoked || user is null || user.Disabled || stamp != user.SecurityStamp.ToString(System.Globalization.CultureInfo.InvariantCulture))
         {
             ctx.RejectPrincipal();
             await ctx.HttpContext.SignOutAsync(Scheme);
@@ -177,19 +162,23 @@ internal static class AuthSetup
             principal.FindFirstValue(CpmClaims.Email) != user.Email ||
             principal.FindFirstValue(CpmClaims.Name) != (string.IsNullOrWhiteSpace(user.Name) ? user.Email : user.Name))
         {
-            ctx.ReplacePrincipal(CpmClaims.CreatePrincipal(user, Scheme));
+            ctx.ReplacePrincipal(CpmClaims.CreatePrincipal(user, Scheme, sid));
             ctx.ShouldRenew = true;
         }
     }
 
-    /// <summary>Issues the session cookie. Lifetime = UiSettings.SessionHours, sliding.</summary>
-    internal static Task SignInAsync(HttpContext ctx, User user)
+    /// <summary>Issues the session cookie (with a fresh session id). Lifetime = UiSettings.SessionHours, sliding.</summary>
+    internal static async Task SignInAsync(HttpContext ctx, User user)
     {
+        // Replacing a session (e.g. after a password change) retires the old session id too.
+        if (ctx.User.FindFirstValue(CpmClaims.SessionId) is { Length: > 0 } previous)
+            ctx.RequestServices.GetService<SessionRevocations>()?.Revoke(previous, DateTime.UtcNow.AddHours(720));
         var hours = 12;
         try { hours = Math.Clamp(ctx.RequestServices.GetRequiredService<IStore>().GetSettings<UiSettings>().SessionHours, 1, 720); }
         catch { /* default */ }
         var now = DateTimeOffset.UtcNow;
-        return ctx.SignInAsync(Scheme, CpmClaims.CreatePrincipal(user, Scheme), new AuthenticationProperties
+        var principal = CpmClaims.CreatePrincipal(user, Scheme, Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)));
+        await ctx.SignInAsync(Scheme, principal, new AuthenticationProperties
         {
             IsPersistent = true,
             AllowRefresh = true,
@@ -199,15 +188,75 @@ internal static class AuthSetup
     }
 }
 
-/// <summary>Adds the CSRF header check and the login rate limiter in front of the host's pipeline.</summary>
+/// <summary>Adds the CSRF header check in front of the host's pipeline.</summary>
 internal sealed class OpsStartupFilter : IStartupFilter
 {
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
     {
         app.UseMiddleware<CsrfMiddleware>();
-        app.UseRateLimiter();
         next(app);
     };
+}
+
+/// <summary>
+/// Fixed-window limiter for credential endpoints (login, setup): OpsOptions.LoginAttemptsPerMinute per client.
+/// IPv6 clients are grouped by /64 (one host usually owns a whole /64, so per-address limits are trivially evaded).
+/// </summary>
+internal sealed class LoginThrottle : IDisposable
+{
+    private readonly PartitionedRateLimiter<string> _limiter;
+    private readonly ILogger _logger;
+
+    public LoginThrottle(IOptions<OpsOptions> options, ILoggerFactory loggers)
+    {
+        var permits = Math.Max(1, options.Value.LoginAttemptsPerMinute);
+        _logger = loggers.CreateLogger("CaddyManager.Ops.Auth");
+        _limiter = PartitionedRateLimiter.Create<string, string>(key => RateLimitPartition.GetFixedWindowLimiter(key,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permits,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true,
+            }));
+    }
+
+    internal static string PartitionKey(System.Net.IPAddress? ip)
+    {
+        if (ip is null) return "unknown";
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && !System.Net.IPAddress.IsLoopback(ip))
+        {
+            var b = ip.GetAddressBytes();
+            Array.Clear(b, 8, 8);
+            return new System.Net.IPAddress(b) + "/64";
+        }
+        return ip.ToString();
+    }
+
+    public async ValueTask<object?> FilterAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)
+    {
+        var http = ctx.HttpContext;
+        using var lease = _limiter.AttemptAcquire(PartitionKey(http.Connection.RemoteIpAddress));
+        if (lease.IsAcquired) return await next(ctx);
+
+        _logger.LogWarning("Too many sign-in attempts from {Ip}; request to {Path} rejected",
+            CurrentUser.FormatIp(http.Connection.RemoteIpAddress), http.Request.Path);
+        if (lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
+            http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retry.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Results.Problem(title: "Too many attempts",
+            detail: "Too many sign-in attempts from this address. Wait a minute and try again.",
+            statusCode: StatusCodes.Status429TooManyRequests);
+    }
+
+    public void Dispose() => _limiter.Dispose();
+}
+
+internal static class LoginThrottleExtensions
+{
+    /// <summary>Applies <see cref="LoginThrottle"/> to a credential endpoint.</summary>
+    public static TBuilder RequireLoginThrottle<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder =>
+        builder.AddEndpointFilter((ctx, next) => ctx.HttpContext.RequestServices.GetRequiredService<LoginThrottle>().FilterAsync(ctx, next));
 }
 
 /// <summary>

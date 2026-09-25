@@ -9,6 +9,8 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  /** Informational: show only the confirm button (resolves true). */
+  alertOnly?: boolean;
 }
 
 type ConfirmFn = (opts: ConfirmOptions) => Promise<boolean>;
@@ -46,7 +48,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         initialFocus={confirmRef}
         footer={
           <>
-            <Button onClick={() => finish(false)}>{opts?.cancelLabel ?? 'Cancel'}</Button>
+            {!opts?.alertOnly && <Button onClick={() => finish(false)}>{opts?.cancelLabel ?? 'Cancel'}</Button>}
             <Button ref={confirmRef} variant={opts?.danger ? 'danger' : 'primary'} onClick={() => finish(true)}>
               {opts?.confirmLabel ?? 'Confirm'}
             </Button>

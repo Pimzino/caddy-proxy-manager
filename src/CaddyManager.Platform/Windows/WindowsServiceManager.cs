@@ -93,9 +93,13 @@ public static class WindowsServiceManager
         };
     }
 
-    /// <summary>Runs sc.exe with the given arguments (each element is one argv entry; .NET applies the quoting).</summary>
+    /// <summary>
+    /// Runs sc.exe with the given arguments (each element is one argv entry; .NET applies the quoting, which matches the
+    /// CRT parsing sc.exe uses: an embedded quote becomes \" so binPath= "\"C:\a b\x.exe\" run" reaches sc.exe intact).
+    /// sc.exe writes its messages in the OEM code page.
+    /// </summary>
     public static Task<ProcessResult> ScAsync(IEnumerable<string> args, CancellationToken ct = default) =>
-        ProcessRunner.RunAsync(ScExe, args, new ProcessOptions { Timeout = TimeSpan.FromSeconds(60) }, ct);
+        ProcessRunner.RunAsync(ScExe, args, new ProcessOptions { Timeout = TimeSpan.FromSeconds(60), OutputEncoding = ProcessRunner.OemEncoding }, ct);
 
     /// <summary>
     /// Creates the service, or repairs it when its binary path / start type / account / display name differ,
@@ -238,12 +242,18 @@ public static class WindowsServiceManager
         }
     }
 
-    /// <summary>Stops the service; if it does not stop within the timeout its process is terminated.</summary>
+    /// <summary>
+    /// Stops the service; if it does not stop within the timeout its process is terminated. Returns only after the
+    /// service process has exited: a service may report SERVICE_STOPPED while its process is still shutting down
+    /// (Caddy does), and until it is gone its executable, log files and ports are still in use.
+    /// </summary>
     public static async Task StopAsync(string name, TimeSpan timeout, CancellationToken ct = default)
     {
         using var sc = new ServiceController(name);
         sc.Refresh();
         if (sc.Status == ServiceControllerStatus.Stopped) return;
+        // Hold a handle to the service process before stopping it (also protects against PID reuse).
+        using var process = await OpenServiceProcessAsync(name, ct);
         if (sc.Status != ServiceControllerStatus.StopPending)
         {
             try
@@ -252,6 +262,7 @@ public static class WindowsServiceManager
             }
             catch (InvalidOperationException ex) when (ex.InnerException is System.ComponentModel.Win32Exception { NativeErrorCode: ErrorServiceNotActive })
             {
+                await WaitForProcessExitAsync(process, TimeSpan.FromSeconds(15), ct);
                 return;
             }
             catch (InvalidOperationException ex)
@@ -265,16 +276,64 @@ public static class WindowsServiceManager
         }
         catch (TimeoutException)
         {
-            var q = await QueryExAsync(name, ct);
-            if (q?.ProcessId is not int pid) throw;
+            var victim = process ?? await OpenServiceProcessAsync(name, ct);
+            if (victim is null) throw;
             try
             {
-                using var p = System.Diagnostics.Process.GetProcessById(pid);
-                p.Kill(entireProcessTree: true);
-                await p.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(15), ct);
+                victim.Kill(entireProcessTree: true);
             }
-            catch (ArgumentException) { /* already gone */ }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { /* already gone */ }
+            finally
+            {
+                if (!ReferenceEquals(victim, process)) victim.Dispose();
+            }
             await WaitForAsync(sc, s => s == ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15), ct);
+        }
+        await WaitForProcessExitAsync(process, TimeSpan.FromSeconds(15), ct);
+    }
+
+    /// <summary>
+    /// Opens the process of an own-process service (null when it has none, shares a svchost process or is not accessible,
+    /// e.g. an elevated admin without SeDebugPrivilege opening a LocalSystem process; callers then skip the exit wait).
+    /// </summary>
+    private static async Task<System.Diagnostics.Process?> OpenServiceProcessAsync(string name, CancellationToken ct)
+    {
+        try
+        {
+            var q = await QueryExAsync(name, ct);
+            // Never wait for / kill a shared svchost process: it hosts other services.
+            if (q is not { IsOwnProcess: true, ProcessId: int pid }) return null;
+            var p = System.Diagnostics.Process.GetProcessById(pid);
+            _ = p.Handle; // open the handle now, while the PID still belongs to the service
+            return p;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Waits for a (stopped) service process to exit; terminates it when it lingers past the grace period.</summary>
+    private static async Task WaitForProcessExitAsync(System.Diagnostics.Process? p, TimeSpan grace, CancellationToken ct)
+    {
+        if (p is null) return;
+        try
+        {
+            if (p.HasExited) return;
+            try
+            {
+                await p.WaitForExitAsync(ct).WaitAsync(grace, ct);
+                return;
+            }
+            catch (TimeoutException)
+            {
+                p.Kill(entireProcessTree: true);
+            }
+            await p.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException)
+        {
+            // gone already, or not ours to wait for
         }
     }
 

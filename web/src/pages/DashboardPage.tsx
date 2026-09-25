@@ -22,7 +22,7 @@ import { useFeedback } from '@/components/feedback';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
 import { Button, Callout, Card, EmptyState, PageHeader, Skeleton, StatusDot, useToast, type Tone } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { formatDateTime, formatDuration, formatNumber, formatRelative } from '@/lib/format';
+import { formatDateTime, formatDuration, formatNumber, formatRelative, pluralize } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
 import { SeverityBadge } from './EventsPage';
 
@@ -65,7 +65,7 @@ export default function DashboardPage() {
         }
       />
       {dash.isPending ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 6 }, (_, i) => (
             <Card key={i} className="p-4">
               <Skeleton className="mb-3 h-4 w-32" />
@@ -98,6 +98,15 @@ function DashboardBody({ d }: { d: Dashboard }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {(d.warnings?.length ?? 0) > 0 && (
+        <Callout tone="warning" title="Some information could not be loaded">
+          <ul className="list-disc pl-4">
+            {d.warnings!.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
       {d.caddy.state === 'stopped' && d.caddy.binaryInstalled && (
         <Callout
           tone="danger"
@@ -138,7 +147,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
         </Callout>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         <StatCard icon={<Server size={15} />} title="Caddy service" to="/caddy/service" tone={info.tone}>
           <div className="flex items-center gap-2">
             <StatusDot tone={info.tone} label={info.label} pulse={info.pulse} className="text-lg font-semibold" />
@@ -169,11 +178,11 @@ function DashboardBody({ d }: { d: Dashboard }) {
 
         <StatCard icon={<ArrowLeftRight size={15} />} title="Sites" to="/hosts/proxy" tone={d.counts.hostsDisabled > 0 ? 'neutral' : 'accent'}>
           <p className="text-lg font-semibold text-fg tabular-nums">
-            {formatNumber(hostsTotal)} <span className="text-sm font-normal text-fg-subtle">hosts</span>
+            {formatNumber(hostsTotal)} <span className="text-sm font-normal text-fg-subtle">{hostsTotal === 1 ? 'host' : 'hosts'}</span>
             {d.counts.streams > 0 && (
               <>
                 {' '}
-                · {formatNumber(d.counts.streams)} <span className="text-sm font-normal text-fg-subtle">streams</span>
+                · {formatNumber(d.counts.streams)} <span className="text-sm font-normal text-fg-subtle">{d.counts.streams === 1 ? 'stream' : 'streams'}</span>
               </>
             )}
           </p>
@@ -196,7 +205,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
             ) : (
               <span className="text-fg-subtle">None expiring soon</span>
             )}
-            <span className="text-fg-subtle"> · {d.counts.accessLists} access lists</span>
+            <span className="text-fg-subtle"> · {pluralize(d.counts.accessLists, 'access list')}</span>
           </p>
         </StatCard>
 
@@ -232,7 +241,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
         </StatCard>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <Card>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-fg">

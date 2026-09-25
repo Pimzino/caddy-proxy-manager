@@ -70,7 +70,7 @@ internal static class AuthEndpoints
             audit.Record("setup", "user", user.Id, user.Email, "Initial administrator created");
             logger.LogInformation("Initial setup completed; administrator {Email} created", user.Email);
             return Results.Ok(UserDto.From(user));
-        });
+        }).RequireLoginThrottle();
 
         // ------------------------------------------------------------ auth
         var auth = app.MapGroup("/api/auth");
@@ -99,12 +99,20 @@ internal static class AuthEndpoints
             ctx.User = CpmClaims.CreatePrincipal(user, AuthSetup.Scheme);
             audit.Record("login", "user", user.Id, user.Email);
             return Results.Ok(UserDto.From(user));
-        }).AllowAnonymous();
+        }).AllowAnonymous().RequireLoginThrottle();
 
-        auth.MapPost("/logout", async (HttpContext ctx, IAuditLog audit, ICurrentUser current) =>
+        auth.MapPost("/logout", async (HttpContext ctx, IAuditLog audit, ICurrentUser current, SessionRevocations revocations) =>
         {
             if (ctx.User.Identity?.IsAuthenticated == true)
+            {
                 audit.Record("logout", "user", current.UserId, current.UserName);
+                // Cookies are self-contained tickets: revoke this one server-side so a copy of it stops working too.
+                if (ctx.User.FindFirstValue(CpmClaims.SessionId) is { Length: > 0 } sid)
+                {
+                    var ticket = await ctx.AuthenticateAsync(AuthSetup.Scheme);
+                    revocations.Revoke(sid, ticket.Properties?.ExpiresUtc?.UtcDateTime ?? DateTime.UtcNow.AddHours(720));
+                }
+            }
             await ctx.SignOutAsync(AuthSetup.Scheme);
             return Results.NoContent();
         }).AllowAnonymous();

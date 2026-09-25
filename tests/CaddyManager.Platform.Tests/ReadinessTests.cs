@@ -107,6 +107,49 @@ public class WindowsFactsTests
         Assert.Contains("-LocalPort 81", check.Script);
     }
 
+    [Fact]
+    public void NotConfiguredProfileCountsAsEnabled()
+    {
+        var f = Firewall() with
+        {
+            Profiles = [new FirewallProfileFact("Private", "NotConfigured", "NotConfigured", "NotConfigured", "NotConfigured")],
+            GpoLocalMerge = new(),
+        };
+        Assert.True(f.Profiles[0].IsEnabled);
+        var check = FirewallEvaluator.Evaluate(Rules().Single(r => r.CheckId == "firewall.tcp81"), f, ["Private"]);
+        Assert.Equal(CheckStatus.Fail, check.Status); // enabled, default inbound Block, no rule for 81
+        Assert.DoesNotContain("disabled", check.Details);
+        Assert.True(check.Fixable);
+    }
+
+    [Fact]
+    public void BlockAllInboundConnectionsIgnoresAllowRules()
+    {
+        var f = Firewall() with
+        {
+            Profiles = [new FirewallProfileFact("Private", "True", "Block", "True", "False")],
+            GpoLocalMerge = new(),
+        };
+        Assert.False(f.Profiles[0].AllowsInboundRules);
+        var check = FirewallEvaluator.Evaluate(Rules().Single(r => r.CheckId == "firewall.tcp443"), f, ["Private"]);
+        Assert.Equal(CheckStatus.Fail, check.Status);
+        Assert.Contains("blocks all incoming connections", check.Details);
+        Assert.False(check.Fixable); // another allow rule would not help
+        Assert.Contains("-AllowInboundRules True", check.Remediation);
+        Assert.Null(check.Script);
+    }
+
+    [Fact]
+    public void ParsesComputerDnResult()
+    {
+        var (dn, err) = WindowsFactsParser.ParseComputerDn(JsonDocument.Parse("{\"computerDn\":\"CN=WEB01,CN=Computers,DC=corp,DC=local\",\"dnError\":null}").RootElement);
+        Assert.Equal("CN=WEB01,CN=Computers,DC=corp,DC=local", dn);
+        Assert.Null(err);
+        (dn, err) = WindowsFactsParser.ParseComputerDn(JsonDocument.Parse("{\"computerDn\":null,\"dnError\":\"The server is not operational.\"}").RootElement);
+        Assert.Null(dn);
+        Assert.Equal("The server is not operational.", err);
+    }
+
     [Theory]
     [InlineData("Any", 443, true)]
     [InlineData("443", 443, true)]
@@ -162,14 +205,18 @@ public class GpoScriptTests
         Assert.Contains("[string] $GpoName = 'Caddy Proxy Manager - Firewall'", s);
         Assert.Contains("[string] $Domain = 'corp.example.com'", s);
         Assert.Contains("[string] $TargetOU = 'OU=Web Servers,OU=Servers,DC=corp,DC=example,DC=com'", s);
-        Assert.Contains("Get-GPO -Name $GpoName -Domain $Domain -ErrorAction SilentlyContinue", s);
+        Assert.Contains("try { $gpo = Get-GPO -Name $GpoName -Domain $Domain -ErrorAction Stop } catch { $gpo = $null }", s);
         Assert.Contains("New-GPO -Name $GpoName", s);
         Assert.Contains("$policyStore = \"$Domain\\$GpoName\"", s);
         Assert.Contains("Remove-NetFirewallRule -PolicyStore $policyStore -DisplayName $rule.DisplayName", s);
         Assert.Contains("New-NetFirewallRule -PolicyStore $policyStore", s);
-        Assert.Contains("Get-GPInheritance -Target $TargetOU", s);
-        Assert.Contains("New-GPLink -Name $GpoName -Domain $Domain -Target $TargetOU", s);
+        Assert.Contains("Get-GPInheritance -Target $linkTarget", s);
+        Assert.Contains("New-GPLink -Name $GpoName -Domain $Domain -Target $linkTarget", s);
         Assert.Contains("S-1-5-11", s);
+        // Security filtering is applied before the GPO is linked.
+        Assert.True(s.IndexOf("Set-GPPermission", StringComparison.Ordinal) < s.IndexOf("New-GPLink -Name $GpoName", StringComparison.Ordinal));
+        Assert.Contains("#Requires -PSEdition Desktop", s);
+        Assert.Contains("Invoke-GPUpdate -Computer $ComputerName", s);
         Assert.Contains("gpupdate /target:computer /force", s);
         foreach (var name in new[] { "HTTP (TCP-In)", "HTTPS (TCP-In)", "HTTP/3 (UDP-In)", "Management UI (TCP-In)" })
             Assert.Contains($"DisplayName = 'Caddy Proxy Manager - {name}'", s);
@@ -184,6 +231,15 @@ public class GpoScriptTests
         Assert.Contains("certutil -dspublish -f root.crt RootCA", s);
         Assert.Contains("[string] $TargetOU = ''", s);
         Assert.Contains("was not linked", s);
+    }
+
+    [Fact]
+    public void ComputersInTheDefaultContainerAreLinkedAtTheDomainRoot()
+    {
+        var s = GpoScriptBuilder.Build(Input(dn: "CN=WEB01,CN=Computers,DC=corp,DC=example,DC=com"));
+        Assert.Contains("[string] $TargetOU = 'CN=Computers,DC=corp,DC=example,DC=com'", s);
+        Assert.Contains("if ($TargetOU -match '^CN=')", s);
+        Assert.Contains("$linkTarget = $domainDn", s);
     }
 
     [Fact]

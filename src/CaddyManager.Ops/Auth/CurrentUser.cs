@@ -14,6 +14,8 @@ internal static class CpmClaims
     public const string Name = ClaimTypes.Name;
     public const string Role = ClaimTypes.Role;
     public const string SecurityStamp = "cpm:stamp";
+    /// <summary>Random per sign-in id, so one session can be revoked server-side at logout.</summary>
+    public const string SessionId = "cpm:sid";
 
     public static string RoleValue(UserRole role) => role switch
     {
@@ -30,17 +32,18 @@ internal static class CpmClaims
         _ => null,
     };
 
-    public static ClaimsPrincipal CreatePrincipal(User user, string scheme)
+    public static ClaimsPrincipal CreatePrincipal(User user, string scheme, string? sessionId = null)
     {
-        var identity = new ClaimsIdentity(
-        [
-            new Claim(UserId, user.Id),
-            new Claim(Email, user.Email),
-            new Claim(Name, string.IsNullOrWhiteSpace(user.Name) ? user.Email : user.Name),
-            new Claim(Role, RoleValue(user.Role)),
-            new Claim(SecurityStamp, user.SecurityStamp.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-        ], scheme, Name, Role);
-        return new ClaimsPrincipal(identity);
+        var claims = new List<Claim>
+        {
+            new(UserId, user.Id),
+            new(Email, user.Email),
+            new(Name, string.IsNullOrWhiteSpace(user.Name) ? user.Email : user.Name),
+            new(Role, RoleValue(user.Role)),
+            new(SecurityStamp, user.SecurityStamp.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+        };
+        if (!string.IsNullOrEmpty(sessionId)) claims.Add(new Claim(SessionId, sessionId));
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, scheme, Name, Role));
     }
 }
 

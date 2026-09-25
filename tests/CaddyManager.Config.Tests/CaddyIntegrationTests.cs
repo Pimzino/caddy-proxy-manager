@@ -223,6 +223,45 @@ public sealed class CaddyIntegrationTests
     // ------------------------------------------------------------------ live
 
     [CaddyFact]
+    public async Task Live_caddy_keeps_admin_api_polling_out_of_the_process_log()
+    {
+        using var s = new ConfigServices(installBinary: true);
+        var adminPort = Net.FreeTcpPort();
+        s.Store.SaveSettings(new CaddySettings { AdminListen = $"127.0.0.1:{adminPort}", HttpPort = Net.FreeTcpPort(), HttpsPort = Net.FreeTcpPort(), LogLevel = "info" });
+        s.Store.Col<SiteHost>().Insert(Build.Proxy("logs.test"));
+
+        s.Config.EnsureBootConfig();
+        using var caddy = new CaddyProcess(s.Paths);
+        var admin = s.Provider.GetRequiredService<CaddyAdminClient>();
+        await WaitUntil(() => admin.IsReachableAsync(), TimeSpan.FromSeconds(20), () => "Caddy did not start:\n" + caddy.Output);
+        var apply = await s.Config.ApplyAsync("log test");
+        Assert.True(apply.Success, apply.Error + "\n" + caddy.Output);
+
+        // What the manager does every few seconds (status, monitor, upstreams).
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True(await admin.IsReachableAsync());
+            await admin.GetUpstreamsAsync();
+        }
+        string log = "";
+        await WaitUntil(() =>
+        {
+            log = File.Exists(s.Paths.CaddyProcessLog) ? ReadShared(s.Paths.CaddyProcessLog) : "";
+            return Task.FromResult(log.Contains("server running"));
+        }, TimeSpan.FromSeconds(10), () => "Caddy did not log to the process log:\n" + log + "\n" + caddy.Output);
+
+        Assert.DoesNotContain("received request", log);
+        Assert.Contains("\"logger\":\"admin\"", log); // other admin messages (endpoint started) still reach the default log
+
+        static string ReadShared(string path)
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var sr = new StreamReader(fs);
+            return sr.ReadToEnd();
+        }
+    }
+
+    [CaddyFact]
     public async Task Live_caddy_serves_generated_config_and_hot_reloads()
     {
         await using var upstream = await EchoUpstream.StartAsync();

@@ -37,7 +37,8 @@ public sealed class TestApp : IAsyncDisposable
 
     private readonly bool _ownsDataDir;
 
-    private TestApp(Action<OpsOptions>? configure, bool fakeNotifier, ManualTimeProvider? time, bool registerFakes, string? dataDir)
+    private TestApp(Action<OpsOptions>? configure, bool fakeNotifier, ManualTimeProvider? time, bool registerFakes, string? dataDir,
+        Action<WebApplication>? mapExtra)
     {
         _ownsDataDir = dataDir is null;
         DataDir = dataDir ?? Path.Combine(Path.GetTempPath(), "cpm-ops-tests", Guid.NewGuid().ToString("N"));
@@ -78,12 +79,13 @@ public sealed class TestApp : IAsyncDisposable
         App.UseAuthorization();
         App.MapCoreEndpoints();
         App.MapOpsEndpoints();
+        mapExtra?.Invoke(App);
     }
 
     public static async Task<TestApp> StartAsync(Action<OpsOptions>? configure = null, bool fakeNotifier = true,
-        ManualTimeProvider? time = null, bool registerFakes = true, string? dataDir = null)
+        ManualTimeProvider? time = null, bool registerFakes = true, string? dataDir = null, Action<WebApplication>? mapExtra = null)
     {
-        var app = new TestApp(configure, fakeNotifier, time, registerFakes, dataDir);
+        var app = new TestApp(configure, fakeNotifier, time, registerFakes, dataDir, mapExtra);
         await app.App.StartAsync();
         return app;
     }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { RotateCw } from 'lucide-react';
 import { api } from '@/api/client';
-import { useRestartManager } from '@/api/hooks';
+import { useRestartManager, useSystemInfo } from '@/api/hooks';
 import type { Health } from '@/api/types';
 import { useFeedback } from '@/components/feedback';
 import { Button, Callout, Spinner, useConfirm } from '@/components/ui';
@@ -14,6 +14,9 @@ type Phase = 'idle' | 'restarting' | 'back' | 'timeout';
  */
 export function RestartPanel({ reason, nextUrl }: { reason: string; nextUrl?: string }) {
   const restart = useRestartManager();
+  const system = useSystemInfo();
+  // Only the Windows service can restart itself (exit → SCM recovery); a console/dev instance must be restarted by hand.
+  const canRestart = system.data?.isService !== false;
   const confirm = useConfirm();
   const feedback = useFeedback();
   const [phase, setPhase] = useState<Phase>('idle');
@@ -106,12 +109,15 @@ export function RestartPanel({ reason, nextUrl }: { reason: string; nextUrl?: st
       tone="warning"
       title="Restart required"
       actions={
-        <Button size="sm" variant="primary" icon={<RotateCw size={13} />} loading={restart.isPending} onClick={() => void run()}>
-          Restart now
-        </Button>
+        canRestart && (
+          <Button size="sm" variant="primary" icon={<RotateCw size={13} />} loading={restart.isPending} onClick={() => void run()}>
+            Restart now
+          </Button>
+        )
       }
     >
       {reason}
+      {!canRestart && ' The manager runs in console mode, so restart it manually.'}
       {nextUrl && !sameOrigin && (
         <>
           {' '}

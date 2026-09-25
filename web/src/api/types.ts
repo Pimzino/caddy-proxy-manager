@@ -463,6 +463,8 @@ export interface Dashboard {
   upstreams: { total: number; unhealthy: number };
   recentEvents: EventEntry[];
   system: { hostname: string; os: string; managerVersion: string; uptimeSeconds: number; dataDir: string };
+  /** Parts that could not be loaded (the rest still renders). */
+  warnings?: string[];
 }
 
 export interface SystemInfo {
@@ -479,6 +481,10 @@ export interface SystemInfo {
 
 export interface JsonDoc {
   json: string;
+  /** Generator warnings (GET /api/config/preview only). */
+  warnings?: string[];
+  /** Which mode produced the preview (GET /api/config/preview only). */
+  mode?: ConfigMode;
 }
 
 export interface AdaptResult {

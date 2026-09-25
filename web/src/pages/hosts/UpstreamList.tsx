@@ -36,7 +36,8 @@ export function UpstreamList({
         const portErr = errors[`${prefix}.${i}.port`];
         return (
           <div key={i} className="flex flex-col gap-1">
-            <div className="grid grid-cols-[88px_minmax(0,1fr)_84px_32px] gap-2 sm:grid-cols-[96px_minmax(0,1fr)_96px_32px]">
+            {/* Narrow screens: host on its own row, then scheme / port / remove. */}
+            <div className="grid grid-cols-[88px_minmax(0,1fr)_32px] gap-2 sm:grid-cols-[96px_minmax(0,1fr)_96px_32px]">
               <Select
                 aria-label={`Upstream ${i + 1} scheme`}
                 value={u.scheme}
@@ -52,6 +53,7 @@ export function UpstreamList({
               </Select>
               <Input
                 mono
+                className="order-first col-span-3 sm:order-none sm:col-span-1"
                 aria-label={`Upstream ${i + 1} host`}
                 placeholder="10.0.0.20 or app01.corp.local"
                 value={u.host}

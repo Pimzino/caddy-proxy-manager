@@ -18,6 +18,11 @@ public static class CaddyConfigGenerator
     public const string Layer4Plugin = "github.com/mholt/caddy-l4";
     public const string CertificateTagPrefix = "cpm-";
     public const string AccessLoggerPrefix = "cpm_access_";
+    private const string StreamsSkippedWarningMarker = "were not applied";
+
+    /// <summary>True for the warning about streams skipped because the layer4 module is missing.</summary>
+    public static bool IsStreamsSkippedWarning(string warning) =>
+        warning.Contains(StreamsSkippedWarningMarker, StringComparison.Ordinal) && warning.Contains(Layer4Module, StringComparison.Ordinal);
     private const string IpVar = "cpm_ip";
 
     public const string LetsEncryptDirectory = "https://acme-v02.api.letsencrypt.org/directory";
@@ -39,9 +44,36 @@ public static class CaddyConfigGenerator
     public static JsonObject BuildBootConfig(CaddySettings settings, AppPaths paths) => new()
     {
         ["admin"] = Admin(settings),
-        ["logging"] = new JsonObject { ["logs"] = new JsonObject { ["default"] = DefaultLogger(settings, paths, []) } },
+        ["logging"] = new JsonObject { ["logs"] = ProcessLoggers(settings, paths, []) },
         ["storage"] = Storage(paths),
     };
+
+    // ------------------------------------------------------------------ Caddyfile mode
+
+    /// <summary>
+    /// Completes a config adapted from a user Caddyfile with the parts the manager depends on, when the Caddyfile
+    /// does not set them itself: the admin endpoint (otherwise Caddy falls back to localhost:2019 and the manager
+    /// loses contact when AdminListen differs), storage (ACME certificates / internal CA) and the process log.
+    /// </summary>
+    public static string CompleteAdaptedConfig(string adaptedJson, CaddySettings settings, AppPaths paths, List<string> warnings)
+    {
+        if (JsonNode.Parse(adaptedJson) is not JsonObject root) return adaptedJson;
+        var expected = Admin(settings)["listen"]!.GetValue<string>();
+        if (root["admin"] is JsonObject admin)
+        {
+            var listen = admin["listen"]?.GetValue<string>();
+            if (listen is null) admin["listen"] = expected;
+            else if (!string.Equals(listen, expected, StringComparison.OrdinalIgnoreCase))
+                warnings.Add($"The Caddyfile sets the admin endpoint to '{listen}', but the manager uses '{expected}' (Settings > Caddy). The manager cannot control Caddy until both match.");
+        }
+        else
+        {
+            root["admin"] = Admin(settings);
+        }
+        root["storage"] ??= Storage(paths);
+        if (root["logging"] is null) root["logging"] = new JsonObject { ["logs"] = ProcessLoggers(settings, paths, []) };
+        return root.ToJsonString();
+    }
 
     // ------------------------------------------------------------------ full config
 
@@ -135,10 +167,7 @@ public static class CaddyConfigGenerator
         if (l4 is not null) apps["layer4"] = l4;
 
         // ---- logging
-        var logs = new JsonObject
-        {
-            ["default"] = DefaultLogger(s, input.Paths, accessLoggers.Keys.Select(k => "http.log.access." + k).ToList()),
-        };
+        var logs = ProcessLoggers(s, input.Paths, accessLoggers.Keys.Select(k => "http.log.access." + k).ToList());
         foreach (var (name, (domain, _)) in accessLoggers)
         {
             logs[name] = new JsonObject
@@ -959,7 +988,7 @@ public static class CaddyConfigGenerator
         var modules = ctx.Input.InstalledModules;
         if (modules is null || !modules.Contains(Layer4Module, StringComparer.Ordinal))
         {
-            ctx.Warn($"{streams.Count} stream(s) were not applied: the installed Caddy binary does not include the layer4 module. Add the plugin '{Layer4Plugin}' under Caddy > Plugins and rebuild.");
+            ctx.Warn($"{streams.Count} stream(s) {StreamsSkippedWarningMarker}: the installed Caddy binary does not include the layer4 module. Add the plugin '{Layer4Plugin}' under Caddy > Plugins and rebuild.");
             return null;
         }
 
@@ -1010,24 +1039,43 @@ public static class CaddyConfigGenerator
         ["root"] = paths.CaddyStorageDir,
     };
 
-    private static JsonObject DefaultLogger(CaddySettings s, AppPaths paths, List<string> exclude)
+    /// <summary>Caddy's logger for admin API requests. The manager polls the admin API every few seconds.</summary>
+    public const string AdminApiLogger = "admin.api";
+    /// <summary>Name of the log that receives admin API messages at WARN or above.</summary>
+    public const string AdminApiLogName = "cpm_admin_api";
+
+    /// <summary>
+    /// The process log (caddy.log): the default logger (level from settings) minus the admin API and
+    /// per-host access loggers, plus a separate WARN+ logger for the admin API into the same file.
+    /// Without this, every status/config poll from the manager lands in caddy.log at INFO and floods it.
+    /// Both logs share the file: Caddy pools writers by file name, so they write through one roller.
+    /// </summary>
+    private static JsonObject ProcessLoggers(CaddySettings s, AppPaths paths, List<string> accessLoggers)
     {
         var level = (s.LogLevel ?? "info").Trim().ToUpperInvariant();
         if (level is not ("DEBUG" or "INFO" or "WARN" or "ERROR")) level = "INFO";
-        var o = new JsonObject
+        var def = new JsonObject
         {
-            ["writer"] = new JsonObject
-            {
-                ["output"] = "file",
-                ["filename"] = paths.CaddyProcessLog,
-                ["roll_size_mb"] = 20,
-                ["roll_keep"] = 10,
-            },
+            ["writer"] = ProcessLogWriter(paths),
             ["level"] = level,
+            ["exclude"] = StringArray(new[] { AdminApiLogger }.Concat(accessLoggers)),
         };
-        if (exclude.Count > 0) o["exclude"] = StringArray(exclude);
-        return o;
+        var admin = new JsonObject
+        {
+            ["writer"] = ProcessLogWriter(paths),
+            ["level"] = level == "ERROR" ? "ERROR" : "WARN",
+            ["include"] = new JsonArray(AdminApiLogger),
+        };
+        return new JsonObject { ["default"] = def, [AdminApiLogName] = admin };
     }
+
+    private static JsonObject ProcessLogWriter(AppPaths paths) => new()
+    {
+        ["output"] = "file",
+        ["filename"] = paths.CaddyProcessLog,
+        ["roll_size_mb"] = 20,
+        ["roll_keep"] = 10,
+    };
 
     private static JsonArray StringArray(IEnumerable<string> values)
     {

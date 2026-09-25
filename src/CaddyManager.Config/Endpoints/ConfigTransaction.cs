@@ -22,13 +22,18 @@ internal static class ConfigTransaction
     /// When Caddy is not running the change is kept (apply.writtenOnly = true).
     /// </summary>
     /// <param name="affectsCaddyfileMode">false for model changes that are irrelevant while Caddyfile mode is active.</param>
+    /// <param name="concernsStreams">
+    /// true for stream mutations. Other mutations drop the standing "streams skipped (no layer4 module)" warning, which the
+    /// Streams page and the config preview already show; repeating it on every host or certificate save is noise.
+    /// </param>
     public static async Task<IResult> RunAsync(
         HttpContext http,
         string reason,
         Action persist,
         Action rollback,
         Func<ApplyResult, IResult> onSuccess,
-        bool affectsCaddyfileMode = false)
+        bool affectsCaddyfileMode = false,
+        bool concernsStreams = false)
     {
         var sp = http.RequestServices;
         var gate = sp.GetRequiredService<ConfigMutationGate>();
@@ -70,6 +75,7 @@ internal static class ConfigTransaction
                 SafeRollback(rollback, logger, reason);
                 return ApiResults.Failed(RejectedTitle, apply.Error ?? "Caddy reported an error without details.");
             }
+            if (!concernsStreams) apply = apply.WithoutStreamsSkippedWarning();
             return onSuccess(apply);
         }
         finally
@@ -105,6 +111,11 @@ internal static class ConfigTransaction
         }
         return http.User.Identity?.IsAuthenticated == true ? http.User.Identity.Name : null;
     }
+
+    public static ApplyResult WithoutStreamsSkippedWarning(this ApplyResult apply) =>
+        apply.Warnings.Any(Generation.CaddyConfigGenerator.IsStreamsSkippedWarning)
+            ? apply with { Warnings = apply.Warnings.Where(w => !Generation.CaddyConfigGenerator.IsStreamsSkippedWarning(w)).ToList() }
+            : apply;
 
     public static ApplyResult WithWarnings(this ApplyResult apply, IEnumerable<string> extra)
     {

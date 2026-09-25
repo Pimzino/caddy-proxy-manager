@@ -32,7 +32,7 @@ import {
   useToast,
   type Tone,
 } from '@/components/ui';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatDateTime, pluralize } from '@/lib/format';
 import { AddCertificateDialog } from './AddCertificateDialog';
 
 type Filter = 'all' | CertificateKind;
@@ -44,14 +44,51 @@ const kindLabel: Record<CertificateKind, { label: string; tone: Tone }> = {
   internalRoot: { label: 'Internal root CA', tone: 'neutral' },
 };
 
-export function expiryInfo(c: Pick<CertificateInfo, 'daysRemaining' | 'kind'>): { tone: Tone; label: string } {
+/** Time left until `notAfter`, in hours below two days (Caddy's internal leaves live ~12h). */
+function timeLeft(notAfter: string, now: number): string {
+  const ms = new Date(notAfter).getTime() - now;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return `${Math.max(1, Math.floor(ms / 60_000))} min left`;
+  if (hours < 48) return `${hours}h left`;
+  const days = Math.floor(hours / 24);
+  if (days >= 730) return `${Math.floor(days / 365)} years left`;
+  return `${days} days left`;
+}
+
+/**
+ * Expiry status. Caddy renews ACME and internal certificates by itself: internal-CA leaves live about 12 hours
+ * and are renewed continuously, so they are shown neutrally (never amber/red) unless actually expired. ACME
+ * certificates are renewed with about a third of their lifetime left, so only the last week is worth a warning.
+ */
+export function expiryInfo(c: Pick<CertificateInfo, 'daysRemaining' | 'kind' | 'notAfter'>, now: number): { tone: Tone; label: string } {
+  const ms = new Date(c.notAfter).getTime() - now;
+  if (!Number.isFinite(ms)) return { tone: 'neutral', label: 'Unknown' };
+  if (ms <= 0) {
+    const d = Math.floor(-ms / 86_400_000);
+    return { tone: 'danger', label: d === 0 ? 'Expired' : `Expired ${d} day${d === 1 ? '' : 's'} ago` };
+  }
+  const left = timeLeft(c.notAfter, now);
+  if (c.kind === 'internal') return { tone: 'neutral', label: `Auto-renews · ${left}` };
+  if (c.kind === 'internalRoot') return { tone: 'neutral', label: left };
   const d = c.daysRemaining;
-  if (d < 0) return { tone: 'danger', label: `Expired ${Math.abs(d)} day${Math.abs(d) === 1 ? '' : 's'} ago` };
-  if (d === 0) return { tone: 'danger', label: 'Expires today' };
-  const auto = c.kind === 'acme' || c.kind === 'internal';
-  if (d <= 7) return { tone: auto ? 'warning' : 'danger', label: `${d} day${d === 1 ? '' : 's'} left` };
-  if (d <= 30) return { tone: 'warning', label: `${d} days left` };
-  return { tone: 'success', label: `${d} days left` };
+  if (c.kind === 'acme') {
+    if (d <= 7) return { tone: 'warning', label: `${left} · renewal overdue` };
+    return { tone: 'success', label: `Auto-renews · ${left}` };
+  }
+  if (d < 1) return { tone: 'danger', label: `Expires today · ${left}` };
+  if (d <= 7) return { tone: 'danger', label: left };
+  if (d <= 30) return { tone: 'warning', label: left };
+  return { tone: 'success', label: left };
+}
+
+/** Sort key: what needs attention first. Auto-renewing internal leaves never need attention. */
+function urgency(c: CertificateInfo, now: number): number {
+  const ms = new Date(c.notAfter).getTime() - now;
+  if (c.error) return -Infinity;
+  if (ms <= 0) return ms;
+  if (c.kind === 'internal') return Number.MAX_SAFE_INTEGER - 1;
+  if (c.kind === 'internalRoot') return Number.MAX_SAFE_INTEGER;
+  return ms;
 }
 
 /** "CN=R11, O=Let's Encrypt, C=US" → "R11 (Let's Encrypt)". */
@@ -78,13 +115,15 @@ export default function CertificatesPage() {
 
   const hostName = (id: string) => hosts.data?.find((h) => h.id === id)?.domains[0] ?? id;
 
+  // Refreshed with every fetch; keeps render pure.
+  const now = certs.dataUpdatedAt || 0;
   const list = useMemo(() => {
     const n = q.trim().toLowerCase();
     return (certs.data ?? [])
       .filter((c) => filter === 'all' || c.kind === filter)
-      .filter((c) => !n || [c.name, c.issuer, ...c.subjects, c.certPath ?? ''].join(' ').toLowerCase().includes(n))
-      .sort((a, b) => a.daysRemaining - b.daysRemaining);
-  }, [certs.data, q, filter]);
+      .filter((c) => !n || [c.name, c.issuer, ...c.subjects, c.certPath ?? '', c.notes ?? ''].join(' ').toLowerCase().includes(n))
+      .sort((a, b) => urgency(a, now) - urgency(b, now) || a.name.localeCompare(b.name));
+  }, [certs.data, q, filter, now]);
 
   const hasRoot = (certs.data ?? []).some((c) => c.kind === 'internalRoot');
 
@@ -148,7 +187,7 @@ export default function CertificatesPage() {
               { value: 'internal', label: 'Internal' },
             ]}
           />
-          <span className="ml-auto text-sm text-fg-subtle">{list.length} certificates</span>
+          <span className="ml-auto text-sm text-fg-subtle">{certs.data && pluralize(list.length, 'certificate')}</span>
         </div>
         {certs.isPending ? (
           <TableSkeleton rows={4} cols={6} />
@@ -189,7 +228,7 @@ export default function CertificatesPage() {
             </THead>
             <TBody>
               {list.map((c) => {
-                const exp = expiryInfo(c);
+                const exp = expiryInfo(c, now);
                 const kind = kindLabel[c.kind];
                 const isCustom = c.kind === 'custom';
                 return (
@@ -209,6 +248,11 @@ export default function CertificatesPage() {
                         {isCustom && c.source && `${c.source === 'filePath' ? 'By path' : 'Uploaded'} · `}
                         {issuerName(c.issuer)}
                       </p>
+                      {c.notes && (
+                        <p className="truncate text-xs text-fg-muted italic" title={c.notes}>
+                          {c.notes}
+                        </p>
+                      )}
                       {c.error && <p className="truncate text-xs text-danger">{c.error}</p>}
                     </TD>
                     <TD>
@@ -229,8 +273,7 @@ export default function CertificatesPage() {
                     <TD className="whitespace-nowrap">
                       <StatusDot tone={exp.tone} label={exp.label} />
                       <p className="text-xs text-fg-subtle">
-                        {formatDate(c.notAfter)}
-                        {(c.kind === 'acme' || c.kind === 'internal') && ' · auto-renews'}
+                        {c.kind === 'internal' ? formatDateTime(c.notAfter) : formatDate(c.notAfter)}
                       </p>
                     </TD>
                     <TD className="max-w-[200px]">

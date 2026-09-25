@@ -47,13 +47,13 @@ export function Badge({
 export function Chip({ children, className, title }: { children: ReactNode; className?: string; title?: string }) {
   return (
     <span
-      title={title}
+      title={title ?? (typeof children === 'string' ? children : undefined)}
       className={cn(
-        'mono inline-flex h-5 max-w-full items-center truncate rounded border border-border bg-surface-2 px-1.5 text-xs text-fg',
+        'mono inline-flex h-5 max-w-full items-center rounded border border-border bg-surface-2 px-1.5 text-xs text-fg',
         className,
       )}
     >
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </span>
   );
 }

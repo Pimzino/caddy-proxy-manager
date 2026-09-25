@@ -100,7 +100,8 @@ public class MonitorTests
         Assert.Single(Events(app, "readiness:firewall.tcp443"));
         Assert.Equal(1, app.Readiness.Runs);
 
-        // everything healthy
+        // everything healthy (LiteDB keeps millisecond precision: make sure recoveries sort after the warnings)
+        await Task.Delay(5);
         app.Admin.Upstreams = [new UpstreamHealth { Address = "10.0.0.5:8080", Healthy = true }];
         app.Certificates.Certificates = [new CertificateInfo { Id = "c1", Kind = CertificateKind.Custom, DaysRemaining = 300 }];
         app.Readiness.LastReport = new ReadinessReport

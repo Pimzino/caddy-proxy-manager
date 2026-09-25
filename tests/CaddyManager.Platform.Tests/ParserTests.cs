@@ -207,6 +207,30 @@ public class ScOutputParserTests
         Assert.Equal("RUNNING", q.StateName);
         Assert.Equal(4712, q.ProcessId);
         Assert.Equal(0, q.Win32ExitCode);
+        Assert.Equal(0x10, q.ServiceType);
+        Assert.True(q.IsOwnProcess);
+    }
+
+    [Fact]
+    public void SharedSvchostServicesAreNotOwnProcess()
+    {
+        var q = ScOutputParser.ParseQueryEx("""
+
+            SERVICE_NAME: W32Time
+                    TYPE               : 20  WIN32_SHARE_PROCESS
+                    STATE              : 4  RUNNING
+                                            (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)
+                    WIN32_EXIT_CODE    : 0  (0x0)
+                    SERVICE_EXIT_CODE  : 0  (0x0)
+                    CHECKPOINT         : 0x0
+                    WAIT_HINT          : 0x0
+                    PID                : 1536
+                    FLAGS              :
+            """);
+        Assert.NotNull(q);
+        Assert.Equal(0x20, q.ServiceType);
+        Assert.False(q.IsOwnProcess);
+        Assert.Equal(1536, q.ProcessId);
     }
 
     [Fact]

@@ -24,6 +24,30 @@ public sealed record ProcessOptions
 public static class ProcessRunner
 {
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly Lazy<Encoding> Oem = new(CreateOemEncoding);
+
+    /// <summary>
+    /// Encoding of Windows console tools (sc.exe, netsh.exe ...): the system OEM code page (437, 850, 866 ...).
+    /// UTF-8 elsewhere or when the code page is unavailable.
+    /// </summary>
+    public static Encoding OemEncoding => Oem.Value;
+
+    private static Encoding CreateOemEncoding()
+    {
+        if (!OperatingSystem.IsWindows()) return Utf8NoBom;
+        try
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            return Encoding.GetEncoding((int)GetOEMCP());
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            return Utf8NoBom;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetOEMCP();
 
     /// <summary>
     /// Runs <paramref name="fileName"/> with the given arguments (passed via ArgumentList, so no manual quoting).

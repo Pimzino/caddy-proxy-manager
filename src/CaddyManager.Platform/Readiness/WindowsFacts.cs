@@ -20,7 +20,16 @@ public sealed record SystemFacts(
     string? W3svc,
     string? WinHttpProxy);
 
-public sealed record FirewallProfileFact(string Name, string Enabled, string DefaultInboundAction, string AllowLocalFirewallRules);
+/// <summary>A firewall profile as reported by Get-NetFirewallProfile (values "True", "False" or "NotConfigured").</summary>
+public sealed record FirewallProfileFact(string Name, string Enabled, string DefaultInboundAction, string AllowLocalFirewallRules,
+    string AllowInboundRules = "")
+{
+    /// <summary>NotConfigured means the default, which is enabled.</summary>
+    public bool IsEnabled => !Enabled.Equals("False", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>False when "Block all incoming connections, including those in the list of allowed apps" is set.</summary>
+    public bool AllowsInboundRules => !AllowInboundRules.Equals("False", StringComparison.OrdinalIgnoreCase);
+}
 
 public sealed record FirewallRuleFact(
     string Name,
@@ -61,13 +70,17 @@ public static class WindowsFactsParser
     public static FirewallFacts ParseFirewall(JsonElement e) => new(
         S(e, "service") ?? "Unknown",
         Arr(e, "profiles").Select(p => new FirewallProfileFact(S(p, "name") ?? "", S(p, "enabled") ?? "", S(p, "defaultInboundAction") ?? "",
-            S(p, "allowLocalFirewallRules") ?? "")).ToList(),
+            S(p, "allowLocalFirewallRules") ?? "", S(p, "allowInboundRules") ?? "")).ToList(),
         Arr(e, "gpoLocalMerge").Where(g => S(g, "profile") is not null)
             .ToDictionary(g => S(g, "profile")!, g => I(g, "value", -1), StringComparer.OrdinalIgnoreCase),
         Arr(e, "rules").Select(r => new FirewallRuleFact(
             S(r, "name") ?? "", S(r, "displayName") ?? "", S(r, "action") ?? "", S(r, "profile") ?? "Any", S(r, "protocol") ?? "Any",
             Strings(r, "localPorts"), S(r, "program") ?? "Any", S(r, "service") ?? "Any", Strings(r, "remoteAddresses"),
             S(r, "source") ?? "", NullIfEmpty(S(r, "sourceName")), NullIfEmpty(S(r, "group")))).ToList());
+
+    /// <summary>Parses the result of <see cref="ReadinessScripts.ComputerDn"/>.</summary>
+    public static (string? ComputerDn, string? DnError) ParseComputerDn(JsonElement e) =>
+        (NullIfEmpty(S(e, "computerDn")), NullIfEmpty(S(e, "dnError")));
 
     public static List<NetworkProfileInfo> ToProfileInfos(IEnumerable<NetworkProfileFact> facts) =>
         facts.Select(f => new NetworkProfileInfo { InterfaceAlias = f.InterfaceAlias, Name = f.Name, Category = f.Category }).ToList();
