@@ -1,0 +1,13 @@
+bin/
+obj/
+.dev/
+.devdata/
+node_modules/
+web/dist/
+artifacts/
+*.user
+.vs/
+.idea/
+._*
+.DS_Store
+TestResults/

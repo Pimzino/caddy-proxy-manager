@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <AssemblyName>CaddyManager</AssemblyName>
+    <RootNamespace>CaddyManager</RootNamespace>
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
+    <!-- Publish profile: dotnet publish src/CaddyManager -c Release -r win-x64 -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CaddyManager.Core\CaddyManager.Core.csproj" />
+    <ProjectReference Include="..\CaddyManager.Config\CaddyManager.Config.csproj" />
+    <ProjectReference Include="..\CaddyManager.Platform\CaddyManager.Platform.csproj" />
+    <ProjectReference Include="..\CaddyManager.Ops\CaddyManager.Ops.csproj" />
+  </ItemGroup>
+  <!-- The built SPA (web/dist) is embedded so the service is a single exe. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\web\dist\**\*" LinkBase="wwwroot" />
+  </ItemGroup>
+</Project>
