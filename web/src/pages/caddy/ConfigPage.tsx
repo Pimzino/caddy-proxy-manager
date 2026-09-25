@@ -6,14 +6,16 @@ import {
   useApplyConfig,
   useCaddySettings,
   useConfigPreview,
+  useIsManagedNode,
   useRevision,
   useRevisions,
   useRunningConfig,
   useSaveCaddySettings,
 } from '@/api/hooks';
-import { caddySettingsInput } from '@/api/settings';
 import type { AdaptResult, CaddySettings, ConfigMode } from '@/api/types';
 import { useAuth } from '@/auth';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
+import { caddyFormInput } from '@/pages/settings/caddyForm';
 import { useFeedback } from '@/components/feedback';
 import {
   Badge,
@@ -76,7 +78,10 @@ function prettyJson(s: string): string {
 
 export default function ConfigPage() {
   const idBase = useId();
-  const { canOperate, isAdmin } = useAuth();
+  const { canOperate, isAdmin: roleIsAdmin } = useAuth();
+  // The Caddyfile import creates hosts, which a managed cluster node receives from the primary.
+  const { managed } = useIsManagedNode();
+  const isAdmin = roleIsAdmin && !managed;
   const [tab, setTab] = useState<Tab>('generated');
   const [importing, setImporting] = useState(false);
   const settings = useCaddySettings();
@@ -99,6 +104,7 @@ export default function ConfigPage() {
                 Import Caddyfile
               </Button>
             )}
+            <ReadOnlyOnNode />
             {canOperate && (
               <Button
                 variant="primary"
@@ -314,6 +320,9 @@ function RevisionDrawer({ id, onClose }: { id: string | null; onClose: () => voi
 
 function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImport: () => void }) {
   const { isAdmin } = useAuth();
+  // Mode and Caddyfile are replicated settings: a managed node shows them read-only (administrators can still read and validate).
+  const { managed, primaryName } = useIsManagedNode();
+  const canEdit = isAdmin && !managed;
   const stored = settings.rawCaddyfile ?? '';
   const [text, setText] = useState(stored);
   const [mode, setMode] = useState<ConfigMode>(settings.mode);
@@ -354,7 +363,7 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
       return;
     }
     save.mutate(
-      { ...caddySettingsInput(settings), rawCaddyfile: text, mode },
+      { ...caddyFormInput(settings), rawCaddyfile: text, mode },
       {
         onSuccess: (res) => feedback.applied(res.apply, mode === 'caddyfile' ? 'Caddyfile saved and applied' : 'Saved and applied'),
         onError: (err) => feedback.failed(err, { title: 'Could not save' }),
@@ -364,11 +373,16 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
 
   return (
     <div className="flex flex-col gap-4">
+      {managed && (
+        <Callout tone="info" title={`Read-only on this node — managed by ${primaryName || 'the cluster primary'}`}>
+          The configuration mode and the Caddyfile are replicated from the primary.
+        </Callout>
+      )}
       <RadioCards
         aria-label="Configuration mode"
         value={mode}
         onChange={setMode}
-        disabled={!isAdmin}
+        disabled={!canEdit}
         options={[
           { value: 'managed', label: 'Managed (recommended)', description: 'Caddy config is generated from the hosts, certificates and settings in this console.' },
           { value: 'caddyfile', label: 'Caddyfile', description: 'Escape hatch: Caddy runs a hand-written Caddyfile. Managed objects are ignored.' },
@@ -381,15 +395,19 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
           <div className="flex-1" />
           {isAdmin && (
             <>
-              <Button size="sm" variant="ghost" icon={<Import size={13} />} onClick={onImport} title="Convert site blocks into managed hosts">
-                Import as hosts…
-              </Button>
+              {canEdit && (
+                <Button size="sm" variant="ghost" icon={<Import size={13} />} onClick={onImport} title="Convert site blocks into managed hosts">
+                  Import as hosts…
+                </Button>
+              )}
               <Button size="sm" icon={<FileCheck2 size={13} />} onClick={runAdapt} loading={adapt.isPending} disabled={!text.trim()}>
                 Adapt &amp; validate
               </Button>
-              <Button size="sm" variant="primary" icon={<Save size={13} />} onClick={() => void persist()} loading={save.isPending} disabled={!dirty}>
-                {mode === 'caddyfile' ? 'Save & apply' : 'Save'}
-              </Button>
+              {canEdit && (
+                <Button size="sm" variant="primary" icon={<Save size={13} />} onClick={() => void persist()} loading={save.isPending} disabled={!dirty}>
+                  {mode === 'caddyfile' ? 'Save & apply' : 'Save'}
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -403,6 +421,7 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
             aria-label="Caddyfile"
             mono
             spellCheck={false}
+            readOnly={managed}
             value={text}
             onChange={(e) => {
               setText(e.target.value);
@@ -410,7 +429,7 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
               setAdaptError(null);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Tab' && !e.shiftKey && isAdmin) {
+              if (e.key === 'Tab' && !e.shiftKey && canEdit) {
                 e.preventDefault();
                 const el = e.currentTarget;
                 const { selectionStart, selectionEnd } = el;

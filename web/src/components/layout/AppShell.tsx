@@ -8,6 +8,7 @@ import { readStorage, writeStorage } from '@/lib/storage';
 import { findNav } from '@/nav';
 import { CaddyStatusPill } from './CaddyStatusPill';
 import { ErrorBoundary } from './ErrorBoundary';
+import { ManagedNodeBanner } from './ManagedNode';
 import { Sidebar } from './Sidebar';
 import { UserMenu } from './UserMenu';
 
@@ -91,6 +92,7 @@ export function AppShell() {
           <CaddyStatusPill />
           <UserMenu />
         </header>
+        <ManagedNodeBanner />
         <main id="main" className="min-h-0 flex-1 overflow-y-auto" tabIndex={-1}>
           <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
             <ErrorBoundary resetKey={location.pathname}>

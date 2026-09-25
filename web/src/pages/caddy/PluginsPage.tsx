@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Check, ExternalLink, Hammer, Package, Plus, Puzzle, Save, Trash2, Undo2 } from 'lucide-react';
 import { errorMessage } from '@/api/client';
-import { useBinaryOverview, useInstallBinary, usePluginCatalog, useSavePlugins } from '@/api/hooks';
+import { useBinaryOverview, useInstallBinary, useIsManagedNode, usePluginCatalog, useSavePlugins } from '@/api/hooks';
 import type { BinaryOverview } from '@/api/types';
 import { useAuth } from '@/auth';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
 import { useFeedback } from '@/components/feedback';
 import { JobDialog } from '@/components/JobDialog';
 import {
@@ -47,7 +48,11 @@ export default function PluginsPage() {
 }
 
 function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (id: string) => void }) {
-  const { isAdmin } = useAuth();
+  const { isAdmin: roleIsAdmin } = useAuth();
+  // On a managed cluster node the desired plugin list comes from the primary (PUT /api/caddy/plugins answers 409);
+  // installing a build of that list stays local.
+  const { managed, primaryName } = useIsManagedNode();
+  const isAdmin = roleIsAdmin && !managed;
   const [desired, setDesired] = useState<string[]>(overview.desiredPlugins);
   const [manual, setManual] = useState('');
   const [manualError, setManualError] = useState<string | null>(null);
@@ -116,7 +121,17 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
         title="Plugins"
         description="Extend Caddy with modules from the official package registry, e.g. layer4 streams or DNS providers for wildcard certificates."
         actions={
-          isAdmin && (
+          managed ? (
+            <>
+              <ReadOnlyOnNode />
+              {roleIsAdmin && (
+                <Button variant="primary" icon={<Hammer size={14} />} loading={install.isPending} onClick={() => void rebuild()}>
+                  Rebuild &amp; install
+                </Button>
+              )}
+            </>
+          ) : (
+            isAdmin && (
             <>
               {dirty && (
                 <Button icon={<Undo2 size={14} />} onClick={() => setDesired(overview.desiredPlugins)}>
@@ -130,9 +145,15 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
                 Rebuild &amp; install
               </Button>
             </>
+            )
           )
         }
       />
+      {managed && (
+        <Callout tone="info" className="mb-4" title={`Plugins are managed by ${primaryName || 'the cluster primary'}`}>
+          This node installs the primary’s plugin list automatically after a sync. “Rebuild &amp; install” builds that list here now.
+        </Callout>
+      )}
       {overview.pluginsOutOfSync && !dirty && (
         <Callout tone="warning" className="mb-4" title="The installed binary does not match the desired plugins">
           Choose “Rebuild &amp; install” to download a matching Caddy build.

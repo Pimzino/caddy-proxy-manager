@@ -1,16 +1,18 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import {
   useBinaryOverview,
   useBinarySettings,
   useCaddySettings,
+  useDnsProviders,
+  useIsManagedNode,
   useSaveBinarySettings,
   useSaveCaddySettings,
   useSaveUiSettings,
   useSystemInfo,
   useUiSettings,
 } from '@/api/hooks';
-import { caddySettingsInput, uiSettingsInput } from '@/api/settings';
+import { uiSettingsInput } from '@/api/settings';
 import type { AcmeCa, BinarySettings, CaddySettings, CaddySettingsInput, DefaultSiteBehavior, UiSettings, UiSettingsInput } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
@@ -37,26 +39,35 @@ import {
 } from '@/components/ui';
 import { formatDateTime, formatDuration } from '@/lib/format';
 import { isAbsoluteHttpUrl, isIpv4, isIpv6, isValidCidr, isValidEmail, isValidPort, jsonObjectError, type FieldErrors } from '@/lib/validation';
+import { AcmeChallengeSection, DNS_FIELDS } from './AcmeChallengeSection';
 import { BackupTab } from './BackupTab';
+import { caddyFormInput, round3Payload, validateDns } from './caddyForm';
+import { ClusterTab } from './ClusterTab';
 import { LdapTab } from './LdapTab';
 import { HiddenValue, PLUGIN_FIELDS, PluginsAdvancedSection, validatePluginFields } from './PluginsAdvancedSection';
 import { RestartPanel } from './RestartPanel';
 import { fieldError, Loader, SaveBar, UnplacedErrors } from './shared';
 
-type SettingsTab = 'caddy' | 'updates' | 'ui' | 'ldap' | 'backup';
-const TABS: SettingsTab[] = ['caddy', 'updates', 'ui', 'ldap', 'backup'];
+type SettingsTab = 'caddy' | 'cluster' | 'updates' | 'ui' | 'ldap' | 'backup';
+const TABS: SettingsTab[] = ['caddy', 'cluster', 'updates', 'ui', 'ldap', 'backup'];
+/** Tabs every role can open (read-only below admin). */
+const OPEN_TABS: SettingsTab[] = ['caddy', 'cluster', 'updates'];
 
 export default function SettingsPage() {
   const idBase = useId();
   const { isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab') as SettingsTab | null;
-  const tab: SettingsTab = requested && TABS.includes(requested) && (isAdmin || requested === 'caddy' || requested === 'updates') ? requested : 'caddy';
+  const tab: SettingsTab = requested && TABS.includes(requested) && (isAdmin || OPEN_TABS.includes(requested)) ? requested : 'caddy';
   return (
     <>
       <PageHeader
         title="Settings"
-        description={isAdmin ? 'Global Caddy behaviour, update policy, the management UI listener, directory sign-in and backups.' : 'Global settings (read-only for your role).'}
+        description={
+          isAdmin
+            ? 'Global Caddy behaviour, clustering and shared storage, update policy, the management UI listener, directory sign-in and backups.'
+            : 'Global settings (read-only for your role).'
+        }
       />
       <Tabs
         idBase={idBase}
@@ -66,6 +77,7 @@ export default function SettingsPage() {
         className="mb-4"
         items={[
           { value: 'caddy', label: 'Caddy' },
+          { value: 'cluster', label: 'Cluster' },
           { value: 'updates', label: 'Updates' },
           { value: 'ui', label: 'Management UI', hidden: !isAdmin },
           { value: 'ldap', label: 'Directory (LDAP)', hidden: !isAdmin },
@@ -74,6 +86,9 @@ export default function SettingsPage() {
       />
       <TabPanel idBase={idBase} value="caddy" active={tab === 'caddy'}>
         <CaddySettingsTab />
+      </TabPanel>
+      <TabPanel idBase={idBase} value="cluster" active={tab === 'cluster'}>
+        <ClusterTab />
       </TabPanel>
       <TabPanel idBase={idBase} value="updates" active={tab === 'updates'}>
         <UpdatesTab />
@@ -139,17 +154,32 @@ const CADDY_FIELDS = [
   'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort', 'publicHttpsPort',
   'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
   ...PLUGIN_FIELDS,
+  ...DNS_FIELDS,
 ];
+
+/** Disables every control of a settings group that a managed cluster node receives from the primary (display: contents keeps the layout). */
+function Replicated({ locked, children }: { locked: boolean; children: ReactNode }) {
+  return (
+    <fieldset disabled={locked} className="contents">
+      {children}
+    </fieldset>
+  );
+}
 
 function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   const { isAdmin } = useAuth();
-  const initial = caddySettingsInput(settings);
+  // On a managed cluster node only CaddySettings.NodeLocalProperties (listeners, bind addresses, admin API address,
+  // certificate store path) are editable; everything else is replicated from the primary.
+  const { managed, primaryName } = useIsManagedNode();
+  const providers = useDnsProviders();
+  const initial = caddyFormInput(settings);
   const [form, setForm] = useState<CaddySettingsInput>(initial);
   const [submitted, setSubmitted] = useState(false);
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const save = useSaveCaddySettings();
   const feedback = useFeedback();
-  const errors = { ...serverErrors, ...(submitted ? validateCaddy(form) : {}) };
+  const validate = (f: CaddySettingsInput): FieldErrors => ({ ...validateCaddy(f), ...(managed ? {} : validateDns(f, settings, providers.data)) });
+  const errors = { ...serverErrors, ...(submitted ? validate(form) : {}) };
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const set = <K extends keyof CaddySettingsInput>(k: K, v: CaddySettingsInput[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
@@ -161,10 +191,26 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitted(true);
-    if (Object.keys(validateCaddy(form)).length) return;
+    if (Object.keys(validate(form)).length) return;
     try {
+      const publicHttpsPort = form.publicHttpsPort == null || Number.isNaN(form.publicHttpsPort) ? null : form.publicHttpsPort;
+      if (managed) {
+        // Replicated values go back exactly as received (the node rejects changes to them); write-only secrets stay absent.
+        const res = await save.mutateAsync({
+          ...initial,
+          httpPort: form.httpPort,
+          httpsPort: form.httpsPort,
+          publicHttpsPort,
+          bindAddresses: form.bindAddresses,
+          adminListen: form.adminListen.trim(),
+          certificateStorePath: form.certificateStorePath?.trim() || null,
+        });
+        feedback.applied(res.apply, 'Settings saved and applied');
+        return;
+      }
       const res = await save.mutateAsync({
         ...form,
+        ...round3Payload(form, settings, providers.data),
         acmeEmail: form.acmeEmail.trim(),
         customAcmeDirectory: form.customAcmeDirectory?.trim() || null,
         customAcmeRootPath: form.customAcmeRootPath?.trim() || null,
@@ -177,7 +223,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
         tlsConnectionPolicyJson: form.tlsConnectionPolicyJson?.trim() || null,
         acmeIssuerJson: secretPayload(form.acmeIssuerJson),
         adminListen: form.adminListen.trim(),
-        publicHttpsPort: form.publicHttpsPort == null || Number.isNaN(form.publicHttpsPort) ? null : form.publicHttpsPort,
+        publicHttpsPort,
       });
       feedback.applied(res.apply, 'Settings saved and applied');
     } catch (err) {
@@ -190,45 +236,58 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
       <Card className="p-5">
         <fieldset disabled={!isAdmin || save.isPending} className="min-w-0">
           <UnplacedErrors errors={errors} fields={CADDY_FIELDS} />
-          <FormSection title="Certificates (ACME)" description="Used by hosts with Automatic TLS. Let’s Encrypt needs inbound port 80 (HTTP challenge) or 443 (TLS-ALPN) from the Internet.">
-            <Field label="Account e-mail" error={errors.acmeEmail} hint="Receives expiry warnings from the CA. Strongly recommended.">
-              <Input type="email" placeholder="hostmaster@example.com" value={form.acmeEmail} onChange={(e) => set('acmeEmail', e.target.value)} />
-            </Field>
-            <Field label="Certificate authority">
-              <Select value={form.acmeCa} onChange={(e) => set('acmeCa', e.target.value as AcmeCa)}>
-                {ACME_CAS.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            {form.acmeCa === 'custom' && (
-              <>
-                <Field label="ACME directory URL" required error={errors.customAcmeDirectory}>
-                  <Input mono type="url" value={form.customAcmeDirectory ?? ''} onChange={(e) => set('customAcmeDirectory', e.target.value)} />
-                </Field>
-                <Field label="CA root certificate (path)" error={errors.customAcmeRootPath} hint="PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.">
-                  <Input mono placeholder="C:\ProgramData\pki\root.pem" value={form.customAcmeRootPath ?? ''} onChange={(e) => set('customAcmeRootPath', e.target.value)} />
-                </Field>
-              </>
-            )}
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="EAB key ID" error={errors.eabKeyId} hint="External account binding (ZeroSSL, some commercial and private CAs).">
-                <Input mono autoComplete="off" value={form.eabKeyId ?? ''} onChange={(e) => set('eabKeyId', e.target.value)} />
+          {managed && (
+            <Callout tone="info" className="mb-5" title={`Read-only on this node — managed by ${primaryName || 'the cluster primary'}`}>
+              Caddy settings are replicated from the primary; change them there. Ports, bind addresses, the admin API address and the certificate
+              store path belong to this server and stay editable.
+            </Callout>
+          )}
+          <FormSection
+            title="Certificates (ACME)"
+            description="Used by hosts with Automatic TLS. With the HTTP challenge, the CA must reach this server on port 80 (HTTP-01) or 443 (TLS-ALPN-01) from the Internet; the DNS challenge below needs no inbound ports."
+          >
+            <Replicated locked={managed}>
+              <Field label="Account e-mail" error={errors.acmeEmail} hint="Receives expiry warnings from the CA. Strongly recommended.">
+                <Input type="email" placeholder="hostmaster@example.com" value={form.acmeEmail} onChange={(e) => set('acmeEmail', e.target.value)} />
               </Field>
-              <Field label="EAB HMAC key">
-                <SecretInput has={settings.hasEabMacKey} value={form.eabMacKey} onChange={(v) => set('eabMacKey', v)} disabled={!isAdmin} />
+              <Field label="Certificate authority">
+                <Select value={form.acmeCa} onChange={(e) => set('acmeCa', e.target.value as AcmeCa)}>
+                  {ACME_CAS.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </Select>
               </Field>
-            </div>
-            <SwitchField label="Disable HTTP-01 challenge" description="Use when port 80 is not reachable from the Internet." checked={form.disableHttpChallenge} onChange={(v) => set('disableHttpChallenge', v)} />
-            <SwitchField label="Disable TLS-ALPN-01 challenge" description="Use when port 443 is behind a TLS-terminating load balancer." checked={form.disableTlsAlpnChallenge} onChange={(v) => set('disableTlsAlpnChallenge', v)} />
-            {form.disableHttpChallenge && form.disableTlsAlpnChallenge && (
-              <Callout tone={errors.disableTlsAlpnChallenge ? 'danger' : 'warning'}>
-                Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.
-              </Callout>
-            )}
+              {form.acmeCa === 'custom' && (
+                <>
+                  <Field label="ACME directory URL" required error={errors.customAcmeDirectory}>
+                    <Input mono type="url" value={form.customAcmeDirectory ?? ''} onChange={(e) => set('customAcmeDirectory', e.target.value)} />
+                  </Field>
+                  <Field label="CA root certificate (path)" error={errors.customAcmeRootPath} hint="PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.">
+                    <Input mono placeholder="C:\ProgramData\pki\root.pem" value={form.customAcmeRootPath ?? ''} onChange={(e) => set('customAcmeRootPath', e.target.value)} />
+                  </Field>
+                </>
+              )}
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="EAB key ID" error={errors.eabKeyId} hint="External account binding (ZeroSSL, some commercial and private CAs).">
+                  <Input mono autoComplete="off" value={form.eabKeyId ?? ''} onChange={(e) => set('eabKeyId', e.target.value)} />
+                </Field>
+                <Field label="EAB HMAC key">
+                  <SecretInput has={settings.hasEabMacKey} value={form.eabMacKey} onChange={(v) => set('eabMacKey', v)} disabled={!isAdmin} />
+                </Field>
+              </div>
+              <SwitchField label="Disable HTTP-01 challenge" description="Use when port 80 is not reachable from the Internet." checked={form.disableHttpChallenge} onChange={(v) => set('disableHttpChallenge', v)} />
+              <SwitchField label="Disable TLS-ALPN-01 challenge" description="Use when port 443 is behind a TLS-terminating load balancer." checked={form.disableTlsAlpnChallenge} onChange={(v) => set('disableTlsAlpnChallenge', v)} />
+              {form.disableHttpChallenge && form.disableTlsAlpnChallenge && (
+                <Callout tone={errors.disableTlsAlpnChallenge ? 'danger' : 'warning'}>
+                  Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.
+                </Callout>
+              )}
+            </Replicated>
           </FormSection>
+
+          <AcmeChallengeSection settings={settings} form={form} set={set} errors={errors} providers={providers} disabled={!isAdmin || managed} />
 
           <FormSection title="Listeners" description="Ports Caddy listens on for all sites. Remember the Windows Firewall rules (see Readiness).">
             <div className="grid gap-4 sm:grid-cols-2 lg:max-w-md">
@@ -262,7 +321,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 </p>
               ) : null;
             })()}
-            <SwitchField label="HTTP/3 (QUIC)" description={`Optional. Also listen on UDP ${form.httpsPort || 443} for HTTP/3; browsers use HTTP/2 when it is off. Needs an inbound UDP firewall rule. Off by default. 0-RTT (early data) stays disabled, so hosts with IP access lists never answer “425 Too Early”.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
+            <SwitchField disabled={managed} label="HTTP/3 (QUIC)" description={`Optional. Also listen on UDP ${form.httpsPort || 443} for HTTP/3; browsers use HTTP/2 when it is off. Needs an inbound UDP firewall rule. Off by default. 0-RTT (early data) stays disabled, so hosts with IP access lists never answer “425 Too Early”.`} checked={form.enableHttp3} onChange={(v) => set('enableHttp3', v)} />
             <Field label="Bind addresses" error={fieldError(errors, 'bindAddresses')} hint="Leave empty to listen on all interfaces.">
               <ChipInput
                 value={form.bindAddresses}
@@ -275,27 +334,29 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
           </FormSection>
 
           <FormSection title="Unknown hosts" description="What Caddy does with requests for a domain that no host is configured for.">
-            <Field label="Default site">
-              <Select value={form.defaultSite} onChange={(e) => set('defaultSite', e.target.value as DefaultSiteBehavior)}>
-                {DEFAULT_SITES.map((d) => (
-                  <option key={d.value} value={d.value}>
-                    {d.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            {form.defaultSite === 'redirect' && (
-              <Field label="Redirect URL" required error={errors.defaultRedirectUrl}>
-                <Input mono type="url" placeholder="https://www.example.com" value={form.defaultRedirectUrl ?? ''} onChange={(e) => set('defaultRedirectUrl', e.target.value)} />
+            <Replicated locked={managed}>
+              <Field label="Default site">
+                <Select value={form.defaultSite} onChange={(e) => set('defaultSite', e.target.value as DefaultSiteBehavior)}>
+                  {DEFAULT_SITES.map((d) => (
+                    <option key={d.value} value={d.value}>
+                      {d.label}
+                    </option>
+                  ))}
+                </Select>
               </Field>
-            )}
-            <p className="text-xs text-fg-subtle">
-              Over HTTPS the default site is only reached for names that have a certificate. A browser that opens https:// with an unknown name, or
-              with the server’s IP address, gets a TLS error before any site runs: Caddy has no certificate for that name. To answer those requests
-              too, add <span className="mono">{'{"fallback_sni": "app.example.com", "default_sni": "app.example.com"}'}</span> (a name of one of your
-              HTTPS hosts) to the TLS connection policy under Plugins &amp; advanced below; clients then see that host’s certificate and the default
-              site’s response.
-            </p>
+              {form.defaultSite === 'redirect' && (
+                <Field label="Redirect URL" required error={errors.defaultRedirectUrl}>
+                  <Input mono type="url" placeholder="https://www.example.com" value={form.defaultRedirectUrl ?? ''} onChange={(e) => set('defaultRedirectUrl', e.target.value)} />
+                </Field>
+              )}
+              <p className="text-xs text-fg-subtle">
+                Over HTTPS the default site is only reached for names that have a certificate. A browser that opens https:// with an unknown name, or
+                with the server’s IP address, gets a TLS error before any site runs: Caddy has no certificate for that name. To answer those requests
+                too, add <span className="mono">{'{"fallback_sni": "app.example.com", "default_sni": "app.example.com"}'}</span> (a name of one of your
+                HTTPS hosts) to the TLS connection policy under Plugins &amp; advanced below; clients then see that host’s certificate and the default
+                site’s response.
+              </p>
+            </Replicated>
           </FormSection>
 
           <FormSection
@@ -308,14 +369,14 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 onChange={(v) => set('trustedProxies', v)}
                 placeholder="10.0.0.0/8"
                 validate={(v) => (isValidCidr(v) && v.toLowerCase() !== 'all' ? null : 'not an IP or CIDR range')}
-                disabled={!isAdmin}
+                disabled={!isAdmin || managed}
               />
             </Field>
           </FormSection>
 
           <FormSection title="Logging & storage">
             <Field label="Caddy log level" error={errors.logLevel} className="max-w-xs">
-              <Select value={form.logLevel} onChange={(e) => set('logLevel', e.target.value)}>
+              <Select value={form.logLevel} onChange={(e) => set('logLevel', e.target.value)} disabled={managed}>
                 <option value="debug">Debug (verbose)</option>
                 <option value="info">Info</option>
                 <option value="warn">Warning</option>
@@ -329,9 +390,22 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             >
               <Input mono placeholder="C:\ProgramData\CaddyProxyManager\certificates" value={form.certificateStorePath ?? ''} onChange={(e) => set('certificateStorePath', e.target.value)} />
             </Field>
+            <SwitchField
+              label="Traffic statistics"
+              disabled={managed}
+              description={
+                <>
+                  Caddy writes one line per HTTP request (client IP, host, method, URI, status, bytes, duration — no headers) to a local log that
+                  feeds the <Link to="/traffic" className="text-accent-text hover:underline">Traffic</Link> page. Rotated at 10 MB, 5 files kept.
+                  Managed mode only; per-host access logs are not affected.
+                </>
+              }
+              checked={form.trafficStatsEnabled}
+              onChange={(v) => set('trafficStatsEnabled', v)}
+            />
           </FormSection>
 
-          <PluginsAdvancedSection settings={settings} form={form} set={set} errors={errors} isAdmin={isAdmin} />
+          <PluginsAdvancedSection settings={settings} form={form} set={set} errors={errors} isAdmin={isAdmin} readOnly={managed} />
 
           <FormSection title="Advanced">
             <Field label="Configuration mode">
@@ -352,7 +426,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             )}
             <Field label="Server options (JSON)" error={errors.serverOptionsJson} hint="Merged into every apps.http.servers entry, e.g. timeouts or max_header_bytes. Leave empty unless you know you need it.">
               {isAdmin || form.serverOptionsJson !== undefined ? (
-                <Textarea mono rows={5} spellCheck={false} placeholder={'{\n  "timeouts": { "read_header": "10s" }\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
+                <Textarea mono rows={5} spellCheck={false} disabled={managed} placeholder={'{\n  "timeouts": { "read_header": "10s" }\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
               ) : (
                 <HiddenValue />
               )}

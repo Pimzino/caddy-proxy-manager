@@ -1,9 +1,10 @@
 import { useId, useMemo, useState, type FormEvent } from 'react';
 import { ArrowDown, ArrowUp, ListChecks, MoreHorizontal, Pencil, Plus, Trash2, UserPlus } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
-import { useAccessLists, useDeleteAccessList, useSaveAccessList } from '@/api/hooks';
+import { useAccessLists, useDeleteAccessList, useIsManagedNode, useSaveAccessList } from '@/api/hooks';
 import type { AccessList, AccessListInput, IpRule } from '@/api/types';
 import { useAuth } from '@/auth';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
 import { useFeedback } from '@/components/feedback';
 import {
   Badge,
@@ -33,7 +34,10 @@ import { formatDate, pluralize } from '@/lib/format';
 import { isValidCidr, type FieldErrors } from '@/lib/validation';
 
 export default function AccessListsPage() {
-  const { canOperate } = useAuth();
+  const { canOperate: roleCanOperate } = useAuth();
+  // On a managed cluster node access lists are replicated from the primary: view only.
+  const { managed } = useIsManagedNode();
+  const canOperate = roleCanOperate && !managed;
   const lists = useAccessLists();
   const del = useDeleteAccessList();
   const feedback = useFeedback();
@@ -76,10 +80,14 @@ export default function AccessListsPage() {
         title="Access Lists"
         description="Reusable IP allow/deny rules and basic-authentication users that you attach to hosts."
         actions={
-          canOperate && (
-            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setEditor({})}>
-              Add access list
-            </Button>
+          managed ? (
+            <ReadOnlyOnNode />
+          ) : (
+            canOperate && (
+              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setEditor({})}>
+                Add access list
+              </Button>
+            )
           )
         }
       />

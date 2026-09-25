@@ -2,7 +2,8 @@
 // Enabled only by `npm run dev:mock` (vite --mode mock, serve). Never part of a production build.
 //
 // Environment switches: MOCK_SETUP=1 (first-run setup flow), MOCK_ANON=1 (start signed out),
-// MOCK_ROLE=viewer|operator (start as a lower role), MOCK_LATENCY=ms (default 180).
+// MOCK_ROLE=viewer|operator (start as a lower role), MOCK_LATENCY=ms (default 180),
+// MOCK_CLUSTER_ROLE=standalone|primary|node (default primary; see round3-settings.ts).
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import type {
@@ -40,7 +41,7 @@ import {
   type MockState,
 } from './fixtures.ts';
 import { round3ServersRoutes } from './round3-servers.ts';
-import { round3SettingsRoutes } from './round3-settings.ts';
+import { applyRound3CaddySettings, managedNodeGuard, round3SettingsRoutes, stripRound3Secrets } from './round3-settings.ts';
 
 export class HttpError extends Error {
   readonly status: number;
@@ -283,6 +284,8 @@ function validateHost(s: MockState, h: SiteHostFields, id?: string) {
   if (h.kind === 'redirect' && !/^https?:\/\//.test(h.redirectTarget ?? '')) add('RedirectTarget', 'Target must be an absolute http(s) URL.');
   if (h.kind === 'static' && !h.rootPath) add('RootPath', 'Root path is required.');
   if (h.tls === 'custom' && !s.certificates.some((c) => c.id === h.certificateId)) add('CertificateId', 'Certificate not found.');
+  if (h.tls === 'acme' && h.acmeChallenge === 'dns' && !s.caddySettings.dnsProvider)
+    add('AcmeChallenge', 'The DNS challenge needs a DNS provider. Configure one in Settings › Caddy first.');
   if (h.advancedRoutesJson) {
     try {
       if (!Array.isArray(JSON.parse(h.advancedRoutesJson))) add('AdvancedRoutesJson', 'Must be a JSON array.');
@@ -345,7 +348,7 @@ type BinarySettingsBody = MockState['binarySettings'];
 
 /** GET /api/settings/caddy: secrets never returned; raw config values hidden from non-admins (SPEC round 2). */
 function caddySettingsOut(s: MockState) {
-  const out = stripSecret(stripSecret(s.caddySettings, 'eabMacKey'), 'acmeIssuerJson') as Partial<CaddySettings>;
+  const out = stripRound3Secrets(stripSecret(stripSecret(s.caddySettings, 'eabMacKey'), 'acmeIssuerJson')) as Partial<CaddySettings>;
   if (!isAdminSession(s)) {
     delete out.rawCaddyfile;
     delete out.serverOptionsJson;
@@ -949,12 +952,30 @@ const routes: [string, string, Handler][] = [
     const provider = acmeIssuerJson ? (/"name"\s*:\s*"([^"]+)"/.exec(acmeIssuerJson)?.[1] ?? null) : null;
     if (provider && !(s.binary.installed?.modules ?? []).includes(`dns.providers.${provider}`))
       throw new HttpError(422, 'Caddy rejected the configuration', `loading new config: loading tls app module: provision tls: provisioning automation policy 1: loading TLS automation management module: position 0: loading module 'acme': provision tls.issuance.acme: loading DNS provider module: loading module '${provider}': unknown module: dns.providers.${provider}`);
-    const res = transactional(s, 'Settings changed: Caddy', () => {
-      Object.assign(s.caddySettings, rest);
-      secret(s.caddySettings, 'eabMacKey', eabMacKey, 'hasEabMacKey');
-      secret(s.caddySettings, 'acmeIssuerJson', acmeIssuerJson, 'hasAcmeIssuerJson');
-      return caddySettingsOut(s);
-    });
+    const snapshot = JSON.stringify(s.caddySettings);
+    let round3Rest: Record<string, unknown>;
+    try {
+      round3Rest = applyRound3CaddySettings(s, rest as unknown as Record<string, unknown>, HttpError);
+    } catch (err) {
+      s.caddySettings = JSON.parse(snapshot) as MockState['caddySettings'];
+      throw err;
+    }
+    let res: { item: Partial<CaddySettings>; apply: ApplyResult };
+    try {
+      res = transactional(s, 'Settings changed: Caddy', () => {
+        Object.assign(s.caddySettings, round3Rest);
+        secret(s.caddySettings, 'eabMacKey', eabMacKey, 'hasEabMacKey');
+        secret(s.caddySettings, 'acmeIssuerJson', acmeIssuerJson, 'hasAcmeIssuerJson');
+        return caddySettingsOut(s);
+      });
+    } catch (err) {
+      s.caddySettings = JSON.parse(snapshot) as MockState['caddySettings'];
+      throw err;
+    }
+    // SPEC round 3: a DNS provider missing from the installed binary is a warning (certificates using DNS-01 fail until Caddy is rebuilt).
+    const dnsProvider = s.caddySettings.dnsProvider;
+    if (dnsProvider && !(s.binary.installed?.modules ?? []).includes(`dns.providers.${dnsProvider}`))
+      res.apply.warnings = [...(res.apply.warnings ?? []), `DNS provider module dns.providers.${dnsProvider} is not in the installed Caddy. Add github.com/caddy-dns/${dnsProvider} on the Plugins page and rebuild Caddy.`];
     audit(s, 'updated', 'settings', 'Caddy');
     return ok(res);
   }],
@@ -1392,6 +1413,7 @@ export function mockApi(): Plugin {
           const m = route.re.exec(url.pathname) as RegExpExecArray;
           const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
           if (latency > 0) await sleep(latency * (0.6 + Math.random() * 0.8));
+          managedNodeGuard(method, url.pathname, body, state);
           const result = await route.handler({ method, path: url.pathname, query: url.searchParams, body, raw, headers: req.headers, params }, state);
           send(res, result ?? { status: 204 });
         } catch (err) {

@@ -131,6 +131,7 @@ export function toFields(h: SiteHost): SiteHostFields {
     requestHeaders: rest.requestHeaders ?? [],
     responseHeaders: rest.responseHeaders ?? [],
     domains: rest.domains ?? [],
+    acmeChallenge: rest.acmeChallenge ?? 'default',
   };
 }
 
@@ -157,6 +158,8 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     responseBody: h.responseBody ?? null,
     advancedRoutesJson: trimOrNull(h.advancedRoutesJson),
     upstreamNtlm: h.kind === 'proxy' ? !!h.upstreamNtlm : false,
+    // The challenge only matters for ACME; other modes store the default so a later provider removal cannot invalidate them.
+    acmeChallenge: h.tls === 'acme' ? h.acmeChallenge : 'default',
     forceHttps: h.tls === 'none' ? false : h.forceHttps,
     hsts: h.tls === 'none' ? false : h.hsts,
   };
@@ -182,7 +185,12 @@ function validateHeaders(list: HeaderOp[], prefix: string, errors: FieldErrors) 
 }
 
 /** Client-side mirror of the server's validation rules. */
-export function validateHost(h: SiteHostFields): FieldErrors {
+export interface HostValidationContext {
+  /** Settings › Caddy has a DNS provider (false = not configured; undefined = settings not loaded yet). */
+  dnsProviderConfigured?: boolean;
+}
+
+export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {}): FieldErrors {
   const e: FieldErrors = {};
   if (h.domains.length === 0) e.domains = 'Add at least one domain name.';
   const bad = h.domains.filter((d) => !isValidSiteDomain(d));
@@ -220,6 +228,8 @@ export function validateHost(h: SiteHostFields): FieldErrors {
     if (!h.responseContentType.trim()) e.responseContentType = 'Enter a content type.';
   }
   if (h.tls === 'custom' && !h.certificateId) e.certificateId = 'Choose a certificate, or pick another TLS mode.';
+  if (h.tls === 'acme' && h.acmeChallenge === 'dns' && ctx.dnsProviderConfigured === false)
+    e.acmeChallenge = 'The DNS challenge needs a DNS provider. Configure one in Settings › Caddy, or choose another challenge.';
   if (h.tls !== 'none' && h.hsts && !(h.hstsMaxAgeSeconds >= 0)) e.hstsMaxAgeSeconds = 'Enter a max-age in seconds.';
   validateHeaders(h.responseHeaders, 'responseHeaders', e);
   const jsonErr = jsonArrayError(h.advancedRoutesJson);
@@ -232,6 +242,7 @@ export type HostTab = 'details' | 'tls' | 'access' | 'headers' | 'locations' | '
 const TAB_OF_FIELD: Record<string, HostTab> = {
   tls: 'tls',
   certificateId: 'tls',
+  acmeChallenge: 'tls',
   forceHttps: 'tls',
   hsts: 'tls',
   hstsSubdomains: 'tls',

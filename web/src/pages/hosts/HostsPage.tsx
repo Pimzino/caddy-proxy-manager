@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { Copy, Eye, Globe, KeyRound, LockOpen, MoreHorizontal, Pencil, Plus, Power, PowerOff, ShieldCheck, Trash2 } from 'lucide-react';
-import { useAccessLists, useCertificates, useDeleteHost, useHosts, useToggleHost } from '@/api/hooks';
+import { useAccessLists, useCertificates, useDeleteHost, useHosts, useIsManagedNode, useToggleHost } from '@/api/hooks';
 import type { HostKind, SiteHost, SiteHostFields } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
 import {
   Badge,
   Button,
@@ -42,7 +43,10 @@ export default function HostsPage() {
 
 function HostsList({ kind }: { kind: HostKind }) {
   const meta = kindMeta[kind];
-  const { canOperate } = useAuth();
+  const { canOperate: roleCanOperate } = useAuth();
+  // On a managed cluster node hosts are replicated from the primary: view only.
+  const { managed } = useIsManagedNode();
+  const canOperate = roleCanOperate && !managed;
   const hosts = useHosts(kind);
   const certs = useCertificates();
   const lists = useAccessLists();
@@ -124,10 +128,14 @@ function HostsList({ kind }: { kind: HostKind }) {
         title={meta.title}
         description={meta.description}
         actions={
-          canOperate && (
-            <Button variant="primary" icon={<Plus size={14} />} onClick={openNew}>
-              Add {meta.singular}
-            </Button>
+          managed ? (
+            <ReadOnlyOnNode />
+          ) : (
+            canOperate && (
+              <Button variant="primary" icon={<Plus size={14} />} onClick={openNew}>
+                Add {meta.singular}
+              </Button>
+            )
           )
         }
       />
@@ -345,12 +353,16 @@ function Target({ host }: { host: SiteHost }) {
   }
 }
 
-export function TlsBadge({ host, certName }: { host: Pick<SiteHost, 'tls' | 'certificateId'>; certName?: string }) {
+export function TlsBadge({ host, certName }: { host: Pick<SiteHost, 'tls' | 'certificateId'> & { acmeChallenge?: SiteHost['acmeChallenge'] }; certName?: string }) {
   switch (host.tls) {
     case 'acme':
       return (
-        <Badge tone="success" icon={<Globe size={11} />}>
-          ACME
+        <Badge
+          tone="success"
+          icon={<Globe size={11} />}
+          title={host.acmeChallenge === 'dns' ? 'ACME with the DNS-01 challenge' : host.acmeChallenge === 'http' ? 'ACME with the HTTP-01 / TLS-ALPN-01 challenge' : undefined}
+        >
+          {host.acmeChallenge === 'dns' ? 'ACME · DNS' : 'ACME'}
         </Badge>
       );
     case 'internal':

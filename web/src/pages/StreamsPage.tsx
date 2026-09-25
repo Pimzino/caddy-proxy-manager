@@ -2,9 +2,10 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { Cable, MoreHorizontal, Pencil, Plus, Power, PowerOff, Trash2 } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
-import { useDeleteStream, useSaveStream, useStreams, useStreamSupport } from '@/api/hooks';
+import { useDeleteStream, useIsManagedNode, useSaveStream, useStreams, useStreamSupport } from '@/api/hooks';
 import type { StreamHost, StreamHostFields } from '@/api/types';
 import { useAuth } from '@/auth';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
 import { useFeedback } from '@/components/feedback';
 import {
   Badge,
@@ -56,7 +57,10 @@ function validateStream(s: StreamHostFields, others: StreamHost[]): FieldErrors 
 }
 
 export default function StreamsPage() {
-  const { canOperate } = useAuth();
+  const { canOperate: roleCanOperate } = useAuth();
+  // On a managed cluster node streams are replicated from the primary: view only.
+  const { managed } = useIsManagedNode();
+  const canOperate = roleCanOperate && !managed;
   const streams = useStreams();
   const support = useStreamSupport();
   const del = useDeleteStream();
@@ -120,10 +124,14 @@ export default function StreamsPage() {
         title="Streams"
         description="Forward raw TCP or UDP ports (databases, RDP, SSH, game servers) to another host — layer 4, no HTTP."
         actions={
-          canOperate && (
-            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setEditor({})}>
-              Add stream
-            </Button>
+          managed ? (
+            <ReadOnlyOnNode />
+          ) : (
+            canOperate && (
+              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setEditor({})}>
+                Add stream
+              </Button>
+            )
           )
         }
       />

@@ -1,9 +1,10 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { AlertTriangle, Download, FileKey2, MoreHorizontal, Pencil, Plus, RefreshCw, RefreshCcwDot, ShieldCheck, Trash2 } from 'lucide-react';
 import { ApiError, downloadFile, errorMessage } from '@/api/client';
-import { useCertificates, useDeleteCertificate, useHosts, useSyncCertificate, useUpdateCertificate } from '@/api/hooks';
+import { useCertificates, useDeleteCertificate, useHosts, useIsManagedNode, useSyncCertificate, useUpdateCertificate } from '@/api/hooks';
 import type { CertificateInfo, CertificateKind } from '@/api/types';
 import { useAuth } from '@/auth';
+import { ReadOnlyOnNode } from '@/components/layout/ManagedNode';
 import { useFeedback } from '@/components/feedback';
 import {
   Badge,
@@ -111,7 +112,10 @@ function issuerName(dn: string): string {
 }
 
 export default function CertificatesPage() {
-  const { canOperate } = useAuth();
+  const { canOperate: roleCanOperate } = useAuth();
+  // On a managed cluster node certificates are replicated from the primary: view only.
+  const { managed } = useIsManagedNode();
+  const canOperate = roleCanOperate && !managed;
   const certs = useCertificates();
   const hosts = useHosts();
   const del = useDeleteCertificate();
@@ -198,6 +202,7 @@ export default function CertificatesPage() {
                 Add certificate
               </Button>
             )}
+            <ReadOnlyOnNode />
           </>
         }
       />

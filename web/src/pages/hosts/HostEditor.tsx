@@ -2,7 +2,7 @@ import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router';
 import { AlertTriangle, Globe, KeyRound, Lock, LockOpen, Plus, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
 import { ApiError } from '@/api/client';
-import { useAccessLists, useBinaryOverview, useCaddySettings, useCertificates, useSaveHost } from '@/api/hooks';
+import { useAccessLists, useBinaryOverview, useCaddySettings, useCertificates, useDnsProviders, useSaveHost } from '@/api/hooks';
 import type { HeaderOp, HostKind, ProxyLocation, SiteHost, SiteHostFields } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
@@ -75,6 +75,8 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [hostHeaderMode, setHostHeaderMode] = useState<HostHeaderMode>(hostHeaderModeOf(initial.upstreamHostHeader));
   const save = useSaveHost();
+  const caddySettings = useCaddySettings();
+  const validationCtx = { dnsProviderConfigured: caddySettings.data ? !!caddySettings.data.dnsProvider : undefined };
   const feedback = useFeedback();
   const confirm = useConfirm();
   const { isAdmin } = useAuth();
@@ -83,7 +85,8 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
   const lockedRoutes = !isAdmin;
   const droppedRoutes = lockedRoutes && !host && !!initial.advancedRoutesJson?.trim();
 
-  const clientErrors = useMemo(() => (submitted ? validateHost(form) : {}), [form, submitted]);
+  const dnsProviderConfigured = validationCtx.dnsProviderConfigured;
+  const clientErrors = useMemo(() => (submitted ? validateHost(form, { dnsProviderConfigured }) : {}), [form, submitted, dnsProviderConfigured]);
   const errors: FieldErrors = { ...serverErrors, ...clientErrors };
   const errorCount = (t: HostTab) => Object.keys(errors).filter((k) => tabOfField(k) === t).length;
   const unmapped = Object.entries(serverErrors).filter(([k]) => tabOfField(k) === null);
@@ -114,7 +117,7 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
     if (readOnly) return;
     setSubmitted(true);
     setGeneralError(null);
-    const v = validateHost(form);
+    const v = validateHost(form, validationCtx);
     const keys = Object.keys(v);
     if (keys.length) {
       const first = tabOfField(keys[0]);
@@ -293,7 +296,7 @@ function DetailsTab({
           label="Domain names"
           required
           error={errors.domains}
-          hint="Press Enter after each name. Wildcards such as *.example.com are allowed (ACME wildcards need a DNS challenge plugin)."
+          hint="Press Enter after each name. Wildcards such as *.example.com are allowed (ACME wildcards need the DNS challenge — see the TLS tab)."
         >
           <ChipInput
             value={form.domains}
@@ -622,21 +625,7 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
             },
           ]}
         />
-        {form.tls === 'acme' && wildcard && settings.data && !settings.data.hasAcmeIssuerJson && (
-          <Callout tone="warning">
-            Wildcard certificates cannot be obtained with the HTTP or TLS-ALPN challenge. Install a DNS provider plugin (for example{' '}
-            <span className="mono">github.com/caddy-dns/cloudflare</span>) and configure the DNS challenge under{' '}
-            <Link to="/settings#plugins-advanced" className="text-accent-text hover:underline">
-              Settings › Caddy › Plugins &amp; advanced
-            </Link>
-            , or use a custom or internal certificate instead.
-          </Callout>
-        )}
-        {form.tls === 'acme' && wildcard && settings.data?.hasAcmeIssuerJson && (
-          <Callout tone="info">
-            Wildcard names are validated with the DNS challenge configured in Settings › Caddy › Plugins &amp; advanced.
-          </Callout>
-        )}
+        {form.tls === 'acme' && <AcmeChallengeField form={form} set={set} errors={errors} wildcard={wildcard} />}
         {form.tls === 'custom' && (
           <Field
             label="Certificate"
@@ -716,6 +705,82 @@ function TlsTab({ form, set, errors }: { form: SiteHostFields; set: Setter; erro
         )}
       </Section>
     </div>
+  );
+}
+
+const CHALLENGE_LABEL = { http: 'HTTP-01 / TLS-ALPN-01', dns: 'DNS-01' } as const;
+
+/** TLS tab (ACME only): which challenge proves control of the domains (SPEC round 3 DNS-01). */
+function AcmeChallengeField({ form, set, errors, wildcard }: { form: SiteHostFields; set: Setter; errors: FieldErrors; wildcard: boolean }) {
+  const settings = useCaddySettings();
+  const providers = useDnsProviders(!!settings.data?.dnsProvider);
+  const s = settings.data;
+  const provider = s?.dnsProvider ? providers.data?.find((p) => p.name === s.dnsProvider) : undefined;
+  const providerLabel = provider?.label ?? s?.dnsProvider ?? null;
+  const hasProvider = !!s?.dnsProvider;
+  const defaultChallenge = s?.defaultAcmeChallenge ?? 'http';
+  const effective = form.acmeChallenge === 'default' ? defaultChallenge : form.acmeChallenge;
+  const settingsLink = (children: ReactNode) => (
+    <Link to="/settings#acme-challenge" className="text-accent-text hover:underline">
+      {children}
+    </Link>
+  );
+
+  return (
+    <>
+      <Field
+        label="ACME challenge"
+        error={errors.acmeChallenge}
+        hint={
+          effective === 'dns' ? (
+            <>
+              Caddy creates a TXT record through {providerLabel ? <span className="font-medium">{providerLabel}</span> : 'the DNS provider'}. No inbound
+              ports are needed.
+            </>
+          ) : (
+            <>The CA connects to this server on port 80 (HTTP-01) or 443 (TLS-ALPN-01); both must be reachable from the Internet.</>
+          )
+        }
+      >
+        <Select value={form.acmeChallenge} onChange={(e) => set('acmeChallenge', e.target.value as SiteHostFields['acmeChallenge'])} className="max-w-sm">
+          <option value="default">Default ({CHALLENGE_LABEL[defaultChallenge]})</option>
+          <option value="http">{CHALLENGE_LABEL.http}</option>
+          <option value="dns" disabled={s ? !hasProvider && form.acmeChallenge !== 'dns' : false}>
+            {CHALLENGE_LABEL.dns}
+            {s && !hasProvider ? ' — no DNS provider configured' : providerLabel ? ` (${providerLabel})` : ''}
+          </option>
+        </Select>
+      </Field>
+      {s && !hasProvider && !wildcard && (
+        <p className="-mt-2 text-xs text-fg-subtle">
+          DNS-01 is available once a DNS provider is set up in {settingsLink('Settings › Caddy › ACME challenge')}.
+        </p>
+      )}
+      {s && effective === 'dns' && hasProvider && provider && !provider.installed && (
+        <Callout tone="warning" title={`The ${provider.label} DNS plugin is not in the installed Caddy`}>
+          Certificates for this host cannot be obtained until Caddy is rebuilt with <span className="mono">{provider.package}</span>.{' '}
+          {settingsLink('Add it in Settings › Caddy')}.
+        </Callout>
+      )}
+      {wildcard && s && (
+        effective === 'dns' || hasProvider ? (
+          <Callout tone="info">
+            Wildcard names are validated with DNS-01{providerLabel ? <> through <span className="font-medium">{providerLabel}</span></> : null}
+            {effective === 'http' ? ' (used automatically for wildcards; the other names keep HTTP-01 / TLS-ALPN-01)' : ''}.
+          </Callout>
+        ) : s.hasAcmeIssuerJson ? (
+          <Callout tone="info">
+            Wildcard names need the DNS challenge. No DNS provider is set in Settings › Caddy; the custom ACME issuer options under Plugins &amp;
+            advanced must configure one, or issuance fails.
+          </Callout>
+        ) : (
+          <Callout tone="warning">
+            Wildcard certificates cannot be obtained with the HTTP or TLS-ALPN challenge. Set up a DNS provider in{' '}
+            {settingsLink('Settings › Caddy › ACME challenge')}, or use a custom or internal certificate instead.
+          </Callout>
+        )
+      )}
+    </>
   );
 }
 

@@ -65,14 +65,20 @@ export function PluginsAdvancedSection({
   form,
   set,
   errors,
-  isAdmin,
+  isAdmin: isAdminRole,
+  readOnly = false,
 }: {
   settings: CaddySettings;
   form: CaddySettingsInput;
   set: <K extends keyof CaddySettingsInput>(k: K, v: CaddySettingsInput[K]) => void;
   errors: FieldErrors;
   isAdmin: boolean;
+  /** Managed cluster node: the values are replicated from the primary (still visible to administrators). */
+  readOnly?: boolean;
 }) {
+  // Administrators still see the values on a node; only editing is off.
+  const canView = isAdminRole;
+  const isAdmin = isAdminRole && !readOnly;
   const binary = useBinaryOverview();
   const confirm = useConfirm();
   const location = useLocation();
@@ -126,82 +132,84 @@ export function PluginsAdvancedSection({
         </>
       }
     >
-      <Field
-        label="ACME issuer options (secret JSON object)"
-        error={errors.acmeIssuerJson}
-        hint={
-          <>
-            Deep-merged into every ACME issuer. Use it for a DNS challenge provider from a <span className="mono">caddy-dns</span> plugin —
-            required for wildcard certificates such as <span className="mono">*.example.com</span> and for servers that are not
-            reachable from the Internet. Stored encrypted and never shown again; secrets are masked in configuration views.
-          </>
-        }
-      >
-        <SecretJsonInput
-          has={settings.hasAcmeIssuerJson}
-          value={form.acmeIssuerJson}
-          onChange={(v) => set('acmeIssuerJson', v)}
-          disabled={!isAdmin}
-          aria-label="ACME issuer options JSON"
-          placeholder={'{\n  "challenges": {\n    "dns": { "provider": { "name": "cloudflare", "api_token": "…" } }\n  }\n}'}
-        />
-      </Field>
-      {isAdmin && <Examples examples={ACME_ISSUER_EXAMPLES} onPick={(ex) => void fill('acmeIssuerJson', ex)} />}
-      {missingProvider && (
-        <Callout tone="warning" title={`DNS provider “${missingProvider}” is not installed`}>
-          The installed Caddy binary has no <span className="mono">dns.providers.{missingProvider}</span> module, so Caddy will reject this
-          configuration. Add <span className="mono">github.com/caddy-dns/{missingProvider}</span> on the{' '}
-          {pluginsLink(`caddy-dns/${missingProvider}`, 'Plugins page')} and rebuild Caddy first.
-        </Callout>
-      )}
+      <fieldset disabled={readOnly} className="contents">
+        <Field
+          label="ACME issuer options (secret JSON object)"
+          error={errors.acmeIssuerJson}
+          hint={
+            <>
+              Deep-merged into every ACME issuer after generation, for issuer options the manager does not model. Configure DNS
+              providers in the ACME challenge section above instead. Stored encrypted and never shown again; secrets are masked in
+              configuration views.
+            </>
+          }
+        >
+          <SecretJsonInput
+            has={settings.hasAcmeIssuerJson}
+            value={form.acmeIssuerJson}
+            onChange={(v) => set('acmeIssuerJson', v)}
+            disabled={!isAdmin}
+            aria-label="ACME issuer options JSON"
+            placeholder={'{\n  "challenges": {\n    "dns": { "provider": { "name": "cloudflare", "api_token": "…" } }\n  }\n}'}
+          />
+        </Field>
+        {isAdmin && <Examples examples={ACME_ISSUER_EXAMPLES} onPick={(ex) => void fill('acmeIssuerJson', ex)} />}
+        {missingProvider && (
+          <Callout tone="warning" title={`DNS provider “${missingProvider}” is not installed`}>
+            The installed Caddy binary has no <span className="mono">dns.providers.{missingProvider}</span> module, so Caddy will reject this
+            configuration. Add <span className="mono">github.com/caddy-dns/{missingProvider}</span> on the{' '}
+            {pluginsLink(`caddy-dns/${missingProvider}`, 'Plugins page')} and rebuild Caddy first.
+          </Callout>
+        )}
 
-      <Field
-        label="TLS connection policy (JSON object)"
-        error={errors.tlsConnectionPolicyJson}
-        hint="Merged into every TLS connection policy (all HTTPS sites): minimum protocol, curves, cipher suites or client-certificate authentication (mTLS)."
-      >
-        <Textarea
-          mono
-          rows={5}
-          spellCheck={false}
-          placeholder={'{ "protocol_min": "tls1.3" }'}
-          value={form.tlsConnectionPolicyJson ?? ''}
-          onChange={(e) => set('tlsConnectionPolicyJson', e.target.value)}
-        />
-      </Field>
-      {isAdmin && <Examples examples={TLS_POLICY_EXAMPLES} onPick={(ex) => void fill('tlsConnectionPolicyJson', ex)} />}
-      {!!parseObject(form.tlsConnectionPolicyJson)?.client_authentication && (
-        <Callout tone="warning">
-          Client-certificate authentication applies to every HTTPS site on this server, including sites used by browsers without a client
-          certificate. The CA file must be readable by LocalSystem.
-        </Callout>
-      )}
-
-      <Field
-        label="Extra apps (JSON object)"
-        error={errors.extraAppsJson}
-        hint={
-          <>
-            Top-level Caddy apps added by plugins, keyed by app name (for example <span className="mono">dynamic_dns</span> or{' '}
-            <span className="mono">crowdsec</span>). The apps the manager generates ({RESERVED_APPS.join(', ')}) cannot be overridden. This
-            value is not encrypted — prefer the ACME issuer field for DNS credentials used for certificates.
-          </>
-        }
-      >
-        {isAdmin || form.extraAppsJson !== undefined ? (
+        <Field
+          label="TLS connection policy (JSON object)"
+          error={errors.tlsConnectionPolicyJson}
+          hint="Merged into every TLS connection policy (all HTTPS sites): minimum protocol, curves, cipher suites or client-certificate authentication (mTLS)."
+        >
           <Textarea
             mono
-            rows={6}
+            rows={5}
             spellCheck={false}
-            placeholder={'{\n  "dynamic_dns": { … }\n}'}
-            value={form.extraAppsJson ?? ''}
-            onChange={(e) => set('extraAppsJson', e.target.value)}
+            placeholder={'{ "protocol_min": "tls1.3" }'}
+            value={form.tlsConnectionPolicyJson ?? ''}
+            onChange={(e) => set('tlsConnectionPolicyJson', e.target.value)}
           />
-        ) : (
-          <HiddenValue />
+        </Field>
+        {isAdmin && <Examples examples={TLS_POLICY_EXAMPLES} onPick={(ex) => void fill('tlsConnectionPolicyJson', ex)} />}
+        {!!parseObject(form.tlsConnectionPolicyJson)?.client_authentication && (
+          <Callout tone="warning">
+            Client-certificate authentication applies to every HTTPS site on this server, including sites used by browsers without a client
+            certificate. The CA file must be readable by LocalSystem.
+          </Callout>
         )}
-      </Field>
-      {isAdmin && <Examples examples={EXTRA_APPS_EXAMPLES} onPick={(ex) => void fill('extraAppsJson', ex)} />}
+
+        <Field
+          label="Extra apps (JSON object)"
+          error={errors.extraAppsJson}
+          hint={
+            <>
+              Top-level Caddy apps added by plugins, keyed by app name (for example <span className="mono">dynamic_dns</span> or{' '}
+              <span className="mono">crowdsec</span>). The apps the manager generates ({RESERVED_APPS.join(', ')}) cannot be overridden. This
+              value is not encrypted — prefer the ACME issuer field for DNS credentials used for certificates.
+            </>
+          }
+        >
+          {canView || form.extraAppsJson !== undefined ? (
+            <Textarea
+              mono
+              rows={6}
+              spellCheck={false}
+              placeholder={'{\n  "dynamic_dns": { … }\n}'}
+              value={form.extraAppsJson ?? ''}
+              onChange={(e) => set('extraAppsJson', e.target.value)}
+            />
+          ) : (
+            <HiddenValue />
+          )}
+        </Field>
+        {isAdmin && <Examples examples={EXTRA_APPS_EXAMPLES} onPick={(ex) => void fill('extraAppsJson', ex)} />}
+      </fieldset>
       {missingApps.length > 0 && (
         <Callout tone="warning" title="App module not found in the installed Caddy">
           {missingApps.map((a) => (

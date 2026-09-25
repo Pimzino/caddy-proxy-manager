@@ -64,7 +64,15 @@ export interface MockState {
   accessLists: StoredAccessList[];
   certificates: Certificate[];
   managedCerts: CertificateInfo[];
-  caddySettings: CaddySettings & { eabMacKey?: string; acmeIssuerJson?: string };
+  caddySettings: CaddySettings & {
+    eabMacKey?: string;
+    acmeIssuerJson?: string;
+    /** Round 3 write-only secrets (never returned by GET). */
+    dnsProviderSecrets?: Record<string, string>;
+    redisPassword?: string;
+    redisEncryptionKey?: string;
+    storageJson?: string;
+  };
   binarySettings: BinarySettings;
   notificationSettings: NotificationSettings & { smtpPassword?: string; oAuthClientSecret?: string };
   uiSettings: UiSettings & { httpsPfxPassword?: string };
@@ -164,7 +172,13 @@ const CATALOG: PluginPackage[] = [
 
 /** Caddy modules provided by a plugin package (for the installed binary's module list). */
 export function modulesOf(pkg: string): string[] {
-  return CATALOG.find((p) => p.path === pkg)?.modules ?? [];
+  const known = CATALOG.find((p) => p.path === pkg)?.modules;
+  if (known) return known;
+  // Round 3: every github.com/caddy-dns/<name> package provides dns.providers.<name>; Redis storage for clustering.
+  const dns = /^github\.com\/caddy-dns\/([a-z0-9]+)$/.exec(pkg);
+  if (dns) return [`dns.providers.${dns[1]}`];
+  if (pkg === 'github.com/pberkel/caddy-storage-redis') return ['caddy.storage.redis'];
+  return [];
 }
 
 export const BASE_MODULES = ['http', 'tls', 'pki', 'http.handlers.reverse_proxy', 'http.handlers.file_server', 'http.reverse_proxy.transport.http'];
@@ -590,8 +604,10 @@ export function createState(): MockState {
       logLevel: 'info',
       adminListen: '127.0.0.1:2019',
       defaultAcmeChallenge: 'http',
+      dnsProvider: 'cloudflare',
       dnsProviderOptions: {},
-      dnsProviderSecretFields: [],
+      dnsProviderSecretFields: ['api_token'],
+      dnsProviderSecrets: { api_token: 'mockCloudflareToken_0123456789abcdefXYZ' },
       dnsResolvers: [],
       storageBackend: 'local',
       redisAddresses: [],
@@ -605,7 +621,7 @@ export function createState(): MockState {
       trafficStatsEnabled: true,
     },
     binarySettings: {
-      plugins: [],
+      plugins: ['github.com/caddy-dns/cloudflare'],
       autoCheckUpdates: true,
       checkIntervalHours: 12,
       autoInstallUpdates: false,
@@ -697,13 +713,13 @@ export function createState(): MockState {
         version: 'v2.11.3',
         path: 'C:\\ProgramData\\CaddyProxyManager\\caddy\\bin\\caddy.exe',
         installedAt: iso(34 * DAY),
-        plugins: [],
-        modules: BASE_MODULES,
+        plugins: ['github.com/caddy-dns/cloudflare'],
+        modules: [...BASE_MODULES, 'dns.providers.cloudflare'],
       },
       latest: { version: 'v2.11.4', publishedAt: iso(3 * DAY), url: 'https://github.com/caddyserver/caddy/releases/tag/v2.11.4', notes: RELEASE_NOTES },
       updateAvailable: true,
       lastCheckedAt: iso(47 * MIN),
-      desiredPlugins: [],
+      desiredPlugins: ['github.com/caddy-dns/cloudflare'],
       pluginsOutOfSync: false,
       platform: 'windows/amd64',
       canRollback: true,

@@ -348,6 +348,12 @@ function NotificationsForm({ settings }: { settings: NotificationSettings }) {
           </div>
           <SwitchField label="Caddy update available" checked={form.alertUpdateAvailable} onChange={(v) => set('alertUpdateAvailable', v)} />
           <SwitchField label="Readiness check failures" description="New failures found by the daily readiness run." checked={form.alertReadinessFailure} onChange={(v) => set('alertReadinessFailure', v)} />
+          <SwitchField
+            label="Server offline"
+            description="A cluster node stopped answering the primary (3 missed heartbeats, about 45 s). Only sent by a primary."
+            checked={form.alertServerOffline}
+            onChange={(v) => set('alertServerOffline', v)}
+          />
         </FormSection>
         <FormSection title="Behaviour">
           <SwitchField
