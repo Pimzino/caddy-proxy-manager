@@ -74,8 +74,8 @@ public sealed class LogTailerTests : IDisposable
         Lines(0, 3);
         Assert.Equal(3, Poll(t));
         AssertSequence(3);
-        // The native identity (volume + file index / device + inode) is in use, not the creation-time fallback.
-        Assert.StartsWith(OperatingSystem.IsWindows() ? "win:" : "unix:", t.FileId);
+        // On Windows the native identity (volume + file index) is in use, not the creation-time fallback.
+        Assert.StartsWith(OperatingSystem.IsWindows() ? "win:" : "ct:", t.FileId);
     }
 
     [Fact]

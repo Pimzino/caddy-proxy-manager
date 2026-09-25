@@ -152,7 +152,7 @@ public sealed class ResourceSampler : BackgroundService
     // ------------------------------------------------------------------ network
 
     /// <summary>
-    /// Sum of bytes over up, non-loopback interfaces. GetIPStatistics is supported on Windows, Linux and macOS in .NET 10
+    /// Sum of bytes over up, non-loopback interfaces. GetIPStatistics is supported on Windows in .NET 10
     /// (only Android is excluded: https://learn.microsoft.com/dotnet/api/system.net.networkinformation.networkinterface.getipstatistics);
     /// GetIPv4Statistics is the fallback should a platform throw PlatformNotSupportedException.
     /// </summary>

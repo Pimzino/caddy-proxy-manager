@@ -113,18 +113,29 @@ public sealed class ResourceSamplerE2ETests
 
         Assert.True(loaded.Count >= 8, $"expected ≥ 8 samples, got {loaded.Count}");
         Assert.True(loaded.Zip(loaded.Skip(1)).All(p => p.First.At < p.Second.At), "samples oldest first");
+        // Machine CPU and memory are read with Windows APIs only (the product is Windows-only); elsewhere they are 0.
+        var windows = OperatingSystem.IsWindows();
         foreach (var s in loaded.Concat(afterStop))
         {
             Assert.InRange(s.CpuPercent, 0, 100);
-            Assert.True(s.MemoryTotalBytes > 0);
-            Assert.InRange(s.MemoryUsedBytes, 1, s.MemoryTotalBytes);
-            Assert.InRange(s.MemoryTotalBytes, gcTotal * 0.9, gcTotal * 1.1);
+            if (windows)
+            {
+                Assert.True(s.MemoryTotalBytes > 0);
+                Assert.InRange(s.MemoryUsedBytes, 1, s.MemoryTotalBytes);
+                Assert.InRange(s.MemoryTotalBytes, gcTotal * 0.9, gcTotal * 1.1);
+            }
+            else
+            {
+                Assert.Equal(0, s.MemoryTotalBytes);
+                Assert.Equal(0, s.MemoryUsedBytes);
+            }
             Assert.True(s.ManagerMemoryBytes > 0);
             Assert.InRange(s.ManagerCpuPercent, 0, 100);
             Assert.True(s.NetworkRxBytesPerSec >= 0 && s.NetworkTxBytesPerSec >= 0);
             Assert.Contains(s.Disks, d => d.Label.Contains("Data (") && d.TotalBytes > 0 && d.FreeBytes <= d.TotalBytes);
         }
-        Assert.Contains(loaded, s => s.CpuPercent > 0);
+        if (windows) Assert.Contains(loaded, s => s.CpuPercent > 0);
+        else Assert.All(loaded, s => Assert.Equal(0, s.CpuPercent));
         foreach (var s in loaded)
         {
             Assert.NotNull(s.CaddyCpuPercent);

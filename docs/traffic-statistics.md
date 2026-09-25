@@ -34,7 +34,7 @@ stopped — also when Caddy rotated the file in the meantime — so requests are
 | Top clients | The busiest client IPs (max 20) — see accuracy below. |
 | Requests/s (live) | Requests per second by the time Caddy logged them, averaged over the sample interval and lagging about 2 seconds behind real time (the log is read once a second). |
 | CPU | Whole-machine CPU use, 0–100 %. |
-| Memory used | Windows: physical memory in use (total − available). Linux: MemTotal − MemAvailable. macOS (development): active + wired + compressed pages, like Activity Monitor. |
+| Memory used | Physical memory in use (total − available). |
 | Caddy / manager CPU | Share of the **whole machine** used by that process (so 100 % = every core busy). Caddy's values are empty while Caddy is not running. |
 | Caddy / manager memory | Working set of the process. |
 | Network in/out | Bytes per second over all connected, non-loopback network interfaces (all traffic, not only Caddy's). |
