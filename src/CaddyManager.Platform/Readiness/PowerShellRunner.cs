@@ -49,13 +49,27 @@ public partial class PowerShellRunner(ILogger<PowerShellRunner> logger)
         "  __Ascii (ConvertTo-Json -InputObject ([ordered]@{ __error = [string]$_.Exception.Message; __at = [string]$_.InvocationInfo.PositionMessage }) -Compress)\n" +
         "}\n";
 
-    /// <summary>The single stdin line: decode the Base64 payload and run it as a script block.</summary>
+    /// <summary>
+    /// The single stdin line: decode the Base64 payload and run it as a script block. It first checks the language mode
+    /// with constructs ConstrainedLanguage allows (property read, string concatenation, exit): on servers where Windows
+    /// Defender Application Control / AppLocker enforce ConstrainedLanguage for "-Command" input, "method invocation is
+    /// supported only on core types", so the decoding below cannot run and would only leave an opaque stderr line.
+    /// https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_language_modes
+    /// </summary>
     public static string BuildStdin(string script)
     {
         var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(Wrap(script)));
-        return "$__s = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('" + payload + "')); " +
+        return "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { " +
+               "'{\"__error\":\"' + " + Quote(LanguageModePrefix) + " + $ExecutionContext.SessionState.LanguageMode + " + Quote(LanguageModeSuffix) +
+               " + '\"}'; exit 3 }; " +
+               "$__s = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('" + payload + "')); " +
                "& ([ScriptBlock]::Create($__s))\n";
     }
+
+    private const string LanguageModePrefix = "Windows PowerShell runs in ";
+    private const string LanguageModeSuffix =
+        " mode on this server (Windows Defender Application Control or AppLocker policy), so the readiness scripts cannot run. " +
+        "Check the firewall, network profile and port settings manually (docs/troubleshooting.md), or allow the checks in the policy.";
 
     [System.Text.RegularExpressions.GeneratedRegex(@"\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_=>])")]
     private static partial System.Text.RegularExpressions.Regex AnsiEscape();

@@ -155,7 +155,8 @@ public sealed partial class ReadinessService(
                 checks.AddRange(PortChecksPortable(ctx, status));
             }
             checks.AddRange(connTask.Result);
-            if (windows) checks.Add(WinHttpProxyCheck(sys));
+            if (windows) checks.Add(WinHttpProxyCheck(ReadWinHttpProxy(), sys?.WinHttpProxy, ctx.Binary));
+            if (SmtpAuthCheck(store) is { } smtpAuth) checks.Add(smtpAuth);
             checks.AddRange(dnsTask.Result);
             checks.AddRange(await CaddyChecksAsync(ctx, status, ct));
 
@@ -365,8 +366,23 @@ public sealed partial class ReadinessService(
         if (!OperatingSystem.IsWindows()) return (null, null, 0, 0, null);
         using var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
         var build = Environment.OSVersion.Version.Build;
-        return (k?.GetValue("ProductName") as string, k?.GetValue("DisplayVersion") as string, build,
-            k?.GetValue("UBR") is int u ? u : 0, k?.GetValue("InstallationType") as string);
+        var installType = k?.GetValue("InstallationType") as string;
+        return (ProductName(k?.GetValue("ProductName") as string, build, installType), k?.GetValue("DisplayVersion") as string, build,
+            k?.GetValue("UBR") is int u ? u : 0, installType);
+    }
+
+    /// <summary>
+    /// The registry ProductName of Windows 11 still says "Windows 10 ..." (kept for application compatibility:
+    /// https://learn.microsoft.com/en-us/answers/questions/555857/windows-11-product-name-in-registry). Client builds from 22000
+    /// on are Windows 11. Server names are correct.
+    /// </summary>
+    internal static string? ProductName(string? registryName, int build, string? installationType)
+    {
+        if (registryName is null) return null;
+        if (build >= 22000 && string.Equals(installationType, "Client", StringComparison.OrdinalIgnoreCase)
+            && registryName.StartsWith("Windows 10", StringComparison.OrdinalIgnoreCase))
+            return "Windows 11" + registryName["Windows 10".Length..];
+        return registryName;
     }
 
     private static ReadinessCheck OsCheck()
@@ -453,7 +469,7 @@ public sealed partial class ReadinessService(
             .First();
     }
 
-    private static ReadinessCheck PendingRebootCheck()
+    internal static ReadinessCheck PendingRebootCheck()
     {
         var reasons = new List<string>();
         if (OperatingSystem.IsWindows())
@@ -462,8 +478,12 @@ public sealed partial class ReadinessService(
                 if (k is not null) reasons.Add("Component Based Servicing");
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"))
                 if (k is not null) reasons.Add("Windows Update");
+            // Only PendingFileRenameOperations is documented (MoveFileEx MOVEFILE_DELAY_UNTIL_REBOOT; ...2 is its second
+            // list); the CBS / Windows Update keys are widely used conventions. Info only: third-party software often leaves
+            // rename entries behind.
             using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager"))
-                if (k?.GetValue("PendingFileRenameOperations") is string[] { Length: > 0 }) reasons.Add("pending file rename operations");
+                if (k?.GetValue("PendingFileRenameOperations") is string[] { Length: > 0 } || k?.GetValue("PendingFileRenameOperations2") is string[] { Length: > 0 })
+                    reasons.Add("pending file rename operations");
         }
         return new ReadinessCheck
         {
@@ -904,19 +924,89 @@ public sealed partial class ReadinessService(
         };
     }
 
-    private static ReadinessCheck WinHttpProxyCheck(SystemFacts? sys)
+    private static (WinHttpProxySetting? Setting, string? Error) ReadWinHttpProxy()
     {
-        var text = sys?.WinHttpProxy;
-        if (string.IsNullOrWhiteSpace(text))
-            return Info("connectivity.proxy", "Connectivity", "WinHTTP proxy", "Could not read the WinHTTP proxy configuration.");
-        var direct = text.Contains("Direct access", StringComparison.OrdinalIgnoreCase) || text.Contains("no proxy", StringComparison.OrdinalIgnoreCase);
+        if (!OperatingSystem.IsWindows()) return (null, "not Windows");
+        try { return (WinHttpProxy.Read(), null); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or DllNotFoundException or EntryPointNotFoundException)
+        {
+            return (null, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// The machine-wide WinHTTP proxy (netsh winhttp set proxy). Caddy and the manager's HTTP requests do not use it, but
+    /// Windows' certificate chain engine does: "If a static proxy is found, then the Crypto API uses the statically
+    /// discovered proxy to download the CRL through WinHttp"
+    /// (https://learn.microsoft.com/en-us/troubleshoot/developer/browsers/security-privacy/description-of-cryptography-api-proxy-from-crl).
+    /// That matters for the TLS connections the manager validates itself (SMTP via MailKit, which checks revocation by
+    /// default, and LDAPS/StartTLS). The setting is read with WinHttpGetDefaultProxyConfiguration; the netsh text (localised)
+    /// is only shown as details.
+    /// </summary>
+    internal static ReadinessCheck WinHttpProxyCheck((WinHttpProxySetting? Setting, string? Error) winHttp, string? netshText, BinarySettings binary)
+    {
+        const string id = "connectivity.proxy", title = "WinHTTP proxy (certificate revocation checks)";
+        var outbound = string.IsNullOrWhiteSpace(binary.OutboundProxy) ? null : OutboundHttp.RedactProxy(binary.OutboundProxy.Trim());
+        if (winHttp.Setting is not { } w)
+            return new ReadinessCheck
+            {
+                Id = id, Category = "Connectivity", Title = title, Status = CheckStatus.Info,
+                Summary = $"Could not read the WinHTTP proxy configuration ({winHttp.Error ?? "unknown error"}).",
+                Details = netshText, Script = "netsh winhttp show proxy",
+            };
+        if (w.IsDirect)
+            return new ReadinessCheck
+            {
+                Id = id, Category = "Connectivity", Title = title,
+                Status = outbound is null ? CheckStatus.Pass : CheckStatus.Info,
+                Summary = outbound is null
+                    ? "No WinHTTP proxy (direct access). Windows downloads certificate revocation lists (CRL/OCSP) directly."
+                    : $"No WinHTTP proxy is set, but the manager uses the outbound proxy {outbound}. If this server can reach the Internet only through that proxy, " +
+                      "Windows cannot download certificate revocation lists (CRL/OCSP) for the SMTP / LDAPS server certificates, and e-mail over TLS can fail with a revocation error.",
+                Remediation = outbound is null ? null
+                    : "Give Windows the same proxy for revocation checks (elevated): netsh winhttp set proxy proxy-server=\"<host:port>\" bypass-list=\"<local>;*.corp.example.com\"",
+                Details = netshText,
+            };
         return new ReadinessCheck
         {
-            Id = "connectivity.proxy", Category = "Connectivity", Title = "WinHTTP proxy",
-            Status = direct ? CheckStatus.Pass : CheckStatus.Info,
-            Summary = direct ? "No WinHTTP proxy configured (direct access)."
-                : "A WinHTTP proxy is configured. Neither Caddy nor the manager use it: set the outbound proxy in Settings → Updates (and enable 'Use the proxy for Caddy' when ACME must go through it).",
-            Details = text,
+            Id = id, Category = "Connectivity", Title = title, Status = CheckStatus.Info,
+            Summary = $"A WinHTTP proxy is configured ({w.Proxy}{(w.Bypass is null ? "" : $", bypass: {w.Bypass}")}). Windows uses it to download certificate " +
+                      "revocation lists (CRL/OCSP) and issuer certificates, e.g. while validating the SMTP and LDAPS server certificates. " +
+                      "Caddy and the manager's own HTTP requests do not use it: " +
+                      (outbound is null ? "set the outbound proxy in Settings → Updates for those." : $"they use the outbound proxy {outbound} from Settings → Updates."),
+            Details = "If e-mail over TLS fails with a certificate revocation error, check that this proxy lets the server reach the CRL/OCSP URLs of the " +
+                      "mail / directory server certificates (certutil -url <cert.cer>)." + (netshText is null ? "" : "\n\n" + netshText),
+        };
+    }
+
+    /// <summary>
+    /// Microsoft 365 retires Basic authentication for SMTP AUTH (disabled by default for existing tenants at the end of
+    /// December 2026): https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online
+    /// </summary>
+    internal static ReadinessCheck? SmtpAuthCheck(IStore store)
+    {
+        const string id = "notifications.smtpauth", title = "E-mail authentication (Microsoft 365)";
+        NotificationSettings n;
+        try { n = store.GetSettings<NotificationSettings>(); }
+        catch { n = new NotificationSettings(); }
+        var host = (n.SmtpHost ?? "").Trim().TrimEnd('.').ToLowerInvariant();
+        var exchangeOnline = host.EndsWith(".office365.com", StringComparison.Ordinal) || host.EndsWith(".outlook.com", StringComparison.Ordinal);
+        if (!n.SmtpEnabled || !exchangeOnline) return null; // only shown when e-mail goes through Exchange Online
+        if (n.SmtpAuth == SmtpAuthMode.Password)
+            return new ReadinessCheck
+            {
+                Id = id, Category = "Connectivity", Title = title, Status = CheckStatus.Warn,
+                Summary = $"E-mail is sent through {n.SmtpHost} with a user name and password (Basic authentication). Microsoft disables Basic " +
+                          "authentication for SMTP AUTH by default at the end of December 2026 (existing tenants; administrators can re-enable it " +
+                          "until it is removed), and new tenants do not offer it.",
+                Remediation = "Switch Settings → Notifications → Authentication to 'Microsoft 365 OAuth2 (client credentials)' (see docs/notifications.md).",
+            };
+        return new ReadinessCheck
+        {
+            Id = id, Category = "Connectivity", Title = title, Status = CheckStatus.Pass,
+            Summary = n.SmtpAuth == SmtpAuthMode.OAuth2ClientCredentials
+                ? $"E-mail through {n.SmtpHost} uses OAuth2 (client credentials), which is not affected by the Basic authentication retirement."
+                : $"E-mail through {n.SmtpHost} does not authenticate.",
         };
     }
 

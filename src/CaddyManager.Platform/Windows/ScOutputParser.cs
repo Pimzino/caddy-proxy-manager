@@ -19,8 +19,8 @@ public sealed record ScFailureConfig(int ResetPeriodSeconds, IReadOnlyList<(stri
 }
 
 /// <summary>
-/// Parsers for sc.exe output. The field labels (STATE, PID, RESET_PERIOD ...) are not localised by Windows,
-/// only the surrounding messages are, so they are safe to match on.
+/// Parsers for English sc.exe output (diagnostics and captured fixtures only). The product queries the SCM through
+/// <see cref="ServiceNative"/>: sc.exe output, including field labels, is localised on non-English Windows.
 /// </summary>
 public static partial class ScOutputParser
 {
@@ -56,14 +56,18 @@ public static partial class ScOutputParser
             int.Parse(state.Groups["n"].Value),
             state.Groups["name"].Value,
             processId,
-            Win32ExitLine().Match(output) is { Success: true } w && int.TryParse(w.Groups["n"].Value, out var wc) ? wc : 0,
-            ServiceExitLine().Match(output) is { Success: true } s && int.TryParse(s.Groups["n"].Value, out var sc) ? sc : 0)
+            ExitCode(Win32ExitLine().Match(output)),
+            ExitCode(ServiceExitLine().Match(output)))
         {
             // sc.exe prints the type in hex without a prefix ("10  WIN32_OWN_PROCESS", "20  WIN32_SHARE_PROCESS").
             ServiceType = TypeLine().Match(output) is { Success: true } t
                           && int.TryParse(t.Groups["n"].Value, System.Globalization.NumberStyles.HexNumber, null, out var type) ? type : 0,
         };
     }
+
+    /// <summary>DWORD exit codes: sc.exe may print values above int.MaxValue unsigned; keep their bit pattern.</summary>
+    private static int ExitCode(Match m) =>
+        m.Success && long.TryParse(m.Groups["n"].Value, out var v) && v is >= int.MinValue and <= uint.MaxValue ? unchecked((int)v) : 0;
 
     public static ScFailureConfig? ParseQFailure(string output)
     {

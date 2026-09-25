@@ -180,6 +180,32 @@ public sealed class CaddyHostSupport(AppPaths paths, IServiceProvider services, 
         return false;
     }
 
+    /// <summary>
+    /// Posts Caddy's running config back to /load unchanged and without "Cache-Control: must-revalidate": Caddy then logs
+    /// "config is unchanged" and does not reload anything, but caddy.Load still ends with notify.Ready(), which reports
+    /// RUNNING to the Windows SCM once the service handler has registered its status channel. This is how a service stuck
+    /// in START_PENDING (Caddy issue #8012) is moved to RUNNING.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (Load) ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddyconfig/load.go (forceReload only with must-revalidate)
+    /// Caveat: a config applied by someone else between the GET and the POST would be replaced by the one read here; the
+    /// window is milliseconds and the nudge only runs while the service is stuck in START_PENDING.
+    /// </summary>
+    public async Task<bool> ReloadUnchangedConfigAsync(CancellationToken ct)
+    {
+        if (Admin is not { } admin) return false;
+        var config = await admin.GetConfigAsync(ct);
+        // "null" = Caddy runs without a config; loading it again would not help and must never replace anything.
+        if (string.IsNullOrWhiteSpace(config) || config.Trim() == "null") return false;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false, ConnectTimeout = TimeSpan.FromSeconds(3) });
+        using var content = new StringContent(config, System.Text.Encoding.UTF8, "application/json");
+        using var resp = await http.PostAsync(admin.BaseUrl.TrimEnd('/') + "/load", content, cts.Token);
+        if (!resp.IsSuccessStatusCode)
+            logger.LogWarning("Re-posting the unchanged config to Caddy returned HTTP {Status}", (int)resp.StatusCode);
+        return resp.IsSuccessStatusCode;
+    }
+
     public async Task<string?> GetVersionAsync(CancellationToken ct)
     {
         var bin = Binary;

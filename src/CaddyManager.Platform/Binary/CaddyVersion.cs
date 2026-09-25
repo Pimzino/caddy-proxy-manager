@@ -12,6 +12,14 @@ public sealed partial record CaddyVersion(int Major, int Minor, int Patch, strin
     [GeneratedRegex(@"^\s*v?(?<maj>\d+)\.(?<min>\d+)(?:\.(?<pat>\d+))?(?:-(?<pre>[0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?\s*$")]
     private static partial Regex Pattern();
 
+    /// <summary>
+    /// The Caddy release the generated configuration and the integration tests are verified against. CI downloads exactly
+    /// this release (.github/workflows/build.yml reads it from this line) and fails when `caddy version` differs. Bump it
+    /// only after reading the release notes of every version in between (https://github.com/caddyserver/caddy/releases):
+    /// v2.11.0, for example, changed the Host header sent to HTTPS upstreams.
+    /// </summary>
+    public const string Tested = "v2.11.4";
+
     public bool IsPreRelease => PreRelease is not null;
 
     /// <summary>Canonical tag form, e.g. "v2.11.4".</summary>

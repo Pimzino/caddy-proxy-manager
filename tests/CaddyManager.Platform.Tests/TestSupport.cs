@@ -142,7 +142,19 @@ public sealed class FakeAdminClient(string baseUrl) : ICaddyAdminClient
         }
     }
 
-    public Task<string?> GetConfigAsync(CancellationToken ct = default) => throw new NotSupportedException();
+    public async Task<string?> GetConfigAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var resp = await Http.GetAsync(BaseUrl + "/config/", ct);
+            return resp.IsSuccessStatusCode ? await resp.Content.ReadAsStringAsync(ct) : null;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+    }
+
     public Task LoadAsync(string json, CancellationToken ct = default) => throw new NotSupportedException();
     public Task<(string Json, List<string> Warnings)> AdaptCaddyfileAsync(string caddyfile, CancellationToken ct = default) => throw new NotSupportedException();
     public Task<List<UpstreamHealth>> GetUpstreamsAsync(CancellationToken ct = default) => Task.FromResult(new List<UpstreamHealth>());

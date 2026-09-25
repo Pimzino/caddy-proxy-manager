@@ -388,7 +388,7 @@ internal static partial class PlatformEndpoints
             });
         });
 
-        g.MapPost("/restart", (IAuditLog audit, ILoggerFactory lf, IServiceProvider sp) =>
+        g.MapPost("/restart", (IAuditLog audit, ILoggerFactory lf) =>
         {
             var logger = lf.CreateLogger("System");
             audit.Record("restart", "system", AppPaths.ManagerServiceName, AppPaths.ProductName);
@@ -398,13 +398,15 @@ internal static partial class PlatformEndpoints
                 return Results.Accepted(value: new { message = "The manager runs in console mode and cannot restart itself; restart it manually." });
             }
             logger.LogWarning("Restart requested; exiting with code 1 so the service recovery actions restart the manager");
-            // The Windows service lifetime reports SERVICE_STOPPED with ServiceBase.ExitCode (0 unless set) while the
-            // process exits; with exit code 0 the SCM treats it as a clean stop and never runs the recovery actions.
-            // A non-zero service exit code + the failure-actions flag (set by install / the MSI) makes it restart us.
-            if (OperatingSystem.IsWindows()
-                && sp.GetService<Microsoft.Extensions.Hosting.IHostLifetime>() is System.ServiceProcess.ServiceBase serviceBase)
-                serviceBase.ExitCode = 1;
-            Environment.ExitCode = 1;
+            // Environment.Exit ends the process without the Windows service lifetime reporting SERVICE_STOPPED
+            // (WindowsServiceLifetime, runtime release/10.0, has no ProcessExit handler). The SCM therefore sees a service
+            // that "terminated unexpectedly" (System event 7031/7034) and runs the recovery actions (restart after 5 s), which
+            // does not depend on the failure-actions flag: "failure actions are queued only if the service terminates without
+            // reporting a status of SERVICE_STOPPED" when the flag is FALSE.
+            // https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actions_flag
+            // A graceful StopApplication() would report SERVICE_STOPPED and only be recovered with the flag, whose change
+            // Microsoft documents as taking effect "the next time the system is started". Hosted services are not stopped:
+            // the database (LiteDB) is crash-safe and the host flushes the file log on ProcessExit (Program.cs).
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(1.5)); // let the response and the audit entry flush

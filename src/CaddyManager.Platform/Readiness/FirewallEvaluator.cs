@@ -51,6 +51,24 @@ public static class FirewallEvaluator
                 details.AppendLine($"{profile}: firewall profile is disabled, traffic is not filtered.");
                 continue;
             }
+            // AllowInboundRules = False: "All inbound firewall rules are ignored. All inbound traffic will use the
+            // DefaultInboundAction parameter value" (block rules included); with DefaultInboundAction = Block that is
+            // "Shields-Up" mode. https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile
+            if (prof is not null && !prof.AllowsInboundRules)
+            {
+                if (prof.DefaultInboundAction.Equals("Allow", StringComparison.OrdinalIgnoreCase))
+                {
+                    allowedProfiles.Add(profile);
+                    details.AppendLine($"{profile}: inbound rules are ignored (AllowInboundRules = False) and the default inbound action is Allow, so all inbound traffic is allowed.");
+                }
+                else
+                {
+                    blockAllInbound.Add(profile);
+                    deniedProfiles.Add(profile);
+                    details.AppendLine($"{profile}: the profile blocks all incoming connections (AllowInboundRules = False, \"Block all connections\"), so allow rules are ignored.");
+                }
+                continue;
+            }
             var matching = f.Rules.Where(r => Applies(r, req, profile, localIgnored)).ToList();
             var blocks = matching.Where(r => r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase)).ToList();
             var allows = matching.Where(r => r.Action.Equals("Allow", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -59,12 +77,6 @@ public static class FirewallEvaluator
                 blocked = true;
                 deniedProfiles.Add(profile);
                 details.AppendLine($"{profile}: BLOCKED by {Describe(blocks)} (block rules override allow rules).");
-            }
-            else if (prof is not null && !prof.AllowsInboundRules)
-            {
-                blockAllInbound.Add(profile);
-                deniedProfiles.Add(profile);
-                details.AppendLine($"{profile}: the profile blocks all incoming connections (AllowInboundRules = False, \"Block all connections\"), so allow rules are ignored.");
             }
             else if (allows.Count > 0)
             {
