@@ -17,7 +17,10 @@
 - Base DN `DC=corp,DC=local`; the default user filter matches `sAMAccountName` or `userPrincipalName`.
 - Group DNs for the Admin / Operator / Viewer roles (nested groups supported). Users in none of them cannot sign in.
 
-Use **Test sign-in** to see the resolved role and groups. Users then sign in with `DOMAIN\user`, `user` or their UPN;
+Use **Test sign-in** to see the resolved role and groups. Notes: use the DC's FQDN (it must match its LDAPS
+certificate); Server 2025 domain controllers require signing/encryption, so use *StartTLS* or *LDAPS*; the primary
+group (*Domain Users*) never appears in `memberOf`, so don't map a role to it. Group membership is evaluated at
+sign-in; disabling a user in the manager blocks them immediately. Users then sign in with `DOMAIN\user`, `user` or their UPN;
 their account appears in **Users** with a *Directory* badge and their role is refreshed at every sign-in. Local
 accounts keep working (keep one local admin as break-glass).
 

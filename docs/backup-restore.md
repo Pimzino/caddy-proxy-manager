@@ -8,7 +8,7 @@ current `caddy.json`. Treat backups as secrets.
 
 **Settings › Backups**: enable, hour of day, directory (local or UNC — the computer account `DOMAIN\SERVER$` needs
 write access to a share), number to keep, and an optional password (AES-256 encrypted zip; open with 7-Zip — Windows
-Explorer cannot open AES zips). Failures raise an alert. *Run backup now* creates one immediately.
+Explorer cannot open AES zips). Failures raise an alert (under the *Configuration failure* alert rule). *Run backup now* creates one immediately.
 
 ## On demand
 
@@ -16,9 +16,9 @@ Explorer cannot open AES zips). Failures raise an alert. *Run backup now* create
 
 ## Restore
 
-**Settings › Backups › Restore** — upload a backup (and its password if encrypted). The restore is staged and
-applied when the manager restarts (it restarts itself when running as a service); the replaced files are kept
-under `C:\ProgramData\CaddyProxyManager\restore-previous-*` for rollback.
+**Settings › Backups › Restore** — upload a backup (and its password if encrypted). The backup is validated and
+staged; click **Restart now** in the panel that appears (or `Restart-Service CaddyProxyManager`) to apply it. The
+replaced files are kept under `C:\ProgramData\CaddyProxyManager\backups\pre-restore-<timestamp>` for rollback.
 
 If the service cannot start, stop it and run `CaddyManager.exe apply-restore` from an elevated prompt.
 

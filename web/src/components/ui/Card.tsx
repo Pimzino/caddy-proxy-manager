@@ -21,7 +21,8 @@ export function CardHeader({
   return (
     <div className={cn('flex flex-wrap items-center gap-3 border-b border-border px-4 py-3', className)}>
       {icon && <span className="text-fg-subtle">{icon}</span>}
-      <div className="min-w-0 flex-1">
+      {/* basis-56: on narrow screens the actions wrap below the title instead of squeezing it */}
+      <div className="min-w-0 flex-1 basis-56">
         <h2 className="text-sm font-semibold text-fg">{title}</h2>
         {description && <p className="mt-0.5 text-xs text-fg-subtle">{description}</p>}
       </div>

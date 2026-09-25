@@ -42,12 +42,12 @@ could not reach a domain controller at boot: check that the NIC's DNS servers ar
 
 If any host uses *Internal CA* TLS, clients must trust Caddy's root:
 
-1. **Certificates › Internal root CA** → download `caddy-root.crt`.
+1. **Certificates › Internal root CA** → download `caddy-local-root.crt`.
 2. GPMC → edit a GPO linked to the client OUs → *Computer Configuration › Policies › Windows Settings › Security
    Settings › Public Key Policies › Trusted Root Certification Authorities* → *Import* the file.
 
 Or with PowerShell on a machine with GPMC:
 
 ```powershell
-certutil -dspublish -f caddy-root.crt RootCA   # publish to the whole forest (Enterprise Admin), or use the GPO above
+certutil -dspublish -f caddy-local-root.crt RootCA   # publish to the whole forest (Enterprise Admin), or use the GPO above
 ```
