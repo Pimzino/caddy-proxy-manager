@@ -692,6 +692,9 @@ public static class CaddyConfigGenerator
         return list;
     }
 
+    /// <summary>request_buffers used on every reverse proxy while HTTP/3 is enabled (see ReverseProxy()).</summary>
+    internal const int Http3RequestBufferBytes = 4096;
+
     private static JsonObject ReverseProxy(List<Upstream> upstreams, bool insecure, SiteHost h, bool stripAuthorization,
         bool includeHealthCheck, string label, Ctx ctx)
     {
@@ -712,6 +715,17 @@ public static class CaddyConfigGenerator
         if (stripAuthorization) request.Delete.Add("Authorization");
         var reqJson = request.ToJson();
         if (reqJson is not null) rp["headers"] = new JsonObject { ["request"] = reqJson };
+
+        if (ctx.Input.Settings.EnableHttp3)
+        {
+            // Requests that arrive over HTTP/3 have a body stream of unknown length even when empty, so Caddy forwards
+            // a bodiless GET to HTTP/2 upstreams as HEADERS without END_STREAM plus an empty DATA frame; strict
+            // upstreams reject that (Nutanix Prism's Envoy answers 503 "upstream connect error"). Buffering a few KB
+            // lets Caddy see the empty body and send it with Content-Length: 0 and END_STREAM (reverseproxy.go
+            // prepareRequest, v2.11.4); larger bodies still stream after the first bytes.
+            // https://caddyserver.com/docs/json/apps/http/servers/routes/handle/reverse_proxy/request_buffers/
+            rp["request_buffers"] = Http3RequestBufferBytes;
+        }
 
         var https = upstreams.Any(u => u.Scheme == UpstreamScheme.Https);
         var ntlm = h.UpstreamNtlm && NtlmAvailable(label, ctx);

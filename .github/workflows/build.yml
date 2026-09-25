@@ -62,6 +62,9 @@ jobs:
       - name: .NET tests
         shell: pwsh
         # -m:1 runs the test projects one after another: several suites start real Caddy processes on dynamic ports.
+        env:
+          # End-to-end tests write verifiable artifacts here (e.g. the HTTP/3 upstream framing report).
+          CPM_E2E_ARTIFACTS: ${{ github.workspace }}/TestResults/e2e
         run: dotnet test CaddyManager.sln -c Release -m:1 --filter "Category!=Network" --logger "trx" --results-directory TestResults --nologo
 
       - name: Test summary
@@ -86,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results
-          path: TestResults/*.trx
+          path: |
+            TestResults/*.trx
+            TestResults/e2e/**
           retention-days: 14
 
   build:
