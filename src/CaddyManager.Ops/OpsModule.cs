@@ -55,6 +55,9 @@ public static class OpsModule
         SettingsEndpoints.Map(app);
         LogEndpoints.Map(app);
         BackupEndpoints.Map(app);
+#if DEBUG
+        DevLogin.Map(app);
+#endif
         return app;
     }
 
