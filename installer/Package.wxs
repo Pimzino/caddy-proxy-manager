@@ -17,8 +17,9 @@
               installation fails and rolls back (see the MSI log: msiexec /i ... /l*v install.log).
               msiexec /i CaddyProxyManager-1.0.0-x64.msi BIND=127.0.0.1 /qn
 
-  UI: a short wizard (Welcome → Ready to install → progress → Finish) without a license page. The Finish page explains
-  how to open the UI and where the first-run setup token is. Silent installs (/qn, /quiet) show no UI and are unchanged.
+  UI: a short wizard (Welcome → Ready to install → progress → Finish) without a license page. The Finish page is tailored
+  to what the run did (new install, upgrade, reinstall over kept data, repair, removal): how to open the UI, where the
+  first-run setup token is when setup is still pending, and an option to open the UI in the browser. Silent installs (/qn, /quiet) show no UI and are unchanged.
   A Start-menu shortcut "Caddy Proxy Manager" opens http://localhost:<port>/ (http://<BIND>:<port>/ when the UI is bound to
   one specific IPv4 address).
 
@@ -224,24 +225,44 @@
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
     <!-- ===================================================================== wizard UI -->
-    <!-- Finish page text, formatted here so the port is filled in. The setup-token instructions only make sense on a first
-         install: after an upgrade (WIX_UPGRADE_DETECTED, set by MajorUpgrade's FindRelatedProducts), a repair (Installed)
-         or a reinstall over kept data (CPM_SETUP_DONE) there is an administrator and no token. Values stay under the
-         255-character limit of CustomAction.Target (ICE03). -->
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogTextFirstRun"
-                 Value="Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ and create the first administrator with the setup token in C:\ProgramData\CaddyProxyManager\setup-token.txt (readable from an elevated prompt)."
-                 After="CostFinalize" Sequence="ui" Condition="NOT CPM_SETUP_DONE AND NOT WIX_UPGRADE_DETECTED AND NOT Installed" />
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Action="CPM_SetExitDialogTextExisting"
-                 Value="Caddy Proxy Manager was updated; hosts, certificates and settings were kept. Open http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/ and sign in as before (not set up yet? use C:\ProgramData\CaddyProxyManager\setup-token.txt)."
-                 After="CPM_SetExitDialogTextFirstRun" Sequence="ui" Condition="CPM_SETUP_DONE OR WIX_UPGRADE_DETECTED OR Installed" />
+    <!-- What the Finish page says depends on what this run did (CPM_OUTCOME), decided from three signals read before the
+         wizard starts: Installed (this exact product is installed: maintenance), WIX_UPGRADE_DETECTED (an earlier version
+         is installed: MajorUpgrade's FindRelatedProducts) and CPM_SETUP_DONE (first-run setup was completed on this
+         server: HKLM\SOFTWARE\Caddy Proxy Manager\SetupCompleted, written by the manager, kept across uninstalls that
+         keep the data folder). Repair / Remove are set by the maintenance buttons below.
+           Fresh            new install, never set up         → open the UI, create the first administrator (token)
+           UpgradeNotSetUp  upgrade, setup never finished     → open the UI, finish setup (token)
+           Upgrade          upgrade of a server in use        → open the UI, sign in as before
+           Reinstall        new install over kept data        → open the UI, sign in with the existing accounts
+           Repair / Remove  maintenance                       → what was restored / removed, and that data is kept -->
+    <SetProperty Id="CPM_OUTCOME" Action="CPM_SetOutcomeFresh" Value="Fresh" After="CostFinalize" Sequence="ui"
+                 Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT CPM_SETUP_DONE" />
+    <SetProperty Id="CPM_OUTCOME" Action="CPM_SetOutcomeReinstall" Value="Reinstall" After="CPM_SetOutcomeFresh" Sequence="ui"
+                 Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CPM_SETUP_DONE" />
+    <SetProperty Id="CPM_OUTCOME" Action="CPM_SetOutcomeUpgrade" Value="Upgrade" After="CPM_SetOutcomeReinstall" Sequence="ui"
+                 Condition="NOT Installed AND WIX_UPGRADE_DETECTED AND CPM_SETUP_DONE" />
+    <SetProperty Id="CPM_OUTCOME" Action="CPM_SetOutcomeUpgradeNotSetUp" Value="UpgradeNotSetUp" After="CPM_SetOutcomeUpgrade" Sequence="ui"
+                 Condition="NOT Installed AND WIX_UPGRADE_DETECTED AND NOT CPM_SETUP_DONE" />
+
+    <!-- "Open the web UI in my browser now" (checked by default). WixShellExec runs in the wizard's client process, i.e. as
+         the signed-in user, not elevated. -->
+    <Property Id="CPM_OPEN_UI" Value="1" />
+    <CustomAction Id="CPM_OpenWebUi" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
 
     <!-- Minimal wizard without a license page, built from the WixUI dialog library (WixToolset.UI.wixext):
-         WelcomeDlg → VerifyReadyDlg → ProgressDlg → ExitDialog; maintenance mode offers Repair / Remove. -->
+         WelcomeDlg → VerifyReadyDlg → ProgressDlg → CPM_FinishDlg; maintenance mode offers Repair / Remove. -->
     <UI Id="CPM_WixUI">
       <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
       <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
       <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
       <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <!-- Finish page: the web UI's ink / muted / teal (web/src/index.css) -->
+      <TextStyle Id="CPM_Finish_Title" FaceName="Segoe UI" Size="13" Bold="yes" Red="15" Green="23" Blue="42" />
+      <TextStyle Id="CPM_Finish_Body" FaceName="Segoe UI" Size="9" Red="15" Green="23" Blue="42" />
+      <TextStyle Id="CPM_Finish_Muted" FaceName="Segoe UI" Size="9" Red="71" Green="85" Blue="105" />
+      <TextStyle Id="CPM_Finish_Heading" FaceName="Segoe UI" Size="9" Bold="yes" Red="15" Green="118" Blue="110" />
+      <!-- 8 pt: the 48-character setup-token path must fit the 222-unit text column without Windows eliding its middle -->
+      <TextStyle Id="CPM_Finish_Mono" FaceName="Consolas" Size="8" Red="15" Green="23" Blue="42" />
 
       <DialogRef Id="ErrorDlg" />
       <DialogRef Id="FatalError" />
@@ -256,7 +277,78 @@
       <DialogRef Id="MaintenanceWelcomeDlg" />
       <DialogRef Id="MaintenanceTypeDlg" />
 
-      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+      <!-- Finish page (replaces WixUI's ExitDialog): same frame and 493×312 artwork (WixUIDialogBmp) as the welcome page. -->
+      <Dialog Id="CPM_FinishDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Property="WixShellExecTarget" Value="http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/" Order="1" Condition='CPM_OPEN_UI = 1 AND NOT (CPM_OUTCOME = "Remove")' />
+          <Publish Event="DoAction" Value="CPM_OpenWebUi" Order="2" Condition='CPM_OPEN_UI = 1 AND NOT (CPM_OUTCOME = "Remove")' />
+          <Publish Event="EndDialog" Value="Return" Order="3" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Disabled="yes" Text="Cancel" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Disabled="yes" Text="&lt; &amp;Back" />
+        <Control Id="Bitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="234" TabSkip="no" Text="WixUI_Bmp_Dialog" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="TitleInstalled" Type="Text" X="135" Y="18" Width="222" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Title}Caddy Proxy Manager is installed" ShowCondition='CPM_OUTCOME = "Fresh" OR CPM_OUTCOME = "Reinstall"' />
+        <Control Id="TitleUpdated" Type="Text" X="135" Y="18" Width="222" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Title}Caddy Proxy Manager is updated" ShowCondition='CPM_OUTCOME = "Upgrade" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="TitleRepaired" Type="Text" X="135" Y="18" Width="222" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Title}Caddy Proxy Manager is repaired" ShowCondition='CPM_OUTCOME = "Repair"' />
+        <Control Id="TitleRemoved" Type="Text" X="135" Y="18" Width="222" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Title}Caddy Proxy Manager was removed" ShowCondition='CPM_OUTCOME = "Remove"' />
+        <Control Id="TitleDone" Type="Text" X="135" Y="18" Width="222" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Title}Setup is complete" ShowCondition="NOT CPM_OUTCOME" />
+        <Control Id="SubFresh" Type="Text" X="135" Y="40" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}The service is running and starts with Windows." ShowCondition='CPM_OUTCOME = "Fresh"' />
+        <Control Id="SubUpgrade" Type="Text" X="135" Y="40" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}Your hosts, certificates and settings were kept, and the service has restarted." ShowCondition='CPM_OUTCOME = "Upgrade" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="SubReinstall" Type="Text" X="135" Y="40" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}The configuration from the previous installation was found and kept." ShowCondition='CPM_OUTCOME = "Reinstall"' />
+        <Control Id="SubRepair" Type="Text" X="135" Y="40" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}Program files, the service and the firewall exception were restored. Your configuration was not changed." ShowCondition='CPM_OUTCOME = "Repair"' />
+        <Control Id="SubRemove" Type="Text" X="135" Y="40" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}The manager and Caddy services, their firewall rules and the Start-menu shortcut were removed." ShowCondition='CPM_OUTCOME = "Remove"' />
+        <Control Id="HeadOpenNumbered" Type="Text" X="135" Y="72" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Heading}1 · Open the web UI" ShowCondition='CPM_OUTCOME = "Fresh" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="HeadOpen" Type="Text" X="135" Y="72" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Heading}Open the web UI" ShowCondition='CPM_OUTCOME = "Upgrade" OR CPM_OUTCOME = "Reinstall" OR CPM_OUTCOME = "Repair" OR NOT CPM_OUTCOME' />
+        <Control Id="Link" Type="Hyperlink" X="135" Y="85" Width="222" Height="12" Transparent="yes" Hidden="yes"
+                 Text='&lt;a href="http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/"&gt;http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/&lt;/a&gt;' ShowCondition='NOT (CPM_OUTCOME = "Remove")' />
+        <Control Id="SignInBefore" Type="Text" X="135" Y="99" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Body}Sign in as before." ShowCondition='CPM_OUTCOME = "Upgrade" OR CPM_OUTCOME = "Repair"' />
+        <Control Id="SignInExisting" Type="Text" X="135" Y="99" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Body}Sign in with your existing accounts." ShowCondition='CPM_OUTCOME = "Reinstall"' />
+        <Control Id="HeadAdmin" Type="Text" X="135" Y="114" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Heading}2 · Create the first administrator" ShowCondition='CPM_OUTCOME = "Fresh"' />
+        <Control Id="HeadFinishSetup" Type="Text" X="135" Y="114" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Heading}2 · Finish the first-run setup" ShowCondition='CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="TokenIntro" Type="Text" X="135" Y="127" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Body}Use the one-time setup token in" ShowCondition='CPM_OUTCOME = "Fresh" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="TokenPath" Type="Text" X="135" Y="140" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Mono}C:\ProgramData\CaddyProxyManager\setup-token.txt" ShowCondition='CPM_OUTCOME = "Fresh" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="TokenNote" Type="Text" X="135" Y="153" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}(readable from an elevated prompt)" ShowCondition='CPM_OUTCOME = "Fresh" OR CPM_OUTCOME = "UpgradeNotSetUp"' />
+        <Control Id="HeadKept" Type="Text" X="135" Y="72" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Heading}Your data was kept" ShowCondition='CPM_OUTCOME = "Remove"' />
+        <Control Id="KeptIntro" Type="Text" X="135" Y="85" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Body}Configuration, certificates and backups remain in" ShowCondition='CPM_OUTCOME = "Remove"' />
+        <Control Id="KeptPath" Type="Text" X="135" Y="98" Width="222" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Mono}C:\ProgramData\CaddyProxyManager" ShowCondition='CPM_OUTCOME = "Remove"' />
+        <Control Id="KeptNote" Type="Text" X="135" Y="112" Width="222" Height="26" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Muted}Reinstall to pick up where you left off, or delete the folder to remove everything." ShowCondition='CPM_OUTCOME = "Remove"' />
+        <!-- A CheckBox control paints an opaque (grey) background, so it is only as wide as the box itself; the label is a
+             separate transparent Text control. -->
+        <Control Id="OpenUi" Type="CheckBox" X="135" Y="213" Width="11" Height="11" Property="CPM_OPEN_UI" CheckBoxValue="1" Hidden="yes"
+                 ShowCondition="NOT (CPM_OUTCOME = &quot;Remove&quot;)" />
+        <Control Id="OpenUiLabel" Type="Text" X="149" Y="212" Width="208" Height="12" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\CPM_Finish_Body}Open the web UI in my browser now" ShowCondition="NOT (CPM_OUTCOME = &quot;Remove&quot;)" />
+      </Dialog>
+      <InstallUISequence>
+        <Show Dialog="CPM_FinishDlg" OnExit="success" />
+      </InstallUISequence>
+      <AdminUISequence>
+        <Show Dialog="CPM_FinishDlg" OnExit="success" />
+      </AdminUISequence>
 
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
@@ -266,7 +358,9 @@
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
 
       <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="CPM_OUTCOME" Value="Repair" />
       <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="CPM_OUTCOME" Value="Remove" />
       <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
     </UI>

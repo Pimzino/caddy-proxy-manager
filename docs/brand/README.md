@@ -28,8 +28,9 @@ In short, the handle means it carries everything, and the cut is how traffic pas
 | Handle | `#0f766e` (`--accent`) | `#14b8a6` (`--accent`) |
 | "Proxy Manager" | `#0f766e` (`--accent-text`) | `#2dd4bf` (`--accent-text`) |
 
-The square mark (favicon, exe and installer icon, collapsed sidebar) is the "dd" with the handle on an ink tile. At
-16 and 20 px it drops the cut and uses a heavier stroke so it stays crisp.
+The square mark (favicon, exe and installer icon, collapsed sidebar) is **cpm** in the same letters on an ink tile.
+The p's upright and the m's first upright rise slightly above the letters and carry the teal handle over the p, the
+same gesture as the d's in the wordmark. At 16 and 20 px it drops the cut and uses a heavier stroke so it stays crisp.
 
 ## Regenerating
 

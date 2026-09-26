@@ -2,6 +2,7 @@
 //
 //   assets              → the chosen logo written into the repo: web UI images + favicon.ico, the exe's app.ico,
 //                         installer bitmaps, README logos (see renderAssets in typographic.js)
+//   cpm                 → typographic.js, options for a "CPM" square mark → out/cpm
 //   teal                → typographic.js, chosen logo in the app's teal (round 6) → out/teal
 //   compact             → typographic.js, compact lowercase hybrid (round 5) → out/compact
 //   combo               → typographic.js, Handle × Channel variations (round 4) → out/combo
@@ -18,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '../../..');
 const set = process.argv[2] ?? 'type';
 const script = 'typographic.js';
-if (!['assets', 'teal', 'compact', 'combo', 'type'].includes(set)) throw new Error(`Unknown set "${set}" (expected assets, teal, compact, combo or type)`);
+if (!['assets', 'cpm', 'teal', 'compact', 'combo', 'type'].includes(set)) throw new Error(`Unknown set "${set}" (expected assets, cpm, teal, compact, combo or type)`);
 const fonts = join(repo, 'web/node_modules/@fontsource-variable');
 const font = (file: string) => `data:font/woff2;base64,${readFileSync(join(fonts, file)).toString('base64')}`;
 

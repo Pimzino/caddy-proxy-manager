@@ -480,10 +480,13 @@ const rgba = (c) => {
   return { w: c.width, h: c.height, rgba: btoa(bin) };
 };
 /**
- * The square mark: "dd" with the teal handle on an ink tile. Small sizes get a heavier stroke, and at ≤ 20 px the
- * cut is dropped so the letters don't break apart into pixels.
+ * The square mark (favicon, exe / installer icon, collapsed sidebar): "cpm" in the wordmark's letters, the p and m
+ * uprights rising into the teal handle the way the d's do in the wordmark (option K of the 'cpm' set).
  */
-function mark(S, { square = false } = {}) {
+function mark(S, { square = false } = {}) { return cpmTile(CPM_VARIANTS.find((v) => v.id === 'lc-stems'), S, { square }); }
+
+/** The earlier "dd" mark, kept only so the 'cpm' comparison board can still show it. */
+function ddMark(S, { square = false } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = S;
   const ctx = c.getContext('2d');
@@ -539,7 +542,190 @@ window.renderAssets = async () => {
   return Object.keys(out);
 };
 
+// ------------------------------------------------------------------ 'cpm' set: options for a "CPM" square mark
+// Monoline letters in the wordmark's construction (round caps, stroke w at x-height / cap height 1, the cut at mid
+// height), teal accent, on an ink tile. K ('lc-stems') is the shipped mark (see mark()); the rest are the options.
+function cpmLetters(letters, w, t) {
+  const r = 0.5 - w / 2, ink = [], acc = [], stems = {};
+  let ox = 0, bottom = 1;
+  letters.forEach(([ch, teal], n) => {
+    const o = ox, into = teal ? acc : ink;
+    if (ch === 'c' || ch === 'C') {
+      into.push((x, y) => arc(x, y, o + 0.5, 0.5, r, 0.72, TAU - 0.72, w));
+      ox += 0.5 + r * Math.cos(0.72) + w / 2;
+    }
+    if (ch === 'p') {
+      stems.p = o + w / 2;
+      into.push((x, y) => ring(x, y, o + 0.5, 0.5, r, w), (x, y) => capsule(x, y, o + w / 2, w / 2, o + w / 2, 1.42, w));
+      bottom = Math.max(bottom, 1.42 + w / 2); ox += 1;
+    }
+    if (ch === 'm') {
+      const a = 0.27, x0 = o + w / 2, x1 = x0 + 2 * a, x2 = x1 + 2 * a, cy = w / 2 + a;
+      stems.mLeft = x0; stems.mRight = x2;
+      into.push(
+        (x, y) => capsule(x, y, x0, w / 2, x0, 1 - w / 2, w),
+        (x, y) => arc(x, y, x0 + a, cy, a, Math.PI, TAU, w),
+        (x, y) => arc(x, y, x1 + a, cy, a, Math.PI, TAU, w),
+        (x, y) => capsule(x, y, x1, cy, x1, 1 - w / 2, w),
+        (x, y) => capsule(x, y, x2, cy, x2, 1 - w / 2, w),
+      );
+      ox += 4 * a + w;
+    }
+    if (ch === 'P') {
+      const bb = 0.58, br = (bb - w / 2) / 2, bx = 0.66 - w / 2 - br, cy = w / 2 + br;
+      into.push(
+        (x, y) => capsule(x, y, o + w / 2, w / 2, o + w / 2, 1 - w / 2, w),
+        (x, y) => capsule(x, y, o + w / 2, w / 2, o + bx, w / 2, w),
+        (x, y) => capsule(x, y, o + w / 2, bb, o + bx, bb, w),
+        (x, y) => arc(x, y, o + bx, cy, br, -Math.PI / 2, Math.PI / 2, w),
+      );
+      ox += bx + br + w / 2;
+    }
+    if (ch === 'M') {
+      const mw = 0.92, pts = [[w / 2, 1 - w / 2], [w / 2, w / 2], [mw / 2, 0.66], [mw - w / 2, w / 2], [mw - w / 2, 1 - w / 2]];
+      for (let i = 1; i < pts.length; i++) {
+        const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+        into.push((x, y) => capsule(x, y, o + ax, ay, o + bx, by, w));
+      }
+      ox += mw;
+    }
+    // condensed capitals: stadium-shaped C, D-bowl P, narrow M (about half the width of the round forms)
+    if (ch === 'Cn') {
+      const cw = 0.6;
+      into.push((x, y) => sub(outline(boxLR(x, y, o, 0, o + cw, 1, cw / 2, cw / 2), w), box(x, y, o + cw * 0.5, 0.32, o + cw + 1, 0.68)));
+      ox += cw;
+    }
+    if (ch === 'Pn') {
+      const cw = 0.56, bb = 0.6;
+      stems.p = o + w / 2;
+      into.push(
+        (x, y) => capsule(x, y, o + w / 2, w / 2, o + w / 2, 1 - w / 2, w),
+        (x, y) => outline(boxLR(x, y, o, 0, o + cw, bb, 0, bb / 2), w),
+      );
+      ox += cw;
+    }
+    if (ch === 'Mn') {
+      const mw = 0.7, pts = [[w / 2, 1 - w / 2], [w / 2, w / 2], [mw / 2, 0.64], [mw - w / 2, w / 2], [mw - w / 2, 1 - w / 2]];
+      stems.mLeft = o + w / 2; stems.mRight = o + mw - w / 2;
+      for (let i = 1; i < pts.length; i++) {
+        const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+        into.push((x, y) => capsule(x, y, o + ax, ay, o + bx, by, w));
+      }
+      ox += mw;
+    }
+    if (n < letters.length - 1) ox += t;
+  });
+  return { ink, acc, stems, right: ox, bottom };
+}
+/** One option: letters [[char, teal?]], plus a teal handle over the letters and/or a teal channel in the cut. */
+function cpmVariant(id, name, note, letters, { handle = false, channel = false, stemHandle = null, asc = -0.3, t = 0.16 } = {}) {
+  return {
+    id, name, note,
+    build({ w = 0.17, cut = true }) {
+      const L = cpmLetters(letters, w, t), g = w * 0.55;
+      const band = (x, y) => box(x, y, -9, 0.5 - g / 2, 99, 0.5 + g / 2);
+      const ink = [...L.ink], handles = [];
+      let top = 0;
+      if (stemHandle) {
+        // like the wordmark's d ascenders: the P stem and one M stem rise past cap height and meet in one teal arch
+        const s1 = L.stems.p, s2 = stemHandle === 'right' ? L.stems.mRight : L.stems.mLeft, hr = (s2 - s1) / 2;
+        ink.push((x, y) => capsule(x, y, s1, w / 2, s1, asc, w), (x, y) => capsule(x, y, s2, w / 2, s2, asc, w));
+        handles.push((x, y) => arc(x, y, (s1 + s2) / 2, asc, hr, Math.PI, TAU, w));
+        top = asc - hr - w / 2;
+      } else if (handle) {
+        const cx = L.right / 2, hr = L.right * 0.26, cy = -0.12;
+        handles.push((x, y) => arc(x, y, cx, cy, hr, Math.PI, TAU, w));
+        top = cy - hr - w / 2;
+      }
+      const minOf = (fs) => (fs.length ? (x, y) => Math.min(...fs.map((f) => f(x, y))) : () => Infinity);
+      const inkD = minOf(ink), accLetters = minOf(L.acc), handleD = minOf(handles);
+      const parts = [
+        { d: (x, y) => (cut ? sub(inkD(x, y), band(x, y)) : inkD(x, y)), ink: 'ink' },
+        // teal letters take the cut; the handle sits above it
+        { d: (x, y) => Math.min(cut ? sub(accLetters(x, y), band(x, y)) : accLetters(x, y), handleD(x, y)), ink: 'accent' },
+      ];
+      if (channel && cut) parts.push({ d: (x, y) => box(x, y, -0.08, 0.5 - g * 0.22, L.right + 0.08, 0.5 + g * 0.22), ink: 'accent' });
+      return { parts, bounds: [-0.1, Math.min(top, -0.02) - 0.02, L.right + 0.1, L.bottom + 0.02] };
+    },
+  };
+}
+const CPM_VARIANTS = [
+  cpmVariant('lc-stems', 'K · cpm, handle from p and m uprights', 'p and m uprights rise slightly and meet in a teal arch', [['c'], ['p'], ['m']], { stemHandle: 'left', asc: -0.2 }),
+  cpmVariant('lc-stems-dd', 'K2 · as K, dd ascender height', 'uprights rise as high as the dd ascenders', [['c'], ['p'], ['m']], { stemHandle: 'left', asc: -0.36 }),
+  cpmVariant('lc-handle', 'A · cpm + handle', 'lowercase, cut, teal carry handle over the letters', [['c'], ['p'], ['m']], { handle: true }),
+  cpmVariant('lc-teal-c', 'B · cpm, teal c', 'lowercase, cut, the c (for caddy) in teal', [['c', true], ['p'], ['m']]),
+  cpmVariant('uc-teal-c', 'C · CPM, teal C', 'capitals, cut, the C in teal', [['C', true], ['P'], ['M']], { t: 0.12 }),
+  cpmVariant('uc-handle', 'D · CPM + handle', 'capitals, cut, teal carry handle', [['C'], ['P'], ['M']], { handle: true, t: 0.12 }),
+  cpmVariant('lc-channel', 'E · cpm + teal channel', 'lowercase, the cut carries a thin teal line', [['c'], ['p'], ['m']], { channel: true }),
+  cpmVariant('cn-teal-c', 'F · CPM condensed, teal C', 'narrow capitals, cut, teal C (≈2× letter height)', [['Cn', true], ['Pn'], ['Mn']], { t: 0.13 }),
+  cpmVariant('cn-handle', 'G · CPM condensed + handle', 'narrow capitals, cut, teal carry handle', [['Cn'], ['Pn'], ['Mn']], { handle: true, t: 0.13 }),
+];
+const CPM_PALETTE = { ink: '#f8fafc', muted: '#cbd5e1', accent: '#14b8a6', accentText: '#2dd4bf' };
+/** Square mark for an option: heavier stroke at small sizes, no cut at ≤ 20 px. `square` fills the whole tile. */
+function cpmTile(v, S, { square = false } = {}) {
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = T.fg;
+  ctx.beginPath(); ctx.roundRect(0, 0, S, S, square ? 0 : S * 0.1875); ctx.fill();
+  const w = S <= 20 ? 0.26 : S <= 32 ? 0.22 : S <= 64 ? 0.19 : 0.16;
+  const boxS = S * (S <= 32 ? 0.9 : 0.8);
+  // ~2× supersampled for the tile size (glyphs are about 3.6 units wide)
+  const glyph = raster({ build: () => v.build({ w, cut: S > 20 }) }, { U: Math.max(40, (boxS * 2) / 2.0), palette: CPM_PALETTE });
+  ctx.imageSmoothingQuality = 'high';
+  const g = fit(glyph, boxS, boxS);
+  ctx.drawImage(g, Math.round((S - g.width) / 2), Math.round((S - g.height) / 2));
+  return c;
+}
+function cpmBoard(rows) {
+  const W = 1800, head = 110, rowH = 200, H = head + rowH * rows.length + 40, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W / 2, H);
+  ctx.fillStyle = T.dBg; ctx.fillRect(W / 2, 0, W / 2, H);
+  ctx.letterSpacing = '-0.4px'; ctx.font = '650 24px Inter'; ctx.fillStyle = T.fg;
+  ctx.fillText('Square mark options: "CPM"', 40, 52);
+  ctx.letterSpacing = '0px'; ctx.font = '400 14px Inter'; ctx.fillStyle = T.fgMuted;
+  ctx.fillText('Each at 512 (shown 150), 64, 32, 16 and 16 px at 4× · light background left, dark right · the ≤ 20 px sizes drop the cut', 40, 80);
+  const cols = (x0, dark) => {
+    ctx.letterSpacing = '1.2px'; ctx.font = '600 11px Inter'; ctx.fillStyle = dark ? T.dFgSubtle : T.fgSubtle;
+    [['512', 0], ['64', 190], ['32', 290], ['16', 360], ['16 @ 4×', 420]].forEach(([t, dx]) => ctx.fillText(t, x0 + dx, head - 8));
+  };
+  cols(40, false); cols(W / 2 + 40, true);
+  rows.forEach(({ v, tiles }, n) => {
+    const y = head + n * rowH + 20;
+    for (const [x0, dark] of [[40, false], [W / 2 + 40, true]]) {
+      ctx.drawImage(fit(tiles[512], 150, 150), x0, y);
+      ctx.drawImage(tiles[64], x0 + 190, y + 43);
+      ctx.drawImage(tiles[32], x0 + 290, y + 59);
+      ctx.drawImage(tiles[16], x0 + 360, y + 67);
+      ctx.imageSmoothingEnabled = false; ctx.drawImage(tiles[16], x0 + 420, y + 43, 64, 64); ctx.imageSmoothingEnabled = true;
+      ctx.letterSpacing = '-0.2px'; ctx.font = '600 16px Inter'; ctx.fillStyle = dark ? T.dFg : T.fg;
+      ctx.fillText(v.name, x0 + 520, y + 64);
+      ctx.letterSpacing = '0px'; ctx.font = '400 13px Inter'; ctx.fillStyle = dark ? T.dFgMuted : T.fgMuted;
+      ctx.fillText(v.note, x0 + 520, y + 88);
+    }
+  });
+  return c;
+}
+window.renderCpm = async () => {
+  await document.fonts.load('600 20px Inter');
+  const out = {}, rows = [];
+  const all = [...CPM_VARIANTS, { id: 'previous-dd', name: 'Previous · dd + handle', note: 'the earlier mark, for comparison', tile: (S) => ddMark(S) }];
+  for (const v of all) {
+    const tiles = {};
+    for (const S of [512, 64, 32, 24, 20, 16]) tiles[S] = v.tile ? v.tile(S) : cpmTile(v, S);
+    rows.push({ v, tiles });
+    for (const S of [512, 64, 32, 24, 20, 16]) out[`${v.id}/mark-${S}.png`] = tiles[S].toDataURL('image/png');
+  }
+  out['overview.png'] = cpmBoard(rows).toDataURL('image/png');
+  window.__out = out;
+  return Object.keys(out);
+};
+
 window.renderAll = async (set = 'type') => {
+  if (set === 'cpm') return window.renderCpm();
   const list = { combo: COMBOS, compact: COMPACT, teal: TEALS }[set] ?? CONCEPTS;
   await document.fonts.load('600 20px Inter');
   await document.fonts.load('400 20px JetBrains Mono');

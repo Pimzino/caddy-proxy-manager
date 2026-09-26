@@ -17,7 +17,7 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
-/** Square mark ("dd" with the handle on an ink tile) for places too small for the lockup. */
+/** Square mark ("cpm", the p and m uprights carrying the teal handle, on an ink tile) for places too small for the lockup. */
 export function LogoMark({ className }: { className?: string }) {
   return <img src={mark} alt="Caddy Proxy Manager" draggable={false} className={cn('select-none rounded-md', className)} />;
 }
