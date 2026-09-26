@@ -53,11 +53,8 @@ internal static class EndpointSecurity
         http.RequestServices.GetRequiredService<CertificateFileStore>().StoreRoot;
 
     /// <summary>The shared file-system Caddy storage folder when that backend is used (never served as a static root).</summary>
-    public static string? SharedStorage(HttpContext http)
-    {
-        var s = http.RequestServices.GetRequiredService<IStore>().GetSettings<CaddySettings>();
-        return s.StorageBackend == StorageBackend.FileSystem && !string.IsNullOrWhiteSpace(s.StoragePath) ? s.StoragePath.Trim() : null;
-    }
+    public static string? SharedStorage(HttpContext http) =>
+        Services.CaddyStorage.SharedStorageRoot(http.RequestServices.GetRequiredService<IStore>().GetSettings<CaddySettings>());
 
     /// <summary>
     /// Privilege boundaries for a host (after field validation): advanced routes are admin-only, static roots may not

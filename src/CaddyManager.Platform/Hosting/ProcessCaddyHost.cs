@@ -336,7 +336,8 @@ public sealed class ProcessCaddyHost : ICaddyHost, IDisposable
         lock (_recentOutput)
         {
             var tail = _recentOutput.TakeLast(8).ToList();
-            return tail.Count == 0 ? "" : "Last output: " + string.Join(" | ", tail);
+            // Caddy's output can quote credentials; this text becomes the status error every viewer sees.
+            return tail.Count == 0 ? "" : _support.Scrub("Last output: " + string.Join(" | ", tail));
         }
     }
 

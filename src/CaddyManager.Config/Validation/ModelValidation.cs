@@ -70,17 +70,19 @@ public static partial class ModelValidation
         public void Add(string field, string message) => target.Add(prefix + field, message);
     }
 
-    public static IResult? Validate(SiteHost h, IStore store, ISecretProtector? secrets = null)
+    /// <param name="modules">Modules of the installed Caddy binary (null = unknown: the DNS provider plugin is not checked).</param>
+    public static IResult? Validate(SiteHost h, IStore store, ISecretProtector? secrets = null, IReadOnlyCollection<string>? modules = null)
     {
         var v = new Validator();
-        ValidateFields(h, store, v, "", secrets);
+        ValidateFields(h, store, v, "", secrets, modules);
         if (!v.IsValid) return v.ToResult();
         return DomainConflict(h, store);
     }
 
     /// <summary>Field validation of a host (no conflict check); errors are added to <paramref name="target"/> with the prefix.</summary>
     /// <param name="secrets">When given, the DNS provider's required secret fields are checked for hosts using the DNS challenge.</param>
-    internal static void ValidateFields(SiteHost h, IStore store, Validator target, string prefix, ISecretProtector? secrets = null)
+    internal static void ValidateFields(SiteHost h, IStore store, Validator target, string prefix, ISecretProtector? secrets = null,
+        IReadOnlyCollection<string>? modules = null)
     {
         var v = new FieldErrors(target, prefix);
         if (h.Domains.Count == 0) v.Add("domains", "At least one domain is required.");
@@ -152,6 +154,10 @@ public static partial class ModelValidation
                     v.Add("acmeChallenge", $"The {provider.Label} DNS provider settings are incomplete (missing: {string.Join(", ", missing)}). Complete them under Settings > Caddy.");
             }
         }
+        // Caddy rejects the whole configuration when a DNS policy names a provider module the binary does not include.
+        if (modules is not null && CaddyConfigGenerator.UsesDnsChallenge(h, store.GetSettings<CaddySettings>())
+            && DnsProviderModuleProblem(store.GetSettings<CaddySettings>().DnsProvider, modules) is { } moduleProblem)
+            v.Add("acmeChallenge", moduleProblem);
         if (h.DnsDelegation != HostDnsDelegation.Default && !CaddyConfigGenerator.UsesDnsChallenge(h, store.GetSettings<CaddySettings>()))
             v.Add("dnsDelegation", "Challenge delegation only applies to the DNS challenge, and this host uses the HTTP challenge. Select the DNS challenge, or set delegation back to 'Use default'.");
         if (h.DnsDelegation == HostDnsDelegation.Custom)
@@ -425,12 +431,23 @@ public static partial class ModelValidation
                 ? "The DNS challenge is the default challenge: select the DNS provider that manages your zones."
                 : $"The host '{dnsHost!.Domains.FirstOrDefault() ?? dnsHost.Id}' uses the DNS challenge: select the DNS provider that manages your zones.");
         // Wildcard ACME hosts use the provider as soon as one is selected.
-        if (provider is not null && (dnsUsed || acmeHosts.Any(h => h.Domains.Any(d => d.StartsWith("*.", StringComparison.Ordinal)))))
+        var providerUsed = provider is not null && (dnsUsed || acmeHosts.Any(h => h.Domains.Any(d => d.StartsWith("*.", StringComparison.Ordinal))));
+        if (providerUsed)
+        {
             foreach (var missing in MissingProviderFields(s, plain.DnsProviderSecrets))
             {
                 var field = info!.Fields.First(f => f.Name == missing);
                 v.Add(field.Secret ? $"dnsProviderSecrets.{missing}" : $"dnsProviderOptions.{missing}", $"{info.Label}: '{field.Label}' is required.");
             }
+            // Caddy rejects the whole configuration (not just DNS-01 issuance) when the provider module is missing.
+            if (DnsProviders.DnsProviderCatalog.IsValidName(provider) && DnsProviderModuleProblem(provider, modules) is { } moduleProblem)
+                v.Add("dnsProvider", moduleProblem);
+        }
+        // A legacy DNS provider in the ACME issuer JSON would be deep-merged into the selected one (mixing two providers'
+        // fields, which no plugin accepts); the generator drops it, but the user has to remove it.
+        if (provider is not null && CaddyJson.ParseObject(plain.AcmeIssuerJson, out _)?["challenges"]?["dns"] is JsonObject legacyDns
+            && legacyDns.ContainsKey("provider"))
+            v.Add("acmeIssuerJson", "Remove challenges.dns.provider from the ACME issuer JSON: the DNS provider is now configured under ACME challenge (Settings > Caddy).");
 
         for (var i = 0; i < s.DnsResolvers.Count; i++)
             if (!IsHostPort(s.DnsResolvers[i]))
@@ -453,7 +470,11 @@ public static partial class ModelValidation
                     v.Add("storagePath", $"The manager cannot write to '{s.StoragePath}': {writeError} On a share, grant the computer accounts (DOMAIN\\SERVER$) modify rights.");
                 break;
             case StorageBackend.Redis:
-                if (s.RedisAddresses.Count == 0) v.Add("redisAddresses", "Enter at least one Redis address (host:port).");
+                if (s.RedisAddresses.Count == 0) v.Add("redisAddresses", "Enter the Redis server address (host:port).");
+                // caddy-storage-redis v1.8 creates a Redis Cluster client whenever it has more than one address (even with
+                // client_type "simple"), which a normal primary/replica Redis rejects ("cluster support disabled").
+                else if (s.RedisAddresses.Count > 1)
+                    v.Add("redisAddresses", "Enter a single Redis address (host:port). Several addresses make the Redis storage plugin use a Redis Cluster client, which a normal (primary/replica) Redis rejects; Redis Cluster and Sentinel are not supported yet.");
                 for (var i = 0; i < s.RedisAddresses.Count; i++)
                     if (!IsHostPort(s.RedisAddresses[i])) v.Add($"redisAddresses[{i}]", $"'{s.RedisAddresses[i]}' is not host:port (e.g. redis.corp.local:6379).");
                 if (s.RedisDb < 0) v.Add("redisDb", "The Redis database index cannot be negative.");
@@ -479,6 +500,19 @@ public static partial class ModelValidation
                 break;
         }
         return v.IsValid ? null : v.ToResult();
+    }
+
+    /// <summary>The field error when the installed Caddy binary is known and lacks the DNS provider module; null otherwise.</summary>
+    internal static string? DnsProviderModuleProblem(string? provider, IReadOnlyCollection<string>? modules)
+    {
+        var name = DnsProviders.DnsProviderCatalog.Normalize(provider);
+        if (name is null || modules is null) return null;
+        var module = DnsProviders.DnsProviderCatalog.ModulePrefix + name;
+        if (modules.Contains(module, StringComparer.Ordinal)) return null;
+        var plugin = DnsProviders.DnsProviderCatalog.Find(name)?.Package;
+        return plugin is not null
+            ? $"The installed Caddy binary does not include {module}. Add the plugin {plugin} under Caddy > Plugins and rebuild Caddy first (Settings > Caddy offers this), then save again."
+            : $"The installed Caddy binary does not include {module}. Add the plugin that provides it under Caddy > Plugins and rebuild Caddy first, then save again.";
     }
 
     /// <summary>host:port with a valid host (IPv6 in brackets) and port.</summary>

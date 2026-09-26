@@ -44,6 +44,9 @@ public static class ConfigModule
         services.AddHostedService<ConfigStartup>();
 
         services.AddSingleton<ConfigMutationGate>();
+        services.AddSingleton<IConfigMutationLock>(sp => sp.GetRequiredService<ConfigMutationGate>());
+        services.AddSingleton<SecretScrubber>();
+        services.AddSingleton<ISecretScrubber>(sp => sp.GetRequiredService<SecretScrubber>());
         return services;
     }
 

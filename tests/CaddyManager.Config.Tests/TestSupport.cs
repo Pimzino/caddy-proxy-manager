@@ -27,10 +27,25 @@ public sealed class TempEnv : IDisposable
 
     public LiteStore Store => _store ??= new LiteStore(Paths);
 
+    private readonly List<string> _extraDirs = new();
+
+    /// <summary>
+    /// A folder for static site content OUTSIDE the data folder (next to it; deleted on dispose): every server refuses to
+    /// serve its data folder or anything inside it.
+    /// </summary>
+    public string WebRoot(string name = "www")
+    {
+        var dir = Path.Combine(Path.GetDirectoryName(Dir)!, Path.GetFileName(Dir) + "-" + name);
+        Directory.CreateDirectory(dir);
+        if (!_extraDirs.Contains(dir)) _extraDirs.Add(dir);
+        return dir;
+    }
+
     public void Dispose()
     {
         _store?.Dispose();
-        try { Directory.Delete(Dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        foreach (var d in _extraDirs.Append(Dir))
+            try { Directory.Delete(d, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 }
 

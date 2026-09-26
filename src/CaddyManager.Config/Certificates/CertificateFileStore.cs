@@ -32,14 +32,7 @@ public sealed class CertificateFileStore(IStore store, AppPaths paths, ILogger<C
     public const string ChainFileName = "fullchain.pem";
     public const string KeyFileName = "privkey.pem";
 
-    public string StoreRoot
-    {
-        get
-        {
-            var custom = store.GetSettings<CaddySettings>().CertificateStorePath;
-            return string.IsNullOrWhiteSpace(custom) ? paths.DefaultCertificateStore : custom.Trim();
-        }
-    }
+    public string StoreRoot => Services.CaddyStorage.CertificateStoreRoot(store.GetSettings<CaddySettings>(), paths);
 
     /// <summary>Snapshot of existing files so a failed transaction can restore them.</summary>
     public sealed record FileBackup(string CertPath, byte[]? Cert, string KeyPath, byte[]? Key);

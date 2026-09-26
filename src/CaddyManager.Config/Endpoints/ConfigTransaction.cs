@@ -7,10 +7,48 @@ using Microsoft.Extensions.Logging;
 
 namespace CaddyManager.Config.Endpoints;
 
-/// <summary>Serialises configuration mutations (persist → apply → rollback) across all Config endpoints.</summary>
-public sealed class ConfigMutationGate
+/// <summary>
+/// Serialises configuration mutations (persist → apply → rollback) across all Config endpoints, and — as
+/// IConfigMutationLock — with other modules (cluster replication on a node).
+/// </summary>
+public sealed class ConfigMutationGate : IConfigMutationLock
 {
     public SemaphoreSlim Lock { get; } = new(1, 1);
+
+    public async Task<IDisposable> AcquireAsync(CancellationToken ct = default)
+    {
+        await Lock.WaitAsync(ct);
+        return new Releaser(Lock);
+    }
+
+    public async Task<IDisposable?> TryAcquireAsync(TimeSpan timeout, CancellationToken ct = default) =>
+        await Lock.WaitAsync(timeout, ct) ? new Releaser(Lock) : null;
+
+    /// <summary>Releases the lock once, however often it is disposed.</summary>
+    private sealed class Releaser(SemaphoreSlim sem) : IDisposable
+    {
+        private int _released;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0) sem.Release();
+        }
+    }
+}
+
+/// <summary>
+/// A change prepared under the gate by <see cref="ConfigTransaction.RunPreparedAsync"/>: either a result to return right
+/// away (validation failure) or the persist / rollback / success steps.
+/// </summary>
+internal sealed record PreparedChange(
+    IResult? Early,
+    string Reason = "",
+    Action? Persist = null,
+    Action? Rollback = null,
+    Func<ApplyResult, IResult>? OnSuccess = null)
+{
+    public static PreparedChange Stop(IResult result) => new(result);
+    public static PreparedChange Run(string reason, Action persist, Action rollback, Func<ApplyResult, IResult> onSuccess) =>
+        new(null, reason, persist, rollback, onSuccess);
 }
 
 internal static class ConfigTransaction
@@ -35,53 +73,82 @@ internal static class ConfigTransaction
         bool affectsCaddyfileMode = false,
         bool concernsStreams = false)
     {
-        var sp = http.RequestServices;
-        var gate = sp.GetRequiredService<ConfigMutationGate>();
-        var config = sp.GetRequiredService<ICaddyConfigService>();
-        var store = sp.GetRequiredService<IStore>();
-        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("CaddyManager.Config.Transaction");
-
+        var gate = http.RequestServices.GetRequiredService<ConfigMutationGate>();
         await gate.Lock.WaitAsync(http.RequestAborted);
         try
         {
-            Services.CaddyConfigService.AmbientUser.Value = UserName(http);
-            persist();
-            ApplyResult apply;
-            try
-            {
-                if (!affectsCaddyfileMode && store.GetSettings<CaddySettings>().Mode == ConfigMode.Caddyfile)
-                {
-                    apply = new ApplyResult
-                    {
-                        Success = true,
-                        Warnings = ["Caddyfile mode is active: the change was saved but is not used until you switch back to Managed mode."],
-                    };
-                }
-                else
-                {
-                    // Never cancel half-way: the DB and Caddy must end up consistent even if the client disconnects.
-                    apply = await config.ApplyAsync(reason, CancellationToken.None);
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Apply failed unexpectedly ({Reason}); rolling back", reason);
-                SafeRollback(rollback, logger, reason);
-                throw;
-            }
-
-            if (!apply.Success)
-            {
-                SafeRollback(rollback, logger, reason);
-                return ApiResults.Failed(RejectedTitle, apply.Error ?? "Caddy reported an error without details.");
-            }
-            if (!concernsStreams) apply = apply.WithoutStreamsSkippedWarning();
-            return onSuccess(apply);
+            return await RunLockedAsync(http, reason, persist, rollback, onSuccess, affectsCaddyfileMode, concernsStreams);
         }
         finally
         {
             gate.Lock.Release();
         }
+    }
+
+    /// <summary>
+    /// Like <see cref="RunAsync"/>, but <paramref name="prepare"/> runs under the gate too, so it reads the state that is
+    /// current when the change is persisted: a change that rewrites a whole document (the Caddy settings) must not be built
+    /// from a copy read before another mutation (e.g. cluster replication) finished, or it silently reverts that mutation.
+    /// </summary>
+    public static async Task<IResult> RunPreparedAsync(HttpContext http, Func<Task<PreparedChange>> prepare,
+        bool affectsCaddyfileMode = false, bool concernsStreams = false)
+    {
+        var gate = http.RequestServices.GetRequiredService<ConfigMutationGate>();
+        await gate.Lock.WaitAsync(http.RequestAborted);
+        try
+        {
+            var change = await prepare();
+            if (change.Early is not null) return change.Early;
+            return await RunLockedAsync(http, change.Reason, change.Persist!, change.Rollback!, change.OnSuccess!, affectsCaddyfileMode, concernsStreams);
+        }
+        finally
+        {
+            gate.Lock.Release();
+        }
+    }
+
+    /// <summary>Persist → apply → rollback on rejection; the caller holds the gate.</summary>
+    private static async Task<IResult> RunLockedAsync(HttpContext http, string reason, Action persist, Action rollback,
+        Func<ApplyResult, IResult> onSuccess, bool affectsCaddyfileMode, bool concernsStreams)
+    {
+        var sp = http.RequestServices;
+        var config = sp.GetRequiredService<ICaddyConfigService>();
+        var store = sp.GetRequiredService<IStore>();
+        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("CaddyManager.Config.Transaction");
+
+        Services.CaddyConfigService.AmbientUser.Value = UserName(http);
+        persist();
+        ApplyResult apply;
+        try
+        {
+            if (!affectsCaddyfileMode && store.GetSettings<CaddySettings>().Mode == ConfigMode.Caddyfile)
+            {
+                apply = new ApplyResult
+                {
+                    Success = true,
+                    Warnings = ["Caddyfile mode is active: the change was saved but is not used until you switch back to Managed mode."],
+                };
+            }
+            else
+            {
+                // Never cancel half-way: the DB and Caddy must end up consistent even if the client disconnects.
+                apply = await config.ApplyAsync(reason, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Apply failed unexpectedly ({Reason}); rolling back", reason);
+            SafeRollback(rollback, logger, reason);
+            throw;
+        }
+
+        if (!apply.Success)
+        {
+            SafeRollback(rollback, logger, reason);
+            return ApiResults.Failed(RejectedTitle, apply.Error ?? "Caddy reported an error without details.");
+        }
+        if (!concernsStreams) apply = apply.WithoutStreamsSkippedWarning();
+        return onSuccess(apply);
     }
 
     private static void SafeRollback(Action rollback, ILogger logger, string reason)

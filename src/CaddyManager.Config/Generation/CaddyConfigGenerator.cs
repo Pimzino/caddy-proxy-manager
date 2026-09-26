@@ -1154,6 +1154,25 @@ public static partial class CaddyConfigGenerator
             });
             return;
         }
+        // Fail closed as well when the root is (inside or above) a folder THIS server must never publish: its data folder,
+        // Caddy storage, its certificate store (node-local), the shared storage folder, the program or Windows folders.
+        // The API checks roots against the folders of the server where they are entered; this covers hosts replicated to a
+        // node with other folders and roots that a later storage or certificate store change turned into such a folder.
+        if (Services.CaddyStorage.StaticRootProblem(root, ctx.Input.Settings, ctx.Input.Paths) is { } problem)
+        {
+            ctx.Warn($"Host '{label}': {problem.Message} Requests receive 403 until the root folder is changed.");
+            routes.Add(new JsonObject
+            {
+                ["handle"] = new JsonArray(new JsonObject
+                {
+                    ["handler"] = "static_response",
+                    ["status_code"] = 403,
+                    ["body"] = "403 Forbidden - this folder may not be served\n",
+                    ["headers"] = new JsonObject { ["Content-Type"] = new JsonArray("text/plain; charset=utf-8") },
+                }),
+            });
+            return;
+        }
         // file_server hides nothing by default (only the Caddyfile adapter hides the Caddyfile), so .git/, .env and
         // web.config were downloadable. Answer 404 for them, except under /.well-known/ (RFC 8615: security.txt,
         // apple-app-site-association, ...) where only dotfiles inside are hidden. `hide` alone is not enough: it is
@@ -1328,6 +1347,7 @@ public static partial class CaddyConfigGenerator
             foreach (var (k, v) in extra)
             {
                 if (k is "listen" or "routes") { ctx.Warn($"Server option '{k}' is managed by Caddy Proxy Manager and was ignored."); continue; }
+                if (k == "logs") { MergeServerLogs(srv, v, s, ctx); continue; }
                 srv[k] = v?.DeepClone();
             }
         }
@@ -1335,6 +1355,37 @@ public static partial class CaddyConfigGenerator
         {
             ctx.Warn($"Server options JSON is invalid ({ex.Message}); it was ignored.");
         }
+    }
+
+    /// <summary>
+    /// Server option "logs" is merged into the generated servers.*.logs instead of replacing it: logger_names (per-host
+    /// access logs) is always the generated one, and with traffic statistics skip_unmapped_hosts stays off, because
+    /// statistics need every request logged. Other keys (should_log_credentials, skip_hosts, ...) apply. A non-object
+    /// value (null to turn access logging off) cannot keep those guarantees and is ignored while the server logs.
+    /// https://caddyserver.com/docs/json/apps/http/servers/logs/
+    /// </summary>
+    private static void MergeServerLogs(JsonObject srv, JsonNode? value, CaddySettings s, Ctx ctx)
+    {
+        var generated = srv["logs"] as JsonObject;
+        if (value is not JsonObject user)
+        {
+            if (generated is not null)
+                ctx.Warn(s.TrafficStatsEnabled
+                    ? "Server option 'logs' must be a JSON object; it was ignored (traffic statistics need access logging). Turn traffic statistics off under Settings > Caddy to stop access logging."
+                    : "Server option 'logs' must be a JSON object; it was ignored (per-host access logs need access logging).");
+            else if (value is not null) ctx.Warn("Server option 'logs' must be a JSON object; it was ignored.");
+            return;
+        }
+        var extra = user.DeepClone().AsObject();
+        if (extra.Remove("logger_names"))
+            ctx.Warn("Server option 'logs.logger_names' is managed by Caddy Proxy Manager (per-host access logs) and was ignored.");
+        if (s.TrafficStatsEnabled && extra["skip_unmapped_hosts"] is JsonValue skip && skip.GetValueKind() == JsonValueKind.True)
+        {
+            extra.Remove("skip_unmapped_hosts");
+            ctx.Warn("Server option 'logs.skip_unmapped_hosts' was ignored: traffic statistics need every request logged. Turn traffic statistics off under Settings > Caddy to use it.");
+        }
+        if (generated is null) srv["logs"] = extra;
+        else CaddyJson.DeepMerge(generated, extra);
     }
 
     /// <summary>
@@ -1461,7 +1512,10 @@ public static partial class CaddyConfigGenerator
             var overrideDomain = EffectiveDnsOverrideDomain(site.Host, s);
             foreach (var d in site.Domains)
             {
-                var dns = challenge == AcmeChallengeType.Dns || (IsWildcard(d) && providerConfigured);
+                // IP addresses never go into a DNS policy: dns-01 cannot validate IP identifiers (RFC 8738 §7), and a
+                // DNS solver makes certmagic use the DNS challenge exclusively, so they would never be issued.
+                var dns = !NetUtil.TryParseIp(d.Trim('[', ']'), out _)
+                          && (challenge == AcmeChallengeType.Dns || (IsWildcard(d) && providerConfigured));
                 acmeNames.Add((d, dns, dns ? overrideDomain : null));
             }
         }
@@ -1527,6 +1581,15 @@ public static partial class CaddyConfigGenerator
             if (ctx.Input.InstalledModules is { } installed && !installed.Contains(DnsProviderCatalog.ModulePrefix + provider, StringComparer.Ordinal))
                 ctx.Warn($"The DNS provider '{provider}' is not included in the installed Caddy binary (module '{DnsProviderCatalog.ModulePrefix}{provider}'), so DNS challenges fail. Add the plugin '{DnsProviderCatalog.PackagePrefix}{provider}' under Caddy > Plugins and rebuild Caddy.");
             var dns = DnsChallenge(s, ctx);
+            // The selected provider wins over a legacy challenges.dns.provider in the ACME issuer JSON: deep-merging the
+            // two would mix both providers' fields into one object that no plugin accepts (Caddy rejects the config).
+            var dnsExtra = issuerExtra;
+            if (issuerExtra?["challenges"]?["dns"] is JsonObject legacy && legacy.ContainsKey("provider"))
+            {
+                dnsExtra = issuerExtra.DeepClone().AsObject();
+                dnsExtra["challenges"]!["dns"]!.AsObject().Remove("provider");
+                ctx.Warn($"The ACME issuer JSON sets challenges.dns.provider; the DNS provider selected under Settings > Caddy (ACME challenge), '{provider}', is used for DNS challenges instead. Remove challenges.dns.provider from the ACME issuer JSON.");
+            }
             foreach (var (overrideDomain, domains) in dnsGroups)
             {
                 // override_domain: certmagic writes the TXT record at this name instead of _acme-challenge.<domain>
@@ -1542,7 +1605,7 @@ public static partial class CaddyConfigGenerator
                     // issuer. docs/research/round3-dns01.md §1 ;
                     // https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/
                     iss!["challenges"] = new JsonObject { ["dns"] = groupDns.DeepClone() };
-                    if (issuerExtra is not null) CaddyJson.DeepMerge(iss.AsObject(), issuerExtra);
+                    if (dnsExtra is not null) CaddyJson.DeepMerge(iss.AsObject(), dnsExtra);
                 }
                 policies.Add(new JsonObject { ["subjects"] = StringArray(domains), ["issuers"] = issuers });
             }
@@ -1619,7 +1682,8 @@ public static partial class CaddyConfigGenerator
     /// DNS provider is configured (wildcards always use DNS then). Only such hosts may choose a delegation.
     /// </summary>
     public static bool UsesDnsChallenge(SiteHost h, CaddySettings s) =>
-        h.Tls == TlsMode.Acme && (EffectiveChallenge(h, s) == AcmeChallengeType.Dns || (DnsProviderConfigured(s) && h.Domains.Any(IsWildcard)));
+        h.Tls == TlsMode.Acme && (EffectiveChallenge(h, s) == AcmeChallengeType.Dns || (DnsProviderConfigured(s) && h.Domains.Any(IsWildcard)))
+        && h.Domains.Any(d => !NetUtil.TryParseIp(d.Trim('[', ']'), out _)); // IP names always use HTTP / TLS-ALPN
 
     /// <summary>
     /// The delegation name (challenges.dns.override_domain) of a host's DNS-challenge names: Custom → the host's name,

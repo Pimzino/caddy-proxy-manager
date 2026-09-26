@@ -12,6 +12,21 @@ namespace CaddyManager.Config.Endpoints;
 
 internal static class HostEndpoints
 {
+    /// <summary>The installed Caddy modules when the host uses the DNS challenge (to check the provider plugin); else null.</summary>
+    private static async Task<IReadOnlyCollection<string>?> DnsModulesAsync(HttpContext http, SiteHost host, IStore store)
+    {
+        if (!CaddyConfigGenerator.UsesDnsChallenge(host, store.GetSettings<CaddySettings>())) return null;
+        if (http.RequestServices.GetService<CaddyConfigService>() is not { } config) return null;
+        try
+        {
+            return await config.RefreshModulesAsync(http.RequestAborted);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null; // unknown binary: the plugin is not checked
+        }
+    }
+
     public static void Map(IEndpointRouteBuilder app)
     {
         var g = app.MapGroup("/api/hosts").RequireAuthorization(Policies.Viewer);
@@ -43,7 +58,7 @@ internal static class HostEndpoints
             body.CreatedAt = body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
             if (await EndpointSecurity.CheckHostAsync(http, body, null, store) is { } denied) return denied;
-            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>()) is { } problem) return problem;
+            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>(), await DnsModulesAsync(http, body, store)) is { } problem) return problem;
 
             var col = store.Col<SiteHost>();
             var isAdmin = await EndpointSecurity.IsAdminAsync(http);
@@ -68,7 +83,7 @@ internal static class HostEndpoints
             body.UpdatedAt = DateTime.UtcNow;
             ModelValidation.Normalize(body);
             if (await EndpointSecurity.CheckHostAsync(http, body, existing, store) is { } denied) return denied;
-            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>()) is { } problem) return problem;
+            if (ModelValidation.Validate(body, store, http.RequestServices.GetService<ISecretProtector>(), await DnsModulesAsync(http, body, store)) is { } problem) return problem;
 
             var isAdmin = await EndpointSecurity.IsAdminAsync(http);
             return await ConfigTransaction.RunAsync(http, $"Host updated: {Name(body)}",

@@ -9,7 +9,9 @@ using Microsoft.AspNetCore.Routing;
 
 namespace CaddyManager.Config.Endpoints;
 
-public sealed record DelegationCheckInput(string? HostId, List<string>? Domains, string? Target, bool? PublicResolvers);
+/// <param name="PublicResolvers">true: ask the public resolvers (what the CA sees), even when resolvers are configured.</param>
+/// <param name="SystemResolvers">true: ask this server's own (operating system) resolvers, e.g. Active Directory DNS.</param>
+public sealed record DelegationCheckInput(string? HostId, List<string>? Domains, string? Target, bool? PublicResolvers, bool? SystemResolvers = null);
 
 /// <summary>POST /api/dns/delegation-check (viewer): are the _acme-challenge CNAME records of DNS challenge delegation in place?</summary>
 internal static class DnsDelegationEndpoints
@@ -21,6 +23,8 @@ internal static class DnsDelegationEndpoints
         app.MapPost("/api/dns/delegation-check", async (DelegationCheckInput? body, IStore store, CancellationToken ct) =>
         {
             body ??= new DelegationCheckInput(null, null, null, null);
+            if (body.PublicResolvers == true && body.SystemResolvers == true)
+                return ApiResults.BadRequest("Choose either the public resolvers or the system resolvers, not both.");
             var settings = store.GetSettings<CaddySettings>();
             var v = new Validator();
             List<string> domains;
@@ -60,11 +64,16 @@ internal static class DnsDelegationEndpoints
             if (domains.Count > MaxDomains) v.Add("domains", $"At most {MaxDomains} domains can be checked at once.");
             if (!v.IsValid) return v.ToResult();
 
-            // An explicit request for the public resolvers wins (what the CA sees); otherwise the resolvers Caddy uses for
-            // its propagation checks (Settings > Caddy), otherwise the operating system's.
+            // An explicit choice wins: the public resolvers (what the CA sees) or the operating system's. Otherwise the
+            // resolvers Caddy itself uses: those of Settings > Caddy when set, else the public resolvers — with no
+            // resolvers configured, certmagic (v0.25.3 RecursiveNameservers) reads /etc/resolv.conf, which does not exist
+            // on Windows, and falls back to public DNS (8.8.8.8, 8.8.4.4, 1.1.1.1, 1.0.0.1). The OS resolvers can differ
+            // from both on split-horizon (e.g. Active Directory) networks.
+            // https://github.com/caddyserver/certmagic/blob/v0.25.3/dnsutil.go
             IReadOnlyList<string>? resolvers = body.PublicResolvers == true ? DnsDelegationChecker.PublicResolvers
+                : body.SystemResolvers == true ? null
                 : settings.DnsResolvers.Count > 0 ? settings.DnsResolvers
-                : null;
+                : DnsDelegationChecker.PublicResolvers;
             return Results.Ok(await DnsDelegationChecker.CheckAsync(domains, target!, resolvers, ct));
         }).RequireAuthorization(Policies.Viewer);
     }

@@ -19,7 +19,12 @@ internal static class LogTail
     /// </summary>
     public const long MaxScanBytesFiltered = 64L * 1024 * 1024;
 
-    public static List<string> Read(string path, int lines, string? filter = null, long maxScanBytes = MaxScanBytesFiltered)
+    /// <param name="transform">
+    /// Applied to every returned line (e.g. secret scrubbing). With a filter, a line is returned only when both its raw and
+    /// its transformed text match: otherwise a caller could probe for a scrubbed secret's characters by searching for them.
+    /// </param>
+    public static List<string> Read(string path, int lines, string? filter = null, long maxScanBytes = MaxScanBytesFiltered,
+        Func<string, string>? transform = null)
     {
         lines = Math.Clamp(lines, 1, MaxLines);
         var result = new List<string>(Math.Min(lines, 1024));
@@ -66,8 +71,15 @@ internal static class LogTail
             }
             var text = Encoding.UTF8.GetString(bytes, start, len - start);
             if (truncated) text = "…" + text;
-            if (q is null || text.Contains(q, StringComparison.OrdinalIgnoreCase))
-                result.Add(text);
+            // Only lines that match are transformed (cheap on large scans), and they must still match afterwards: a line
+            // that matched only through text the transform removed (a scrubbed secret) is dropped.
+            if (q is not null && !text.Contains(q, StringComparison.OrdinalIgnoreCase)) return;
+            if (transform is not null)
+            {
+                text = transform(text);
+                if (q is not null && !text.Contains(q, StringComparison.OrdinalIgnoreCase)) return;
+            }
+            result.Add(text);
         }
 
         while (pos > 0 && result.Count < lines && (q is null || scanned < maxScanBytes))

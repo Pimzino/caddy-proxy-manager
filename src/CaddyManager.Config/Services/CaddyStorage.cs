@@ -17,6 +17,23 @@ public static class CaddyStorage
         _ => null,
     };
 
+    /// <summary>The shared file-system storage folder when that backend is used (never served as a static root), else null.</summary>
+    public static string? SharedStorageRoot(CaddySettings s) =>
+        s.StorageBackend == StorageBackend.FileSystem && !string.IsNullOrWhiteSpace(s.StoragePath) ? s.StoragePath.Trim() : null;
+
+    /// <summary>The certificate store of this server: CaddySettings.CertificateStorePath (node-local) or the default.</summary>
+    public static string CertificateStoreRoot(CaddySettings s, AppPaths paths) =>
+        string.IsNullOrWhiteSpace(s.CertificateStorePath) ? paths.DefaultCertificateStore : s.CertificateStorePath.Trim();
+
+    /// <summary>
+    /// Why this server must not serve the static root, judged against THIS server's protected folders (data folder, Caddy
+    /// storage, its certificate store, the shared storage folder, program and Windows folders); null when it may. UNC roots
+    /// are allowed (administrators may use them; operators are stopped by the API). Used by the generator, so hosts that
+    /// arrive by replication or become unsafe through a later settings change are refused on every server.
+    /// </summary>
+    public static Validation.PathProblem? StaticRootProblem(string? root, CaddySettings s, AppPaths paths) =>
+        Validation.PathGuard.CheckStaticRoot(root, paths, CertificateStoreRoot(s, paths), isAdmin: true, SharedStorageRoot(s));
+
     /// <summary>Display name of a non-folder backend, e.g. "Redis".</summary>
     public static string BackendName(StorageBackend b) => b switch
     {

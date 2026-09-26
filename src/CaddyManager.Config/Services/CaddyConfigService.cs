@@ -210,7 +210,12 @@ public sealed partial class CaddyConfigService(
     }
 
     /// <summary>Removes every configured secret value from a message Caddy produced (errors can echo credentials).</summary>
-    public string Scrub(string message) => SettingsSecrets.Scrub(message, SecretValues());
+    public string Scrub(string message)
+    {
+        var scrubbed = SettingsSecrets.Scrub(message, SecretValues());
+        // Also secrets configured earlier in this process and credential-like query parameters (SecretScrubber).
+        return services.GetService<ISecretScrubber>()?.Scrub(scrubbed) ?? scrubbed;
+    }
 
     private async Task<ApplyResult> ApplyCoreAsync(string reason, CancellationToken ct)
     {

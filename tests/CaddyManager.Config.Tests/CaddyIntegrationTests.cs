@@ -69,7 +69,7 @@ public sealed class CaddyIntegrationTests
             Subjects = parsed.Metadata.Subjects, NotAfter = parsed.Metadata.NotAfter, Thumbprint = parsed.Metadata.Thumbprint,
         });
 
-        var staticRoot = Path.Combine(s.Paths.DataDir, "www");
+        var staticRoot = s.Env.WebRoot();
         Directory.CreateDirectory(staticRoot);
         File.WriteAllText(Path.Combine(staticRoot, "index.html"), "<h1>spa index</h1>");
         File.WriteAllText(Path.Combine(staticRoot, "hello.txt"), "hello static");

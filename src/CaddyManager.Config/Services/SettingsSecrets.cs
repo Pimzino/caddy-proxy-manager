@@ -123,16 +123,43 @@ public sealed record SettingsSecrets
         }
     }
 
-    /// <summary>Replaces every secret (raw and JSON-escaped) in the text with "***".</summary>
-    public static string Scrub(string text, IReadOnlyList<string> secrets)
+    /// <summary>
+    /// Replaces every secret in the text with "***": the raw value, its JSON-escaped forms (Caddy's zap logs escape only
+    /// quotes, backslashes and control characters; System.Text.Json also escapes HTML-sensitive characters) and its
+    /// URL-encoded forms (DNS provider clients such as libdns/duckdns, namesilo and namecheap put the key into the query
+    /// string, and a failed request's Go url.Error prints that URL: percent-encoding per RFC 3986, "+" for spaces in query
+    /// values, upper- or lower-case hex).
+    /// </summary>
+    public static string Scrub(string text, IReadOnlyList<string> secrets) => ScrubVariants(text, Variants(secrets));
+
+    /// <summary>Replaces each of the given (already expanded, longest first) forms with "***".</summary>
+    public static string ScrubVariants(string text, IReadOnlyList<string> variants)
     {
-        if (string.IsNullOrEmpty(text) || secrets.Count == 0) return text;
-        foreach (var secret in secrets)
-        {
-            text = text.Replace(secret, Validation.ConfigRedactor.Mask, StringComparison.Ordinal);
-            var escaped = JsonEncodedText.Encode(secret).ToString();
-            if (escaped != secret) text = text.Replace(escaped, Validation.ConfigRedactor.Mask, StringComparison.Ordinal);
-        }
+        if (string.IsNullOrEmpty(text) || variants.Count == 0) return text;
+        foreach (var v in variants)
+            if (text.Contains(v, StringComparison.Ordinal)) text = text.Replace(v, Validation.ConfigRedactor.Mask, StringComparison.Ordinal);
         return text;
     }
+
+    /// <summary>Every textual form a secret can take in Caddy's output (see <see cref="Scrub"/>), distinct and longest first.</summary>
+    public static IReadOnlyList<string> Variants(IEnumerable<string> secrets)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        void Add(string? v) { if (!string.IsNullOrEmpty(v) && v.Trim().Length >= MinScrubLength) set.Add(v); }
+        foreach (var secret in secrets)
+        {
+            Add(secret);
+            Add(JsonEncodedText.Encode(secret).ToString());
+            Add(JsonEncodedText.Encode(secret, System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping).ToString());
+            var percent = Uri.EscapeDataString(secret);        // RFC 3986 (Go url.PathEscape / QueryEscape apart from spaces)
+            Add(percent);
+            Add(percent.Replace("%20", "+", StringComparison.Ordinal)); // Go url.QueryEscape / url.Values.Encode
+            Add(System.Net.WebUtility.UrlEncode(secret));        // HTML form encoding
+            foreach (var encoded in set.Where(x => x.Contains('%')).ToList()) Add(LowerHex(encoded));
+        }
+        return set.OrderByDescending(v => v.Length).ThenBy(v => v, StringComparer.Ordinal).ToList();
+    }
+
+    private static string LowerHex(string percentEncoded) =>
+        System.Text.RegularExpressions.Regex.Replace(percentEncoded, "%[0-9A-F]{2}", m => m.Value.ToLowerInvariant());
 }

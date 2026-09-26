@@ -35,6 +35,10 @@ public sealed record DnsProviderInfo
 /// The caddy-dns providers the settings UI offers with typed fields (docs/research/round3-dns01.md §2, verified against
 /// the provider structs of github.com/caddy-dns/* at the time of Caddy v2.11.4). Always the github.com/caddy-dns
 /// packages: third-party packages register duplicate module ids (e.g. caddy-dns/he vs hetzner).
+/// Hetzner is deliberately absent: caddyserver.com only builds github.com/caddy-dns/hetzner v1 (libdns/hetzner v1, field
+/// auth_api_token, the dns.hetzner.com API that Hetzner shut down in May 2026); the Cloud DNS provider is the separate
+/// module path github.com/caddy-dns/hetzner/v2, which caddyserver.com does not offer (checked 2026-09-26). v2 registers
+/// the same module id, so add it back only with a version check once it can be built.
 /// Other providers can still be used by name (any module dns.providers.&lt;name&gt;) with untyped string options.
 /// </summary>
 public static partial class DnsProviderCatalog
@@ -107,9 +111,6 @@ public static partial class DnsProviderCatalog
             T("application_key", "Application key", required: true),
             S("application_secret", "Application secret", required: true),
             S("consumer_key", "Consumer key", required: true)),
-        P("hetzner", "Hetzner",
-            "This provider uses the Hetzner Cloud DNS API (a Cloud API token). Never build it together with caddy-dns/he: both register the same module id.",
-            S("api_token", "API token", required: true)),
         P("godaddy", "GoDaddy", "The token has the form <key>:<secret>.",
             S("api_token", "API token", required: true, placeholder: "key:secret")),
         P("porkbun", "Porkbun", null,
@@ -161,8 +162,10 @@ public static partial class DnsProviderCatalog
             S("password", "Password", required: true),
             T("subdomain", "Subdomain", required: true),
             T("server_url", "Server URL", required: true, placeholder: "https://auth.acme-dns.io")),
-        P("rfc2136", "RFC 2136 (BIND, Windows DNS, Knot, ...)",
-            "Dynamic DNS updates signed with a TSIG key. The server must allow updates for the zone with this key.",
+        P("rfc2136", "RFC 2136 (BIND, Knot, PowerDNS, ...)",
+            "Dynamic DNS updates signed with a TSIG key. The server must allow updates for the zone with this key. " +
+            "Windows DNS (Active Directory) accepts only Kerberos-signed (GSS-TSIG) secure updates, which this provider cannot send: " +
+            "for a zone on Windows DNS, delegate _acme-challenge with a CNAME to a zone on a TSIG-capable server or a supported DNS provider (see Challenge delegation).",
             T("server", "Server", required: true, placeholder: "10.0.0.53:53"),
             T("key_name", "TSIG key name", required: true),
             T("key_alg", "TSIG algorithm", required: true, placeholder: "hmac-sha256"),

@@ -361,10 +361,14 @@ internal sealed class MonitorService(
         {
             var paths = services.GetService<AppPaths>();
             if (paths is null) return [];
+            // The lines go into an event and its notifications: scrub credentials (a DNS provider's error can quote the
+            // API key) before truncating, so no partial secret survives.
+            var scrubber = services.GetService<ISecretScrubber>();
             return LogTail.Read(paths.CaddyProcessLog, 400, domain, maxScanBytes: 16L * 1024 * 1024)
                 .Where(l => (l.Contains("\"tls.obtain\"", StringComparison.Ordinal) || l.Contains("\"tls.issuance", StringComparison.Ordinal)) &&
                             (l.Contains("\"level\":\"error\"", StringComparison.Ordinal) || l.Contains("\"level\":\"warn\"", StringComparison.Ordinal)))
                 .TakeLast(3)
+                .Select(l => scrubber?.Scrub(l) ?? l)
                 .Select(l => l.Length > 800 ? l[..800] + "…" : l)
                 .ToList();
         }

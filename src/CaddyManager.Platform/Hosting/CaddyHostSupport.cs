@@ -221,7 +221,26 @@ public sealed class CaddyHostSupport(AppPaths paths, IServiceProvider services, 
         }
     }
 
-    /// <summary>Last lines of the Caddy process log, for error messages.</summary>
+    /// <summary>
+    /// Replaces every configured secret in text that may contain Caddy output (Config's ISecretScrubber; unchanged when
+    /// that module is absent). Caddy's errors and log lines can quote DNS provider or storage credentials, and status
+    /// errors reach every viewer.
+    /// </summary>
+    public string Scrub(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        try
+        {
+            return services.GetService<ISecretScrubber>()?.Scrub(text) ?? text;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not scrub secrets from a Caddy message");
+            return text;
+        }
+    }
+
+    /// <summary>Last lines of the Caddy process log (secrets scrubbed), for error messages.</summary>
     public string TailLog(int lines = 15)
     {
         try
@@ -232,7 +251,7 @@ public sealed class CaddyHostSupport(AppPaths paths, IServiceProvider services, 
             fs.Seek(Math.Max(0, len - 16 * 1024), SeekOrigin.Begin);
             using var reader = new StreamReader(fs);
             var all = reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            return string.Join('\n', all.TakeLast(lines)).Trim();
+            return Scrub(string.Join('\n', all.TakeLast(lines)).Trim());
         }
         catch (IOException)
         {

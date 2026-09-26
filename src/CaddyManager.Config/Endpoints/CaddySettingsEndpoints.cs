@@ -61,73 +61,114 @@ internal static class SettingsEndpoints
         g.MapPut("/", async (JsonObject? body, IStore store, ISecretProtector secrets, AppPaths paths, CaddyConfigService config, HttpContext http) =>
         {
             if (body is null) return ApiResults.BadRequest("A settings object is required.");
-            var previous = store.GetSettings<CaddySettings>();
-            MergeResult merged;
-            try
-            {
-                merged = Merge(previous, body, secrets);
-            }
-            catch (JsonException ex)
-            {
-                return ApiResults.BadRequest("The settings could not be read: " + ex.Message);
-            }
-            var next = merged.Settings;
-
-            // A managed cluster node only changes its own listeners and local paths; everything else comes from the primary.
-            if (http.RequestServices.GetService<IClusterRole>() is { IsManagedNode: true } role &&
-                (merged.SecretInputs.Count > 0 || ReplicatedChanges(previous, next).Count > 0))
-                return ApiResults.ManagedByPrimary(role.PrimaryName);
-
-            var ui = store.GetSettings<UiSettings>();
-            if (ModelValidation.Validate(next, merged.Plain.AcmeIssuerJson, ui) is { } problem) return problem;
-            var storageChanged = StorageChanged(previous, next, merged.SecretInputs);
-            IReadOnlyCollection<string>? modules = null;
-            try
-            {
-                modules = await config.RefreshModulesAsync(http.RequestAborted);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // unknown binary: plugin checks are skipped
-            }
-            if (ModelValidation.ValidateDnsAndStorage(next, merged.Plain, store, modules, storageChanged) is { } round3) return round3;
-
-            // Changing the admin endpoint must not turn an existing upstream into a path to it.
-            var before = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(previous, ui, includeUi: false)).ToHashSet(StringComparer.Ordinal);
-            var targets = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(next, ui, includeUi: false)).Where(t => !before.Contains(t)).ToList();
-            if (targets.Count > 0)
-                return ApiResults.BadRequest("These enabled hosts/streams would target a protected endpoint with the new settings: " + string.Join("; ", targets));
-
-            // Local → shared folder: carry the issued certificates, ACME accounts and the internal CA over, so switching to
-            // shared storage neither re-issues every certificate nor creates a new internal root.
-            var warnings = new List<string>();
-            if (previous.StorageBackend == StorageBackend.Local && next.StorageBackend == StorageBackend.FileSystem &&
-                CaddyStorage.FileSystemRoot(next, paths) is { } sharedRoot)
-            {
-                try
-                {
-                    var copied = CaddyStorage.CopyMissingFolders(paths.CaddyStorageDir, sharedRoot);
-                    if (copied.Count > 0)
-                        warnings.Add($"Copied {string.Join(", ", copied.Select(c => c + "/"))} from the local Caddy storage to '{sharedRoot}' (issued certificates, ACME accounts and the internal CA are kept). Folders that already existed there were left unchanged.");
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    return ApiResults.BadRequest($"The existing certificates could not be copied to '{sharedRoot}': {ex.Message}");
-                }
-            }
-
-            var changed = ChangedFields(previous, next);
-            return await ConfigTransaction.RunAsync(http, "Caddy settings updated",
-                persist: () => store.SaveSettings(next),
-                rollback: () => store.SaveSettings(previous),
-                onSuccess: apply =>
-                {
-                    ConfigTransaction.Audit(http, "updated", "settings", "caddy", "Caddy settings",
-                        changed.Count == 0 ? null : "changed: " + string.Join(", ", changed));
-                    return Results.Ok(new { item = ToWire(next, secrets, isAdmin: true), apply = apply.WithWarnings(warnings) });
-                },
+            // Everything from reading the current settings to persisting the new ones runs under the mutation gate: the PUT
+            // rewrites the whole document, so building it from a copy read before a concurrent mutation (cluster replication
+            // on a node holds the same gate) would silently revert that mutation.
+            return await ConfigTransaction.RunPreparedAsync(http, () => PrepareAsync(body, store, secrets, paths, config, http),
                 affectsCaddyfileMode: true);
         }).RequireAuthorization(Policies.Admin);
+    }
+
+    /// <summary>Validates the PUT against the settings current under the gate and returns the change to persist and apply.</summary>
+    private static async Task<PreparedChange> PrepareAsync(JsonObject body, IStore store, ISecretProtector secrets, AppPaths paths,
+        CaddyConfigService config, HttpContext http)
+    {
+        var previous = store.GetSettings<CaddySettings>();
+        MergeResult merged;
+        try
+        {
+            merged = Merge(previous, body, secrets);
+        }
+        catch (JsonException ex)
+        {
+            return PreparedChange.Stop(ApiResults.BadRequest("The settings could not be read: " + ex.Message));
+        }
+        var next = merged.Settings;
+
+        // A managed cluster node only changes its own listeners and local paths; everything else comes from the primary.
+        if (http.RequestServices.GetService<IClusterRole>() is { IsManagedNode: true } role &&
+            (merged.SecretInputs.Count > 0 || ReplicatedChanges(previous, next).Count > 0))
+            return PreparedChange.Stop(ApiResults.ManagedByPrimary(role.PrimaryName));
+
+        var ui = store.GetSettings<UiSettings>();
+        if (ModelValidation.Validate(next, merged.Plain.AcmeIssuerJson, ui) is { } problem) return PreparedChange.Stop(problem);
+        var storageChanged = StorageChanged(previous, next, merged.SecretInputs);
+        IReadOnlyCollection<string>? modules = null;
+        try
+        {
+            modules = await config.RefreshModulesAsync(http.RequestAborted);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // unknown binary: plugin checks are skipped
+        }
+        if (ModelValidation.ValidateDnsAndStorage(next, merged.Plain, store, modules, storageChanged) is { } round3) return PreparedChange.Stop(round3);
+
+        // Changing the admin endpoint must not turn an existing upstream into a path to it.
+        var before = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(previous, ui, includeUi: false)).ToHashSet(StringComparer.Ordinal);
+        var targets = EndpointSecurity.ExistingTargetProblems(store, LocalEndpointGuard.Create(next, ui, includeUi: false)).Where(t => !before.Contains(t)).ToList();
+        if (targets.Count > 0)
+            return PreparedChange.Stop(ApiResults.BadRequest("These enabled hosts/streams would target a protected endpoint with the new settings: " + string.Join("; ", targets)));
+
+        // A new shared storage folder or certificate store must not be (inside) a folder a static site already serves:
+        // Caddy would write every private key, the internal CA's included, into a published folder. Checked before the
+        // storage is copied there. (The generator refuses such roots too, on every server.)
+        var roots = NewStaticRootConflicts(store, paths, previous, next);
+        if (roots.Count > 0)
+            return PreparedChange.Stop(ApiResults.BadRequest(
+                "These enabled static sites would publish certificates and private keys with the new storage or certificate store folder: "
+                + string.Join("; ", roots.Select(r => r.Message)) + ". Choose a folder outside every static site root.",
+                roots.GroupBy(r => r.Field).ToDictionary(g => g.Key, g => g.Select(r => r.Message).ToArray())));
+
+        // Local → shared folder: carry the issued certificates, ACME accounts and the internal CA over, so switching to
+        // shared storage neither re-issues every certificate nor creates a new internal root.
+        var warnings = new List<string>();
+        if (previous.StorageBackend == StorageBackend.Local && next.StorageBackend == StorageBackend.FileSystem &&
+            CaddyStorage.FileSystemRoot(next, paths) is { } sharedRoot)
+        {
+            try
+            {
+                var copied = CaddyStorage.CopyMissingFolders(paths.CaddyStorageDir, sharedRoot);
+                if (copied.Count > 0)
+                    warnings.Add($"Copied {string.Join(", ", copied.Select(c => c + "/"))} from the local Caddy storage to '{sharedRoot}' (issued certificates, ACME accounts and the internal CA are kept). Folders that already existed there were left unchanged.");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return PreparedChange.Stop(ApiResults.BadRequest($"The existing certificates could not be copied to '{sharedRoot}': {ex.Message}"));
+            }
+        }
+
+        var changed = ChangedFields(previous, next);
+        return PreparedChange.Run("Caddy settings updated",
+            persist: () => store.SaveSettings(next),
+            rollback: () => store.SaveSettings(previous),
+            onSuccess: apply =>
+            {
+                ConfigTransaction.Audit(http, "updated", "settings", "caddy", "Caddy settings",
+                    changed.Count == 0 ? null : "changed: " + string.Join(", ", changed));
+                return Results.Ok(new { item = ToWire(next, secrets, isAdmin: true), apply = apply.WithWarnings(warnings) });
+            });
+    }
+
+    /// <summary>
+    /// For every enabled static host whose root the new settings make unservable on this server (a new shared storage
+    /// folder or certificate store at, inside or above it) while the current settings allow it: the settings field that
+    /// causes it (storagePath or certificateStorePath) and "host (root): reason".
+    /// </summary>
+    internal static List<(string Field, string Message)> NewStaticRootConflicts(IStore store, AppPaths paths, CaddySettings previous, CaddySettings next)
+    {
+        // The new storage with the current certificate store: a conflict there comes from the storage change.
+        var storageOnly = JsonSerializer.Deserialize<CaddySettings>(JsonSerializer.Serialize(next, JsonDefaults.Storage), JsonDefaults.Storage)!;
+        storageOnly.CertificateStorePath = previous.CertificateStorePath;
+        var list = new List<(string, string)>();
+        foreach (var h in store.Col<SiteHost>().FindAll().Where(h => h.Enabled && h.Kind == HostKind.Static && !string.IsNullOrWhiteSpace(h.RootPath)))
+        {
+            if (CaddyStorage.StaticRootProblem(h.RootPath, next, paths) is not { } problem) continue;
+            if (CaddyStorage.StaticRootProblem(h.RootPath, previous, paths) is not null) continue; // not caused by this change
+            var field = CaddyStorage.StaticRootProblem(h.RootPath, storageOnly, paths) is not null ? "storagePath" : "certificateStorePath";
+            list.Add((field, $"{h.Domains.FirstOrDefault() ?? h.Id} ({h.RootPath!.Trim()}): {problem.Message}"));
+        }
+        return list;
     }
 
     /// <summary>

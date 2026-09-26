@@ -248,7 +248,7 @@ public sealed class HttpServerE2ETests
         var observations = new JsonArray();
         report["observations"] = observations;
         using var c = new LiveCaddy();
-        var root = Path.Combine(c.S.Paths.DataDir, "www");
+        var root = c.S.Env.WebRoot();
         Directory.CreateDirectory(Path.Combine(root, ".git"));
         Directory.CreateDirectory(Path.Combine(root, ".well-known"));
         Directory.CreateDirectory(Path.Combine(root, "sub"));

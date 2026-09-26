@@ -39,15 +39,10 @@ public static partial class PathGuard
         if (!TryCanonical(root, out var canon, out var error)) return new PathProblem(400, $"Root folder: {error}");
         if (canon.Depth == 0)
             return new PathProblem(400, $"The root folder '{root.Trim()}' is a drive root. Serving a whole drive would expose every file on it; choose a dedicated folder such as D:\\www\\example.");
-        if (canon.Style == Style.Unc)
-        {
-            if (canon.UncShare is { } share && share.EndsWith('$'))
-                return new PathProblem(400, $"The root folder '{root.Trim()}' is on the administrative share '{share}'. Use a dedicated share for web content.");
-            if (!isAdmin)
-                return new PathProblem(403, "Only administrators can serve a static site from a network share (UNC path).");
-            return null;
-        }
+        if (canon.Style == Style.Unc && canon.UncShare is { } share && share.EndsWith('$'))
+            return new PathProblem(400, $"The root folder '{root.Trim()}' is on the administrative share '{share}'. Use a dedicated share for web content.");
 
+        // Also for UNC roots: the shared storage folder and the certificate store are often on a share.
         foreach (var (dir, label) in ProtectedFolders(paths, certificateStore, sharedStorage))
         {
             var relation = Relation(root, dir);
@@ -55,6 +50,8 @@ public static partial class PathGuard
             return new PathProblem(400,
                 $"The root folder '{root.Trim()}' is {relation} {label} ({dir}). Serving it would expose files the web server must never publish; choose a dedicated folder such as D:\\www\\example.");
         }
+        if (canon.Style == Style.Unc && !isAdmin)
+            return new PathProblem(403, "Only administrators can serve a static site from a network share (UNC path).");
         return null;
     }
 
@@ -151,6 +148,9 @@ public static partial class PathGuard
     {
         var list = new List<Canon>();
         if (TryCanonical(path, out var lex, out _)) list.Add(lex);
+        // UNC paths are compared lexically only: probing a share for links can block for the SMB timeout when it is
+        // unreachable, and this also runs during config generation.
+        if (lex.Style == Style.Unc && list.Count > 0) return list;
         var resolved = ResolveLinks(path.Trim());
         if (resolved is not null && TryCanonical(resolved, out var real, out _) && !list.Contains(real)) list.Add(real);
         return list;

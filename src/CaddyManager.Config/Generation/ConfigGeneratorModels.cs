@@ -6,7 +6,10 @@ using CaddyManager.Core.Models;
 
 namespace CaddyManager.Config.Generation;
 
-/// <summary>Everything the generator needs. The generator itself performs no I/O.</summary>
+/// <summary>
+/// Everything the generator needs. The generator itself performs no I/O, except that PathGuard resolves symbolic links /
+/// junctions of static root folders to refuse those that lead into this server's protected folders.
+/// </summary>
 public sealed record ConfigGeneratorInput
 {
     public required CaddySettings Settings { get; init; }

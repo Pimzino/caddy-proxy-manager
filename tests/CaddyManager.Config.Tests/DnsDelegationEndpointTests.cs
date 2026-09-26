@@ -21,7 +21,9 @@ namespace CaddyManager.Config.Tests;
 /// - delegation check: anonymous callers served; unknown host not 404; a host without DNS challenge or without a
 ///   delegation name not 400 (hostId / target); missing or invalid domains / target not 400; the settings' resolvers
 ///   not used; an unreachable or unresolvable resolver turning into a 500 or a hang instead of per-domain `error` within
-///   the 5 s budget; answers cached between two checks; publicResolvers / OS resolvers not reported.
+///   the 5 s budget; answers cached between two checks; publicResolvers / OS resolvers not reported; without configured
+///   resolvers the OS resolvers asked by default (Caddy on Windows and the CA use public DNS then, so the default check
+///   disagrees with them on split-horizon networks) or the OS resolvers not reachable on request (systemResolvers).
 /// </summary>
 public sealed class DnsDelegationEndpointTests
 {
@@ -202,23 +204,32 @@ public sealed class DnsDelegationEndpointTests
     }
 
     [Fact]
-    public async Task Delegation_check_reports_public_and_system_resolvers()
+    public async Task Delegation_check_uses_public_resolvers_by_default_and_system_resolvers_on_request()
     {
         // The statuses depend on this machine's network; only the resolver choice and the time budget are asserted.
         await using var api = ApiHost.Start();
         var sw = Stopwatch.StartNew();
-        var r = await api.SendAsync(HttpMethod.Post, "/api/dns/delegation-check",
-            new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid", publicResolvers = true }, role: "viewer");
-        var pub = await Json(r);
-        Assert.True(r.StatusCode == HttpStatusCode.OK, pub.ToJsonString());
-        Assert.Equal(["1.1.1.1:53", "8.8.8.8:53"], pub["resolvers"]!.AsArray().Select(x => x!.GetValue<string>()));
-        r = await api.SendAsync(HttpMethod.Post, "/api/dns/delegation-check",
-            new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid" }, role: "viewer");
-        var sys = await Json(r);
-        Assert.True(r.StatusCode == HttpStatusCode.OK, sys.ToJsonString());
-        Assert.Equal(["system"], sys["resolvers"]!.AsArray().Select(x => x!.GetValue<string>()));
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), $"took {sw.Elapsed}");
-        foreach (var c in pub["checks"]!.AsArray().Concat(sys["checks"]!.AsArray()))
+        async Task<JsonNode> Check(object body)
+        {
+            var r = await api.SendAsync(HttpMethod.Post, "/api/dns/delegation-check", body, role: "viewer");
+            var json = await Json(r);
+            Assert.True(r.StatusCode == HttpStatusCode.OK, json.ToJsonString());
+            return json;
+        }
+        string[] Resolvers(JsonNode result) => result["resolvers"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray();
+        var pub = await Check(new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid", publicResolvers = true });
+        Assert.Equal(["1.1.1.1:53", "8.8.8.8:53"], Resolvers(pub));
+        // DLG-1: no resolvers configured -> what Caddy on Windows (certmagic falls back to public DNS without
+        // /etc/resolv.conf) and the CA see, not the domain controllers of a split-horizon network.
+        var byDefault = await Check(new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid" });
+        Assert.Equal(["1.1.1.1:53", "8.8.8.8:53"], Resolvers(byDefault));
+        var sys = await Check(new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid", systemResolvers = true });
+        Assert.Equal(["system"], Resolvers(sys));
+        var both = await api.SendAsync(HttpMethod.Post, "/api/dns/delegation-check",
+            new { domains = new[] { "delegation-check.invalid" }, target = "_acme-challenge.validation.invalid", publicResolvers = true, systemResolvers = true }, role: "viewer");
+        Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20), $"took {sw.Elapsed}");
+        foreach (var c in pub["checks"]!.AsArray().Concat(byDefault["checks"]!.AsArray()).Concat(sys["checks"]!.AsArray()))
             Assert.Contains(c!["status"]!.GetValue<string>(), new[] { "missing", "error" });
     }
 }

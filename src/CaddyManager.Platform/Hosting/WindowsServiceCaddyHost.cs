@@ -292,7 +292,7 @@ public sealed class WindowsServiceCaddyHost(AppPaths paths, CaddyHostSupport sup
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var tail = support.TailLog(8);
-            _lastError = ex.Message + (tail.Length > 0 ? "\nLast log lines:\n" + tail : "");
+            _lastError = support.Scrub(ex.Message + (tail.Length > 0 ? "\nLast log lines:\n" + tail : ""));
             throw new InvalidOperationException(_lastError, ex);
         }
         finally

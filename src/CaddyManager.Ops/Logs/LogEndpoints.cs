@@ -18,8 +18,10 @@ internal static partial class LogEndpoints
     {
         var g = app.MapGroup("/api/logs");
 
-        g.MapGet("/caddy", (int? lines, string? q, AppPaths paths) =>
-                Tail(paths.CaddyProcessLog, lines, q))
+        // caddy.log can quote credentials (a DNS provider's error text or request URL with the API key), and viewers may
+        // read it: every line is scrubbed of the configured secrets (Config's ISecretScrubber) before filtering.
+        g.MapGet("/caddy", (int? lines, string? q, AppPaths paths, HttpContext http) =>
+                Tail(paths.CaddyProcessLog, lines, q, Scrubber(http)))
             .RequireAuthorization(Policies.Viewer);
 
         g.MapGet("/access", (string? host, int? lines, string? q, AppPaths paths) =>
@@ -41,14 +43,18 @@ internal static partial class LogEndpoints
         }).RequireAuthorization(Policies.Admin);
     }
 
-    private static IResult Tail(string file, int? lines, string? q) =>
-        Results.Ok(new { lines = SafeRead(file, lines, q), file });
+    private static IResult Tail(string file, int? lines, string? q, Func<string, string>? transform = null) =>
+        Results.Ok(new { lines = SafeRead(file, lines, q, transform), file });
 
-    private static List<string> SafeRead(string file, int? lines, string? q)
+    /// <summary>The Config module's secret scrubber as a line transform (null when that module is absent).</summary>
+    private static Func<string, string>? Scrubber(HttpContext http) =>
+        http.RequestServices.GetService(typeof(ISecretScrubber)) is ISecretScrubber s ? s.Scrub : null;
+
+    private static List<string> SafeRead(string file, int? lines, string? q, Func<string, string>? transform = null)
     {
         try
         {
-            return LogTail.Read(file, lines ?? DefaultLines, q);
+            return LogTail.Read(file, lines ?? DefaultLines, q, transform: transform);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

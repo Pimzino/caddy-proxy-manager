@@ -206,7 +206,7 @@ public sealed class PlatformServices : IDisposable
     public FakeEventSink Events { get; } = new();
     public FakeAuditLog Audit { get; } = new();
 
-    public PlatformServices(TempEnvironment env, int adminPort, string bootConfig)
+    public PlatformServices(TempEnvironment env, int adminPort, string bootConfig, Action<IServiceCollection>? configure = null)
     {
         Admin = new FakeAdminClient($"http://127.0.0.1:{adminPort}");
         Config = new FakeConfigService(env.Paths, bootConfig);
@@ -227,6 +227,7 @@ public sealed class PlatformServices : IDisposable
         sc.AddPlatformModule();
         // Always the child-process host in tests (never touch real Windows services).
         sc.AddSingleton<ICaddyHost>(sp => ActivatorUtilities.CreateInstance<Hosting.ProcessCaddyHost>(sp));
+        configure?.Invoke(sc);
         Provider = sc.BuildServiceProvider();
     }
 

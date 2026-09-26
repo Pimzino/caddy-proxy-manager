@@ -40,11 +40,16 @@ provider's API, so no inbound port 80/443 is needed and **wildcard** names (`*.e
 1. **Caddy › Plugins**: add the provider's plugin (e.g. `github.com/caddy-dns/cloudflare`) and *Rebuild & install*.
    Settings › Caddy offers this when the selected provider is not in the installed Caddy.
 2. **Settings › Caddy › ACME challenge**: pick the **DNS provider** from the list (Cloudflare, Route 53, Azure DNS,
-   DigitalOcean, Google Cloud DNS, OVHcloud, Hetzner, GoDaddy, Porkbun, Namecheap, Gandi, Duck DNS, IONOS, deSEC,
+   DigitalOcean, Google Cloud DNS, OVHcloud, GoDaddy, Porkbun, Namecheap, Gandi, Duck DNS, IONOS, deSEC,
    Linode, Vultr, Netlify, DNSimple, Bunny, NameSilo, Alibaba Cloud, PowerDNS, ACME-DNS, RFC 2136) and fill in its
    fields. Credentials (tokens, secrets, TSIG keys) are **write-only**: stored encrypted, never shown again, and
-   replaced by `***` in any Caddy error message, event or configuration a non-administrator can see. Other providers
-   can be used by their module name (`dns.providers.<name>`) with plain options.
+   replaced by `***` (also in their URL-encoded forms) in Caddy error messages, `caddy.log` as shown by *Logs › Caddy*,
+   certificate events and notifications, Caddy start errors, and any configuration a non-administrator can see. Other
+   providers can be used by their module name (`dns.providers.<name>`) with plain options. The settings are refused
+   while the selected provider's plugin is missing from the installed Caddy and a host uses the DNS challenge.
+   *Hetzner* is not offered: the only Hetzner plugin the Caddy download service builds (`caddy-dns/hetzner` v1) uses
+   the old DNS Console API, which Hetzner shut down in May 2026; delegate the challenge (below) to a zone at a
+   supported provider instead.
 3. Choose where DNS-01 is used: **Default challenge** = DNS for every ACME host, or per host on the TLS tab
    (*ACME challenge*: Default / HTTP / DNS). Wildcard names always use DNS once a provider is configured.
 
@@ -54,11 +59,17 @@ Optional settings: **propagation delay** (wait before the first check), **propag
 split-horizon DNS where the internal resolvers do not show the public zone), and the **default delegation name** for
 delegated challenges (next section).
 
-*RFC 2136* works with BIND, Knot, PowerDNS and Windows DNS configured for secure dynamic updates with a TSIG key
-(`server` host:port, key name, algorithm such as `hmac-sha256`, base64 secret).
+*RFC 2136* works with BIND, Knot, PowerDNS and other servers that accept dynamic updates signed with a TSIG key
+(`server` host:port, key name, algorithm such as `hmac-sha256`, base64 secret). **Windows DNS does not work with it**:
+Active Directory-integrated zones accept only Kerberos-signed (GSS-TSIG) secure updates, which the provider cannot send.
+For a zone on Windows DNS, delegate the challenge (next section) with a CNAME to a validation zone on a TSIG-capable
+server or at a supported DNS provider.
 
-Enabling DNS disables the HTTP and TLS-ALPN challenges for those names. The *ACME issuer JSON* (Plugins & advanced)
-is still merged into every ACME issuer after generation, for options the form does not cover.
+Enabling DNS disables the HTTP and TLS-ALPN challenges for those names; IP addresses on an ACME host always keep the
+HTTP / TLS-ALPN challenges (the DNS challenge cannot validate IP addresses). The *ACME issuer JSON* (Plugins & advanced)
+is still merged into every ACME issuer after generation, for options the form does not cover, except
+`challenges.dns.provider`: the provider is configured under *ACME challenge* only, and saving the settings with both is
+refused (remove `challenges.dns.provider` from the JSON).
 
 ## Delegating the DNS challenge (CNAME)
 
@@ -100,16 +111,19 @@ removes its own TXT value there. Use different names (per host, below) to keep t
    - Route 53: an IAM policy allowing `route53:ChangeResourceRecordSets` / `ListResourceRecordSets` / `GetChange` on the
      validation hosted zone's ARN only (plus `route53:ListHostedZonesByName`);
    - Azure DNS: the *DNS Zone Contributor* role assigned on the validation zone, not on the resource group;
-   - RFC 2136 (BIND, Windows DNS, ...): a TSIG key allowed to update the validation zone only (`update-policy`).
+   - RFC 2136 (BIND, Knot, ...): a TSIG key allowed to update the validation zone only (`update-policy`). The validation
+     zone cannot be on Windows DNS (no TSIG support); the production zone can, it only holds the CNAMEs.
 3. **Settings › Caddy › ACME challenge**: select the provider with those credentials and enter the **default delegation
    name** (e.g. `_acme-challenge.validation.example.net`; letters, digits, `-` and `_`; no wildcard; case and a trailing
    dot do not matter). The *Challenge delegation (CNAME)* panel lists the CNAME records every DNS-challenge host needs,
    with copy buttons.
 4. Create those CNAME records in the production zone (by hand, once; they never change).
 5. Click **Check DNS**. For every domain it looks up `_acme-challenge.<domain>` (following up to 8 CNAMEs) through the
-   *resolvers* of Settings › Caddy, or the server's own resolvers when none are set (the API can also ask the public
-   resolvers 1.1.1.1 / 8.8.8.8, which is what the CA sees). Results are never cached, so a check right after creating a
-   record shows it; each domain gets at most 5 seconds.
+   *resolvers* of Settings › Caddy, or — when none are set — the public resolvers 1.1.1.1 / 8.8.8.8: that is what Caddy
+   on Windows uses itself when no resolvers are set, and what the CA sees. The API can ask the server's own (e.g.
+   Active Directory) resolvers instead (`systemResolvers: true`), which on a split-horizon network may disagree with
+   what the CA sees. Results are never cached, so a check right after creating a record shows it; each domain gets at
+   most 5 seconds.
    - **OK** — the CNAME (or chain) reaches the delegation name;
    - **Missing** — no CNAME yet: create the record shown;
    - **Wrong** — the CNAME points elsewhere, or a TXT record sits there instead of a CNAME (e.g. left over from a manual
@@ -155,13 +169,20 @@ work behind a load balancer. (Configuration itself is not shared by storage — 
 |---|---|---|
 | Local (default) | `C:\ProgramData\CaddyProxyManager\caddy\data` | Not shared. |
 | Shared folder | Local path or UNC share, e.g. `\\fileserver\caddy$` | Grant the computer accounts (`DOMAIN\SERVER$`) *Modify*; mapped drive letters are not visible to services. The manager tests that it can write there before saving. |
-| Redis | `host:port` addresses, database, user/password, key prefix, optional TLS and encryption key | Needs the plugin `github.com/pberkel/caddy-storage-redis`. |
+| Redis | `host:port` of the Redis server, database, user/password, key prefix, optional TLS and encryption key | Needs the plugin `github.com/pberkel/caddy-storage-redis`. One address only: with several, the plugin switches to a Redis Cluster client, which a normal (primary/replica) Redis rejects; Redis Cluster and Sentinel are not supported yet. |
 | Custom | Storage JSON with `"module"` (e.g. consul, s3, postgres) | Needs the plugin providing `caddy.storage.<module>`; stored encrypted. |
 
 Switching from **Local** to a shared folder copies `certificates\`, `acme\`, `pki\` and `ocsp\` to the new folder when
 they do not exist there yet (existing data is never overwritten), so issued certificates and the internal CA root are
 kept; the result message lists what was copied. With Redis or a custom module the Certificates page lists only custom
 certificates (ACME/internal certificates live in that storage).
+
+The shared folder and the certificate store hold private keys, so neither may be a static site's root folder, inside
+one, or above one. Saving a storage folder or certificate store that conflicts with an existing static site is refused
+(the message names the sites). Every server also checks this itself when it builds its configuration, against its own
+folders (data folder, Caddy storage, its certificate store, the shared folder, program and Windows folders): a static
+site whose root is such a folder — for example a replicated host whose root is a node's own certificate store — answers
+**403** on that server and the configuration result warns about it, until its root folder is changed.
 
 ## Internal CA root
 
@@ -172,4 +193,5 @@ Authorities* with Group Policy (see [group-policy.md](group-policy.md)). The roo
 ## Monitoring
 
 Certificates expiring within *N* days (Notifications › alert rules), certificates that fail to be issued (ACME
-errors from Caddy's log are included in the alert) and sync failures of file/PFX/store certificates raise alerts.
+errors from Caddy's log are included in the alert, with every configured credential replaced by `***`) and sync
+failures of file/PFX/store certificates raise alerts.

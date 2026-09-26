@@ -13,7 +13,7 @@ namespace CaddyManager.Config.Tests;
 /// (Dns01IssuanceE2ETests, TrafficStatsLogE2ETests, SharedStorageE2ETests, SecretScrubE2ETests).
 ///
 /// Ways the API could fail (each is asserted below):
-/// - DNS catalog: not 24 providers, wrong order, secret/required/type flags wrong (e.g. route53_max_wait not "duration"),
+/// - DNS catalog: not 23 providers (hetzner offered though no working plugin can be built; rfc2136 promising Windows DNS), wrong order, secret/required/type flags wrong (e.g. route53_max_wait not "duration"),
 ///   `installed` true without a binary or false when the module is compiled in;
 /// - secrets: a DNS/Redis/storage secret is returned by GET/PUT (any role); dnsProviderSecrets does not follow
 ///   set / "" removes / absent unchanged / dnsProviderSecretsClear; has* flags wrong; a provider change keeps the old
@@ -58,12 +58,15 @@ public sealed class Round3EndpointTests
     // ------------------------------------------------------------------ DNS provider catalog
 
     [Fact]
-    public async Task Dns_provider_catalog_lists_24_typed_providers_and_reports_installed_modules()
+    public async Task Dns_provider_catalog_lists_23_typed_providers_and_reports_installed_modules()
     {
         await using (var api = ApiHost.Start())
         {
             var list = (await Json(await api.SendAsync(HttpMethod.Get, "/api/settings/caddy/dns-providers", role: "viewer"))).AsArray();
-            Assert.Equal(24, list.Count);
+            Assert.Equal(23, list.Count);
+            // DNS-1: caddyserver.com only builds caddy-dns/hetzner v1 (field auth_api_token, the DNS Console API Hetzner shut
+            // down in May 2026); a catalog entry could never work, so none is offered.
+            Assert.DoesNotContain(list, p => p!["name"]!.GetValue<string>() == "hetzner");
             Assert.Equal(["cloudflare", "route53", "azure", "digitalocean"], list.Take(4).Select(p => p!["name"]!.GetValue<string>()));
             Assert.All(list, p => Assert.False(p!["installed"]!.GetValue<bool>())); // no binary manager → unknown → false
             var cf = list[0]!;
@@ -80,6 +83,11 @@ public sealed class Round3EndpointTests
             Assert.All(route53, f => Assert.False(f!["required"]!.GetValue<bool>()));
             var rfc = list.Single(p => p!["name"]!.GetValue<string>() == "rfc2136")!["fields"]!.AsArray();
             Assert.Equal(["server", "key_name", "key_alg", "key"], rfc.Select(f => f!["name"]!.GetValue<string>()));
+            // DNS-4: TSIG only — Windows DNS (AD) accepts GSS-TSIG secure updates only, so the label must not promise it.
+            var rfcInfo = list.Single(p => p!["name"]!.GetValue<string>() == "rfc2136")!;
+            Assert.DoesNotContain("Windows", rfcInfo["label"]!.GetValue<string>());
+            Assert.Contains("GSS-TSIG", rfcInfo["notes"]!.GetValue<string>());
+            Assert.Contains("CNAME", rfcInfo["notes"]!.GetValue<string>());
             Assert.True(rfc.Last()!["secret"]!.GetValue<bool>());
         }
 
