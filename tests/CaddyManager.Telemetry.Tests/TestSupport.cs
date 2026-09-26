@@ -27,6 +27,24 @@ namespace CaddyManager.Telemetry.Tests;
 /// Verifiable, repeatable output of the end-to-end tests: one JSON file per test in CPM_E2E_ARTIFACTS (CI uploads it)
 /// or ./e2e-artifacts next to the test binaries. Every report records the exact Caddy binary tested (`caddy version`).
 /// </summary>
+/// <summary>
+/// Appends warnings and errors with the whole exception to e2e-artifacts/telemetry-test-errors.log (uploaded by CI), so
+/// failures the ingestion swallows (it logs and retries) can be diagnosed from a CI run.
+/// </summary>
+public sealed class ArtifactErrorLogger<T> : ILogger<T>
+{
+    private static readonly object Gate = new();
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel level) => level >= LogLevel.Warning;
+    public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex, Func<TState, Exception?, string> formatter)
+    {
+        if (!IsEnabled(level)) return;
+        lock (Gate)
+            File.AppendAllText(Path.Combine(E2EArtifacts.Directory, "telemetry-test-errors.log"),
+                $"{DateTime.UtcNow:O} {level} {typeof(T).Name}: {formatter(state, ex)}{Environment.NewLine}{ex}{Environment.NewLine}");
+    }
+}
+
 public static class E2EArtifacts
 {
     private static string? _caddyVersion;
@@ -154,7 +172,7 @@ public sealed class TempEnv : IDisposable
         var options = new TelemetryOptions { FlushInterval = flushInterval ?? TimeSpan.FromSeconds(1) };
         configure?.Invoke(options);
         return new TrafficIngestion(Paths, Traffic, Store, new SecretProtector(Paths), Options.Create(options), TimeProvider.System,
-            NullLogger<TrafficIngestion>.Instance);
+            new ArtifactErrorLogger<TrafficIngestion>());
     }
 
     /// <summary>Core + Telemetry services (background services off unless enabled) with optional Platform fakes.</summary>

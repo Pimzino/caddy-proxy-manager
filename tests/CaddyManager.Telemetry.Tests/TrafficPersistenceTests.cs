@@ -31,9 +31,23 @@ namespace CaddyManager.Telemetry.Tests;
 ///     again after a restart.
 ///  6. Statistics still go to the configuration database, or old collections stay there (TEL-4).
 ///  7. In Caddyfile mode the report claims statistics are enabled and shows zero traffic (TEL-10).
+///  8. A flush before the first request (fresh install, Caddy not serving yet) fails: date arithmetic on "no request yet"
+///     (DateTime.MinValue) overflows, every flush fails and the save-failure alert fires with no traffic at all.
 /// </summary>
 public sealed class TrafficPersistenceTests
 {
+    [Fact]
+    public void FlushBeforeTheFirstRequestSucceeds()
+    {
+        using var env = new TempEnv();
+        using var ingestion = env.NewIngestion(TimeSpan.Zero);
+        ingestion.PollOnce(); // no stats log yet
+        ingestion.Flush();
+        ingestion.Flush();
+        Assert.Equal(0, ingestion.FlushFailures);
+        Assert.True(env.Traffic.Saves >= 1, "the cursor is saved even before the first request");
+    }
+
     private static readonly DateTime Base = new DateTime(DateTime.UtcNow.Ticks - DateTime.UtcNow.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc);
 
     private static void Configure(TempEnv env, params string[] domains)

@@ -165,7 +165,9 @@ public sealed class CaptureLoggerProvider(string prefix) : ILoggerProvider
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(level)) return;
-            p.Lines.Enqueue($"{DateTime.UtcNow:HH:mm:ss.fff} [{p.Prefix}] {level} {category}: {formatter(state, ex)}{(ex is null ? "" : " | " + ex.Message)}");
+            // Warnings and errors keep the whole exception (type and stack): CI logs are the only place to diagnose them.
+            var detail = ex is null ? "" : level >= LogLevel.Warning ? Environment.NewLine + ex : " | " + ex.Message;
+            p.Lines.Enqueue($"{DateTime.UtcNow:HH:mm:ss.fff} [{p.Prefix}] {level} {category}: {formatter(state, ex)}{detail}");
             while (p.Lines.Count > 3000) p.Lines.TryDequeue(out _);
         }
     }
@@ -181,6 +183,10 @@ public sealed class CaptureLoggerProvider(string prefix) : ILoggerProvider
 /// </summary>
 public sealed class Manager : IAsyncDisposable
 {
+    // Every test manager runs Caddy as its own child process. Without this, Windows selects the real "Caddy" Windows
+    // service (PlatformModule.UseWindowsServiceHost), which all managers of a test would share and reconfigure.
+    static Manager() => Environment.SetEnvironmentVariable("CM_CADDY_HOST", "process");
+
     public const string AdminEmail = "admin@cluster.test";
     public const string AdminPassword = "cluster e2e password";
 

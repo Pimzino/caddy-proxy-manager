@@ -172,7 +172,8 @@ internal sealed class TrafficAggregator(TrafficStore store, ClientHasher hasher)
         }
         HasCounterChanges = false;
         if (blobsSaved) HasBlobChanges = false;
-        var cutoff = _newest - EvictAfter;
+        // Nothing ingested yet (a fresh install, or Caddy not serving): _newest is MinValue, which cannot go further back.
+        var cutoff = _newest == default ? DateTime.MinValue : _newest - EvictAfter;
         var all = _live.Count > MaxCached;
         foreach (var (key, b) in _live.ToList())
             if (!b.CountersDirty && !b.BlobDirty && (all || b.End <= cutoff)) _live.Remove(key);
