@@ -133,7 +133,8 @@ public static class CertificateParser
         if (pfx is null || pfx.Length == 0) throw new CertificateImportException("The PFX file is empty.");
         X509Certificate2Collection coll;
         var flags = X509KeyStorageFlags.Exportable;
-        if (!OperatingSystem.IsMacOS()) flags |= X509KeyStorageFlags.EphemeralKeySet;
+        // Keep the private key in memory only (no key file under %ProgramData%\Microsoft\Crypto). Windows-only flag.
+        if (OperatingSystem.IsWindows()) flags |= X509KeyStorageFlags.EphemeralKeySet;
         try
         {
             coll = X509CertificateLoader.LoadPkcs12Collection(pfx, password, flags);

@@ -207,10 +207,6 @@ public static class UiListener
         var tmp = file + ".tmp";
         File.WriteAllBytes(tmp, created.Export(X509ContentType.Pfx));
         File.Move(tmp, file, overwrite: true);
-        if (!OperatingSystem.IsWindows())
-        {
-            try { File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best effort */ }
-        }
         return X509CertificateLoader.LoadPkcs12FromFile(file, null, KeyFlags);
     }
 }

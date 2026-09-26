@@ -1,4 +1,3 @@
-using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
@@ -601,7 +600,7 @@ public sealed partial class CaddyBinaryManager(
 
     /// <summary>
     /// Offline / air-gapped install of a file that was uploaded to (or placed in) <see cref="AppPaths.CaddyStagingDir"/>:
-    /// caddy(.exe) itself or an official release archive (.zip / .tar.gz) for this platform. The job owns the file and
+    /// caddy.exe itself or the official Windows release archive (.zip) for this platform. The job owns the file and
     /// deletes it (and its upload directory) when it finishes, successfully or not.
     /// Throws FileNotFoundException, ArgumentException (malformed SHA-512) or InvalidOperationException (job running).
     /// </summary>
@@ -688,7 +687,7 @@ public sealed partial class CaddyBinaryManager(
         Action<string> log, CancellationToken ct)
     {
         var platform = CaddyPlatform.Current;
-        var staged = Path.Combine(stagingDir, platform.BinaryName);
+        var staged = Path.Combine(stagingDir, CaddyPlatform.BinaryName);
         if (plugins.Count == 0)
         {
             var version = requested;
@@ -754,30 +753,33 @@ public sealed partial class CaddyBinaryManager(
             log("No expected SHA-512 was given; compare the value above with caddy_<version>_checksums.txt from the release page.");
         }
 
-        var staged = Path.Combine(stagingDir, platform.BinaryName);
+        var staged = Path.Combine(stagingDir, CaddyPlatform.BinaryName);
         switch (ExecutableFormat.DetectKind(upload))
         {
-            case UploadKind.Zip:
             case UploadKind.TarGz:
-                log($"Extracting {platform.BinaryName} from the release archive");
-                ExtractBinary(upload, platform, staged, byContent: true);
+                throw new InvalidOperationException(
+                    $"{displayName} is a .tar.gz archive, which Caddy publishes for Linux and macOS. " +
+                    $"Upload {CaddyPlatform.BinaryName} or {platform.ReleaseAssetPattern} from https://github.com/caddyserver/caddy/releases.");
+            case UploadKind.Zip:
+                log($"Extracting {CaddyPlatform.BinaryName} from the release archive");
+                ExtractBinary(upload, platform, staged);
                 break;
             case UploadKind.Executable:
                 File.Copy(upload, staged, overwrite: true);
                 break;
             default:
                 throw new InvalidOperationException(
-                    $"{displayName} is neither a Caddy executable nor a release archive (.zip / .tar.gz). " +
-                    $"Upload {platform.BinaryName} or caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} " +
+                    $"{displayName} is neither a Caddy executable nor a release archive (.zip). " +
+                    $"Upload {CaddyPlatform.BinaryName} or {platform.ReleaseAssetPattern} " +
                     "from https://github.com/caddyserver/caddy/releases.");
         }
 
         var target = ExecutableFormat.Detect(staged)
-                     ?? throw new InvalidOperationException($"The {platform.BinaryName} in {displayName} is not a recognised executable.");
+                     ?? throw new InvalidOperationException($"The {CaddyPlatform.BinaryName} in {displayName} is not a recognised executable.");
         if (!target.Matches(platform))
             throw new InvalidOperationException(
                 $"{displayName} contains a Caddy binary for {target}, but this server needs {platform}. " +
-                $"Download caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} instead.");
+                $"Download {platform.ReleaseAssetPattern} instead.");
         log($"Binary format: {target} (matches this server)");
         return new StagedBinary { Path = staged, Source = "upload", Url = displayName, Sha512 = sha, Origin = $"uploaded file {displayName}" };
     }
@@ -787,7 +789,7 @@ public sealed partial class CaddyBinaryManager(
     {
         if (!File.Exists(paths.CaddyExeBackup))
             throw new InvalidOperationException($"There is no previous Caddy binary to roll back to ({paths.CaddyExeBackup} does not exist).");
-        var staged = Path.Combine(stagingDir, CaddyPlatform.Current.BinaryName);
+        var staged = Path.Combine(stagingDir, CaddyPlatform.BinaryName);
         log($"Staging the previous binary {paths.CaddyExeBackup}");
         File.Copy(paths.CaddyExeBackup, staged, overwrite: true);
         var meta = ReadPreviousMetadata();
@@ -821,11 +823,6 @@ public sealed partial class CaddyBinaryManager(
         try
         {
             var staged = await acquire(stagingDir, ct);
-
-            if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(staged.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                                                  UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                                                  UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
             log("Checking the new binary (caddy version, caddy list-modules)");
             string stagedVersion;
@@ -1094,14 +1091,12 @@ public sealed partial class CaddyBinaryManager(
         {
             var dir = new DirectoryInfo(start);
             for (var i = 0; dir is not null && i < 8; i++, dir = dir.Parent)
-                candidates.Add(Path.Combine(dir.FullName, ".dev", "bin", CaddyPlatform.Current.BinaryName));
+                candidates.Add(Path.Combine(dir.FullName, ".dev", "bin", Path.GetFileName(paths.CaddyExe)));
         }
         var found = candidates.FirstOrDefault(File.Exists);
         if (found is null) return false;
         Directory.CreateDirectory(paths.CaddyBinDir);
         File.Copy(found, paths.CaddyExe, overwrite: false);
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(paths.CaddyExe, File.GetUnixFileMode(paths.CaddyExe) | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
         WriteMetadata(new InstallMetadata
         {
             Version = "", InstalledAt = DateTime.UtcNow, Source = "dev-copy", Url = found,
@@ -1185,41 +1180,15 @@ public sealed partial class CaddyBinaryManager(
         return Convert.ToHexStringLower(hash);
     }
 
-    /// <summary>
-    /// Extracts caddy(.exe) from a release archive (.zip on Windows, .tar.gz elsewhere). The format is taken from the file
-    /// name, or from the file content when <paramref name="byContent"/> is set (uploads keep no trustworthy name).
-    /// </summary>
-    internal static void ExtractBinary(string archive, CaddyPlatform platform, string destination, bool byContent = false)
+    /// <summary>Extracts caddy.exe from a Windows release archive (.zip).</summary>
+    internal static void ExtractBinary(string archive, CaddyPlatform platform, string destination)
     {
-        var isZip = byContent
-            ? ExecutableFormat.DetectKind(archive) == UploadKind.Zip
-            : archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
-        if (isZip)
-        {
-            using var zip = ZipFile.OpenRead(archive);
-            var entry = zip.Entries.FirstOrDefault(e => e.Name.Equals(platform.BinaryName, StringComparison.OrdinalIgnoreCase))
-                        ?? throw new InvalidOperationException(
-                            $"{Path.GetFileName(archive)} does not contain {platform.BinaryName}. Use the release archive for {platform} " +
-                            $"(caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension}).");
-            entry.ExtractToFile(destination, overwrite: true);
-            return;
-        }
-        using var fs = File.OpenRead(archive);
-        using var gz = new GZipStream(fs, CompressionMode.Decompress);
-        using var tar = new TarReader(gz);
-        while (tar.GetNextEntry() is { } e)
-        {
-            if (e.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile)) continue;
-            var name = e.Name.Replace('\\', '/');
-            if (name == platform.BinaryName || name.EndsWith("/" + platform.BinaryName, StringComparison.Ordinal))
-            {
-                e.ExtractToFile(destination, overwrite: true);
-                return;
-            }
-        }
-        throw new InvalidOperationException(
-            $"{Path.GetFileName(archive)} does not contain {platform.BinaryName}. Use the release archive for {platform} " +
-            $"(caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension}).");
+        using var zip = ZipFile.OpenRead(archive);
+        var entry = zip.Entries.FirstOrDefault(e => e.Name.Equals(CaddyPlatform.BinaryName, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException(
+                        $"{Path.GetFileName(archive)} does not contain {CaddyPlatform.BinaryName}. Use the release archive for {platform} " +
+                        $"({platform.ReleaseAssetPattern}).");
+        entry.ExtractToFile(destination, overwrite: true);
     }
 
     /// <summary>File.Move with retries: antivirus scanners briefly lock freshly written executables on Windows.</summary>

@@ -152,7 +152,7 @@ public sealed partial class ReadinessService(
                 checks.Add(Skipped("firewall.windows", "Firewall", "Windows Defender Firewall", "Firewall checks run on Windows only."));
                 checks.Add(Skipped("network.profiles", "Network", "Network connection profiles", "Network profile checks run on Windows only."));
                 checks.Add(Skipped("domain.membership", "Domain", "Active Directory domain", "Domain checks run on Windows only."));
-                checks.AddRange(PortChecksPortable(ctx, status));
+                checks.Add(Skipped("ports", "Ports", "Ports for Caddy", "Port checks run on Windows only."));
             }
             checks.AddRange(connTask.Result);
             if (windows) checks.Add(WinHttpProxyCheck(ReadWinHttpProxy(), sys?.WinHttpProxy, ctx.Binary));
@@ -780,37 +780,6 @@ public sealed partial class ReadinessService(
 
     private static string PortCheckId(string proto, int port, bool stream) =>
         $"ports.{(stream ? "stream." : "")}{proto.ToLowerInvariant()}{port}";
-
-    private IEnumerable<ReadinessCheck> PortChecksPortable(Context ctx, CaddyStatus status)
-    {
-        IPEndPoint[] tcp = [], udp = [];
-        try
-        {
-            var props = IPGlobalProperties.GetIPGlobalProperties();
-            tcp = props.GetActiveTcpListeners();
-            udp = props.GetActiveUdpListeners();
-        }
-        catch (NetworkInformationException ex)
-        {
-            logger.LogDebug(ex, "Listing listeners failed");
-        }
-        foreach (var (proto, port, stream) in ctx.CaddyPorts())
-        {
-            var eps = proto == "UDP" ? udp : tcp;
-            var used = eps.Where(e => e.Port == port).ToList();
-            var running = status.State == CaddyRunState.Running;
-            yield return new ReadinessCheck
-            {
-                Id = PortCheckId(proto, port, stream), Category = "Ports",
-                Title = stream ? $"{proto} {port} available for a Caddy stream" : $"{proto} {port} available for Caddy",
-                Status = used.Count == 0 ? CheckStatus.Pass : running ? CheckStatus.Info : CheckStatus.Warn,
-                Summary = used.Count == 0 ? $"{proto} {port} is free."
-                    : running ? $"{proto} {port} is in use (on {string.Join(", ", used)}), probably by Caddy (process ownership is not available on this OS)."
-                    : $"{proto} {port} is in use by another process (on {string.Join(", ", used)}) while Caddy is stopped.",
-                Remediation = used.Count > 0 && !running ? (OperatingSystem.IsMacOS() ? $"Find it with: lsof -nP -i{proto}:{port}" : $"Find it with: ss -lptn 'sport = :{port}'") : null,
-            };
-        }
-    }
 
     // ------------------------------------------------------------------ Connectivity
 

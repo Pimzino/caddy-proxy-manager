@@ -122,6 +122,7 @@ public class ExecutableFormatTests
     [Fact]
     public void DetectsTheDevelopmentBinary()
     {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only: the development binary must be a Windows Caddy.");
         var dev = DevCaddy.Find();
         Assert.SkipWhen(dev is null, "Development Caddy binary not found.");
         var target = ExecutableFormat.Detect(dev!);
@@ -142,32 +143,19 @@ public class ExecutableFormatTests
     }
 
     [Fact]
-    public void ExtractsByContentWhateverTheName()
+    public void ExtractsTheExeFromAZipWhateverItsName()
     {
         using var env = new TempEnvironment();
         var payload = "fake-binary"u8.ToArray();
-        var platform = new CaddyPlatform("windows", "amd64");
-        var zip = Path.Combine(env.Root, "upload.bin");
+        var zip = Path.Combine(env.Root, "upload.bin"); // uploads keep no trustworthy name
         using (var z = ZipFile.Open(zip, ZipArchiveMode.Create))
         {
             using var s = z.CreateEntry("caddy_2.11.4_windows_amd64/caddy.exe").Open();
             s.Write(payload);
         }
         var outExe = Path.Combine(env.Root, "out.exe");
-        CaddyBinaryManager.ExtractBinary(zip, platform, outExe, byContent: true);
+        CaddyBinaryManager.ExtractBinary(zip, new CaddyPlatform("windows", "amd64"), outExe);
         Assert.Equal(payload, File.ReadAllBytes(outExe));
-
-        var tgz = Path.Combine(env.Root, "upload.zip"); // misleading name: content decides
-        using (var fs = File.Create(tgz))
-        using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
-        using (var tar = new TarWriter(gz))
-            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "caddy") { DataStream = new MemoryStream(payload) });
-        var outBin = Path.Combine(env.Root, "caddy-out");
-        CaddyBinaryManager.ExtractBinary(tgz, new CaddyPlatform("linux", "amd64"), outBin, byContent: true);
-        Assert.Equal(payload, File.ReadAllBytes(outBin));
-
-        var ex = Assert.Throws<InvalidOperationException>(() => CaddyBinaryManager.ExtractBinary(zip, new CaddyPlatform("linux", "amd64"), outBin, byContent: true));
-        Assert.Contains("caddy_<version>_linux_amd64.tar.gz", ex.Message);
     }
 }
 
@@ -282,6 +270,7 @@ public class OfflineInstallTests
     public async Task InstallsFromUploadedBinaryUpdatesFromArchiveAndRollsBack()
     {
         var ct = TestContext.Current.CancellationToken;
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only: installs the development binary as this server's Windows Caddy.");
         var dev = DevCaddy.Find();
         Assert.SkipWhen(dev is null, "Development Caddy binary (.dev/bin/caddy or CM_TEST_CADDY) not found.");
         const int adminPort = 12249;
@@ -298,7 +287,7 @@ public class OfflineInstallTests
             Assert.Throws<InvalidOperationException>(() => bin.StartRollback());
 
             // 1. Fresh offline install of the plain binary with its SHA-512 → installed, Caddy started, service/apply bootstrap ran.
-            var upload = Jobs.Stage(env.Paths, dev!, CaddyPlatform.Current.BinaryName);
+            var upload = Jobs.Stage(env.Paths, dev!, CaddyPlatform.BinaryName);
             var job = bin.StartInstallFromFile(upload, Jobs.Sha512(upload).ToUpperInvariant());
             var done = await Jobs.WaitAsync(jobs, job.Id, TimeSpan.FromMinutes(3));
             Assert.True(done.State == JobState.Succeeded, string.Join("\n", done.Log) + done.Error);
@@ -315,24 +304,14 @@ public class OfflineInstallTests
             Assert.Equal("v2.11.4", (await bin.GetInstalledAsync(ct))?.Version);
             Assert.Equal(CaddyRunState.Running, (await host.GetStatusAsync(ct)).State);
             Assert.Contains("caddy installed", svc.Config.Applied);
-            Assert.Contains(svc.Events.Events, e => e.Message == "Caddy v2.11.4 installed (uploaded file caddy" + (OperatingSystem.IsWindows() ? ".exe)" : ")"));
+            Assert.Contains(svc.Events.Events, e => e.Message == "Caddy v2.11.4 installed (uploaded file caddy.exe)");
             Assert.False(bin.CanRollback);
 
             // 2. Update from an official-style release archive (content-detected): current binary kept as .previous.
-            var archiveName = $"caddy_2.11.4_{CaddyPlatform.Current.ReleaseOs}_{CaddyPlatform.Current.ReleaseArch}.{CaddyPlatform.Current.ArchiveExtension}";
+            var archiveName = CaddyPlatform.Current.ReleaseAssetName(CaddyVersion.Parse("v2.11.4"));
             var archive = Path.Combine(env.Root, archiveName);
-            if (CaddyPlatform.Current.IsWindows)
-            {
-                using var z = ZipFile.Open(archive, ZipArchiveMode.Create);
+            using (var z = ZipFile.Open(archive, ZipArchiveMode.Create))
                 z.CreateEntryFromFile(dev!, "caddy.exe", CompressionLevel.Fastest);
-            }
-            else
-            {
-                await using var fs = File.Create(archive);
-                await using var gz = new GZipStream(fs, CompressionLevel.Fastest);
-                await using var tar = new TarWriter(gz);
-                await tar.WriteEntryAsync(dev!, "caddy", ct);
-            }
             var pidBefore = (await host.GetStatusAsync(ct)).ProcessId;
             var update = await Jobs.WaitAsync(jobs, bin.StartInstallFromFile(Jobs.Stage(env.Paths, archive, archiveName)).Id, TimeSpan.FromMinutes(3));
             Assert.True(update.State == JobState.Succeeded, string.Join("\n", update.Log) + update.Error);
@@ -343,7 +322,7 @@ public class OfflineInstallTests
             Assert.True(bin.CanRollback);
             Assert.Equal("v2.11.4", await manager.GetPreviousVersionAsync(ct));
             Assert.Equal(archiveName, manager.ReadMetadata()?.Url);
-            Assert.Equal(CaddyPlatform.Current.BinaryName, manager.ReadPreviousMetadata()?.Url);
+            Assert.Equal(CaddyPlatform.BinaryName, manager.ReadPreviousMetadata()?.Url);
             var afterUpdate = await host.GetStatusAsync(ct);
             Assert.Equal(CaddyRunState.Running, afterUpdate.State);
             Assert.NotEqual(pidBefore, afterUpdate.ProcessId);
@@ -354,7 +333,7 @@ public class OfflineInstallTests
             Assert.True(rollback.State == JobState.Succeeded, string.Join("\n", rollback.Log) + rollback.Error);
             Assert.Contains(rollback.Log, l => l.Contains("Staging the previous binary"));
             Assert.Contains(rollback.Log, l => l.Contains("Validating the current configuration"));
-            Assert.Equal(CaddyPlatform.Current.BinaryName, manager.ReadMetadata()?.Url);  // the first upload is active again
+            Assert.Equal(CaddyPlatform.BinaryName, manager.ReadMetadata()?.Url);  // the first upload is active again
             Assert.Equal(archiveName, manager.ReadPreviousMetadata()?.Url);                // and the archive build is the new .previous
             Assert.True(bin.CanRollback);
             Assert.Equal(CaddyRunState.Running, (await host.GetStatusAsync(ct)).State);
@@ -398,14 +377,25 @@ public class OfflineInstallTests
         Assert.Contains("linux/riscv64", foreign.Error);
         Assert.Contains($"this server needs {CaddyPlatform.Current}", foreign.Error);
 
+        // Caddy's .tar.gz releases are for Linux and macOS.
+        var tgzPath = Path.Combine(env.Root, "caddy_2.11.4_linux_amd64.tar.gz");
+        using (var fs = File.Create(tgzPath))
+        using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+        using (var tar = new TarWriter(gz))
+            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "caddy") { DataStream = new MemoryStream(ExecutableFormatTests.Elf(62)) });
+        var tarball = await Run(Jobs.Stage(env.Paths, tgzPath, "caddy.tar.gz"));
+        Assert.Equal(JobState.Failed, tarball.State);
+        Assert.Contains(".tar.gz archive, which Caddy publishes for Linux and macOS", tarball.Error);
+        Assert.Contains(CaddyPlatform.Current.ReleaseAssetPattern, tarball.Error);
+
         var zipPath = Path.Combine(env.Root, "readme-only.zip");
         using (var z = ZipFile.Open(zipPath, ZipArchiveMode.Create)) z.CreateEntry("README.md").Open().Dispose();
         var noBinary = await Run(Jobs.Stage(env.Paths, zipPath, "caddy.zip"));
         Assert.Equal(JobState.Failed, noBinary.State);
-        Assert.Contains($"does not contain {CaddyPlatform.Current.BinaryName}", noBinary.Error);
+        Assert.Contains($"does not contain {CaddyPlatform.BinaryName}", noBinary.Error);
 
         Assert.False(File.Exists(env.Paths.CaddyExe));
-        Assert.Equal(4, svc.Events.Events.Count(e => e.Key == "caddy-update-failed" && e.Message.Contains("uploaded Caddy binary failed")));
+        Assert.Equal(5, svc.Events.Events.Count(e => e.Key == "caddy-update-failed" && e.Message.Contains("uploaded Caddy binary failed")));
         Assert.Empty(Directory.GetFileSystemEntries(env.Paths.CaddyStagingDir));
 
         Assert.Throws<FileNotFoundException>(() => bin.StartInstallFromFile(Path.Combine(env.Root, "missing")));
@@ -653,10 +643,9 @@ public class ReadinessRound2Tests
         var report = await svc.Get<IReadinessService>().RunAsync(TestContext.Current.CancellationToken);
         string Dump() => string.Join("\n", report.Checks.Select(c => $"{c.Id} [{c.Status}] {c.Summary}"));
 
-        var port = report.Checks.Single(c => c.Id == $"ports.stream.tcp{streamPort}");
-        Assert.Equal(CheckStatus.Pass, port.Status);
-        Assert.Contains("stream", port.Title);
-        Assert.DoesNotContain(report.Checks, c => c.Id.Contains("5353"));
+        // Port checks (including stream ports) run on Windows only.
+        Assert.Equal(CheckStatus.Skipped, report.Checks.Single(c => c.Id == "ports").Status);
+        Assert.DoesNotContain(report.Checks, c => c.Id.StartsWith("ports.", StringComparison.Ordinal));
         Assert.Equal(CheckStatus.Skipped, report.Checks.Single(c => c.Id == "system.datadir").Status);
         Assert.Equal(CheckStatus.Info, report.Checks.Single(c => c.Id == "caddy.admin.access").Status);
         var caddyProxy = report.Checks.Single(c => c.Id == "connectivity.caddyproxy");

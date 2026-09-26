@@ -205,7 +205,7 @@ public class BinaryInspectionTests
 public class ArchiveExtractionTests
 {
     [Fact]
-    public void ExtractsFromZipAndTarGz()
+    public void ExtractsCaddyExeFromTheWindowsZip()
     {
         using var env = new TempEnvironment();
         var payload = "fake-binary"u8.ToArray();
@@ -221,19 +221,10 @@ public class ArchiveExtractionTests
         CaddyBinaryManager.ExtractBinary(zip, new CaddyPlatform("windows", "amd64"), outExe);
         Assert.Equal(payload, File.ReadAllBytes(outExe));
 
-        var tgz = Path.Combine(env.Root, "caddy_2.11.4_mac_arm64.tar.gz");
-        using (var fs = File.Create(tgz))
-        using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
-        using (var tar = new TarWriter(gz))
-        {
-            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "README.md") { DataStream = new MemoryStream("r"u8.ToArray()) });
-            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "caddy") { DataStream = new MemoryStream(payload) });
-        }
-        var outBin = Path.Combine(env.Root, "caddy-out");
-        CaddyBinaryManager.ExtractBinary(tgz, new CaddyPlatform("darwin", "arm64"), outBin);
-        Assert.Equal(payload, File.ReadAllBytes(outBin));
-
-        Assert.Throws<InvalidOperationException>(() => CaddyBinaryManager.ExtractBinary(zip, new CaddyPlatform("linux", "amd64"), outBin));
+        var empty = Path.Combine(env.Root, "readme-only.zip");
+        using (var z = ZipFile.Open(empty, ZipArchiveMode.Create)) z.CreateEntry("README.md").Open().Dispose();
+        var ex = Assert.Throws<InvalidOperationException>(() => CaddyBinaryManager.ExtractBinary(empty, new CaddyPlatform("windows", "arm64"), outExe));
+        Assert.Contains("caddy_<version>_windows_arm64.zip", ex.Message);
     }
 }
 

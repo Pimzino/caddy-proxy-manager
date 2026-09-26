@@ -74,7 +74,7 @@ public sealed class CaddyBootstrapper(
                 sink?.Raise(EventSeverity.Error, "caddy",
                     "Caddy is not installed and the automatic installation failed",
                     "Open Caddy → Service & Updates to retry the download. If this server has no Internet access, download " +
-                    $"caddy_<version>_{platform.ReleaseOs}_{platform.ReleaseArch}.{platform.ArchiveExtension} (or {platform.BinaryName}) " +
+                    $"{platform.ReleaseAssetPattern} (or {CaddyPlatform.BinaryName}) " +
                     "from https://github.com/caddyserver/caddy/releases on another machine and install it with Upload on that page " +
                     "(optionally with the SHA-512 from caddy_<version>_checksums.txt); the manager then registers the service and applies " +
                     "the configuration automatically. Behind a proxy, set the outbound proxy in Settings → Updates.",

@@ -49,7 +49,7 @@ Modules only depend on Core. Cross-module calls go through the Core interfaces
 | DB | `DataDir\db\manager.db` (LiteDB) |
 | Setup token | `DataDir\setup-token.txt` (first-run only) |
 
-In development (macOS/Linux), `DataDir` = `./.devdata` (or `CM_DATA_DIR`), Caddy runs as a child
+In development (the macOS dev machine), `DataDir` = `./.devdata` (or `CM_DATA_DIR`), Caddy runs as a child
 process ("process" host mode) and the dev Caddy binary is at `.dev/bin/caddy` (copy it into
 `AppPaths.CaddyExe` if missing). `CM_UI_PORT=5081` is used for the dev backend.
 
@@ -272,7 +272,9 @@ tables with status and add/edit dialogs with tabs, in a modern admin-console loo
 - .NET 10, nullable enabled, minimal APIs grouped with `MapGroup("/api/...").RequireAuthorization(Policies.X)`.
 - Use `IHttpClientFactory` named client `"default"` (User-Agent set) for outbound calls.
 - Never block the request thread on long work; long work → `IJobRunner`.
-- Windows-only code guarded with `OperatingSystem.IsWindows()`; the app must build and run on macOS/Linux for development.
+- Windows only (see CLAUDE.md): OS-specific code is written for Windows and guarded with `OperatingSystem.IsWindows()`; on
+  other systems (the macOS development machine) the app only has to build and not crash, returning empty values. No
+  macOS/Linux implementations; dev-only behaviour comes from tests, fixtures or scratch scripts.
 - Record audit entries (`IAuditLog.Record`) for every mutation; raise events via `IEventSink` for operational problems.
 - Secrets always through `ISecretProtector`; never returned by the API.
 

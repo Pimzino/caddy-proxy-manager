@@ -280,9 +280,8 @@ public class ReadinessNonWindowsTests
         Assert.Equal(CheckStatus.Info, report.Checks.Single(c => c.Id == "system.os").Status);
         Assert.Contains(report.Checks, c => c.Id == "system.disk" && c.Status is CheckStatus.Pass or CheckStatus.Warn or CheckStatus.Fail);
         Assert.Contains(report.Checks, c => c.Id == "system.clock");
-        Assert.Contains(report.Checks, c => c.Id == "ports.tcp80");
-        Assert.Contains(report.Checks, c => c.Id == "ports.tcp443");
-        Assert.DoesNotContain(report.Checks, c => c.Id == "ports.udp443"); // HTTP/3 is off by default
+        Assert.Equal(CheckStatus.Skipped, report.Checks.Single(c => c.Id == "ports").Status);
+        Assert.DoesNotContain(report.Checks, c => c.Id.StartsWith("ports.", StringComparison.Ordinal));
         Assert.Contains(report.Checks, c => c.Id == "connectivity.letsencrypt");
         var dns = report.Checks.Single(c => c.Id == "dns.cpm-readiness-test.invalid");
         Assert.Equal(CheckStatus.Fail, dns.Status);
@@ -326,6 +325,8 @@ public class ReadinessWindowsTests
     {
         Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only.");
         using var env = new TempEnvironment();
+        var streamPort = DevCaddy.FreeTcpPort();
+        env.Store.Col<StreamHost>().Insert(new StreamHost { Protocol = StreamProtocol.Tcp, ListenPort = streamPort, UpstreamHost = "10.0.0.5", UpstreamPort = 3389 });
         using var svc = new PlatformServices(env, DevCaddy.FreeTcpPort(), "{}");
         var report = await svc.Get<IReadinessService>().RunAsync(TestContext.Current.CancellationToken);
 
@@ -337,6 +338,7 @@ public class ReadinessWindowsTests
         Assert.Contains(report.Checks, c => c.Id == "firewall.localrules");
         Assert.Contains(report.Checks, c => c.Id == "firewall.tcp443");
         Assert.Contains(report.Checks, c => c.Id == "ports.tcp80");
+        Assert.Contains(report.Checks, c => c.Id == $"ports.stream.tcp{streamPort}" && c.Status == CheckStatus.Pass && c.Title.Contains("stream"));
         Assert.Contains(report.Checks, c => c.Id == "ports.iis");
         Assert.Contains(report.Checks, c => c.Id == "connectivity.proxy");
         Assert.Contains(report.Checks, c => c.Id == "system.reboot");

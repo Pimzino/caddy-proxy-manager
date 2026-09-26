@@ -114,6 +114,7 @@ public class PlatformEndpointTests
     [Fact]
     public async Task UploadInstallsCaddyAndRollbackNeedsAPreviousBinary()
     {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only: installs the development binary as this server's Windows Caddy.");
         var dev = DevCaddy.Find();
         Assert.SkipWhen(dev is null, "Development Caddy binary (.dev/bin/caddy or CM_TEST_CADDY) not found.");
         var ct = TestContext.Current.CancellationToken;
@@ -190,5 +191,5 @@ public class PlatformEndpointTests
         Assert.True(get.GetProperty("proxyCaddyTraffic").GetBoolean());
     }
 
-    private static string CaddyPlatform() => Binary.CaddyPlatform.Current.BinaryName;
+    private static string CaddyPlatform() => Binary.CaddyPlatform.BinaryName;
 }

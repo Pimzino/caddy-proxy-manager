@@ -76,6 +76,7 @@ public class NetworkTests
     [Fact]
     public async Task InstallsThenUpdatesWithBackupAndRestart()
     {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only: downloads and runs the Windows Caddy release.");
         var ct = TestContext.Current.CancellationToken;
         const int adminPort = 12229;
         using var env = new TempEnvironment();
@@ -126,6 +127,7 @@ public class NetworkTests
     [Fact]
     public async Task RollsBackWhenTheNewBinaryDoesNotComeUp()
     {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows only: downloads and runs the Windows Caddy release.");
         var ct = TestContext.Current.CancellationToken;
         const int adminPort = 12239;
         using var env = new TempEnvironment();

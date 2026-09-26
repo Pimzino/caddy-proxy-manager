@@ -173,8 +173,8 @@ public class CaddyPlatformTests
     {
         var v = CaddyVersion.Parse("v2.11.4");
         Assert.Equal("caddy_2.11.4_windows_amd64.zip", new CaddyPlatform("windows", "amd64").ReleaseAssetName(v));
-        Assert.Equal("caddy_2.11.4_mac_arm64.tar.gz", new CaddyPlatform("darwin", "arm64").ReleaseAssetName(v));
-        Assert.Equal("caddy_2.11.4_linux_armv7.tar.gz", new CaddyPlatform("linux", "arm").ReleaseAssetName(v));
+        Assert.Equal("caddy_2.11.4_windows_arm64.zip", new CaddyPlatform("windows", "arm64").ReleaseAssetName(v));
+        Assert.Equal("windows", CaddyPlatform.Current.GoOs);
         Assert.Equal("caddy_2.11.4_checksums.txt", CaddyPlatform.ChecksumsAssetName(v));
         Assert.Equal("https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_windows_amd64.zip",
             CaddyPlatform.ReleaseDownloadUrl(v, "caddy_2.11.4_windows_amd64.zip"));

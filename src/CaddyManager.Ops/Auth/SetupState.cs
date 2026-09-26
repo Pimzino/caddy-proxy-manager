@@ -137,7 +137,6 @@ internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupStat
             else
             {
                 File.WriteAllText(paths.SetupTokenFile, token + Environment.NewLine);
-                File.SetUnixFileMode(paths.SetupTokenFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
         }
         catch (Exception ex)
