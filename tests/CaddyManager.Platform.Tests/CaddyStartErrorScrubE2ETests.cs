@@ -85,7 +85,11 @@ public sealed class CaddyStartErrorScrubE2ETests
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync(ct));
             var status = await host.GetStatusAsync(ct);
             var tail = svc.Get<CaddyHostSupport>().TailLog(20);
-            var onDisk = File.ReadAllText(env.Paths.CaddyProcessLog);
+            // Read with ReadWrite|Delete sharing: an exiting Caddy may still hold its log open on Windows.
+            string onDisk;
+            using (var fs = new FileStream(env.Paths.CaddyProcessLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(fs))
+                onDisk = await reader.ReadToEndAsync(ct);
             report["startError"] = ex.Message;
             report["lastError"] = status.LastError;
             report["tailLog"] = tail;

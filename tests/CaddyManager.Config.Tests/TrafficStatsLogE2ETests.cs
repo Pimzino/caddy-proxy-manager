@@ -95,8 +95,10 @@ public sealed class TrafficStatsLogE2ETests
             foreach (var f in new[] { "ts", "bytes_read", "size", "status", "duration" }) Assert.NotNull(e[f]);
             Assert.StartsWith("http.log.access", e["logger"]!.GetValue<string>());
         }
-        Assert.DoesNotContain("cpm-secret-cookie", File.ReadAllText(statsFile));
-        Assert.DoesNotContain("cpm-probe-header", File.ReadAllText(statsFile));
+        // Caddy still has the log open: read with ReadWrite|Delete sharing (File.ReadAllText fails on Windows).
+        var raw = string.Join('\n', ReadLines(statsFile));
+        Assert.DoesNotContain("cpm-secret-cookie", raw);
+        Assert.DoesNotContain("cpm-probe-header", raw);
         Assert.Contains(stats, e => e["request"]!["host"]!.GetValue<string>() == "unknown-host.test" && e["status"]!.GetValue<int>() == 404);
         // (5) the per-host log: only stats-a requests, all of them (incl. the upper-case Host), unfiltered
         Assert.All(perHost, e => Assert.StartsWith("stats-a.test", e["request"]!["host"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase));
