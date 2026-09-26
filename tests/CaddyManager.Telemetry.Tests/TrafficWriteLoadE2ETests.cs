@@ -147,6 +147,13 @@ public sealed class TrafficWriteLoadE2ETests
             ["bytesBefore"] = managerBefore.Length, ["bytesAfter"] = managerAfter.Length,
             ["lastWriteUnchanged"] = managerBefore.Write == managerAfter.Write,
         };
+        // Per minute bucket (server total): requests and unique clients as stored — pinpoints where clients go missing.
+        report["minuteBuckets"] = new JsonArray(store.Col(BucketScale.Minute).Find(b => b.Host == TrafficBucketDoc.Total)
+            .OrderBy(b => b.Start).Select(b => (JsonNode)new JsonObject
+            {
+                ["id"] = b.Id, ["requests"] = b.Requests,
+                ["uniqueClients"] = store.Blobs(BucketScale.Minute).FindById(b.Id) is { } blob ? ClientSketch.Deserialize(blob.Clients).Count : -1,
+            }).ToArray());
         E2EArtifacts.Write("traffic-write-load.json", report);
 
         Assert.True(sent > 1000, $"only {sent} requests");
