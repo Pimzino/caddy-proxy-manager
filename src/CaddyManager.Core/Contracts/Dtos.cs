@@ -385,6 +385,8 @@ public sealed record ServerSummary
     public string? Fingerprint { get; init; }
     /// <summary>When the node's current join token was issued.</summary>
     public DateTime? TokenIssuedAt { get; init; }
+    /// <summary>A key rotation could not reach the node yet: it still trusts its previous key (retried on every contact).</summary>
+    public bool KeyRotationPending { get; init; }
 }
 
 public sealed record ClusterStatus
@@ -437,4 +439,13 @@ public sealed record DelegationCheckResult
     public List<string> Resolvers { get; init; } = new();
     public List<DelegationCheck> Checks { get; init; } = new();
     public DateTime CheckedAt { get; init; }
+}
+
+/// <summary>POST /api/servers/{id}/token.</summary>
+public sealed record RegenerateTokenResult
+{
+    /// <summary>New join token (for re-joining the node after it left or was reset).</summary>
+    public string JoinToken { get; init; } = "";
+    /// <summary>True when the node acknowledged the new key (its old key no longer works); false = pending (node unreachable).</summary>
+    public bool Rotated { get; init; }
 }

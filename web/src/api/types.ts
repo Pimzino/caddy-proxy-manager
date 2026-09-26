@@ -904,6 +904,14 @@ export interface ServerSummary {
   fingerprint?: string | null;
   /** When the node's current join token was issued. */
   tokenIssuedAt?: IsoDate | null;
+  /** A key rotation has not reached the node yet: it still trusts its previous key. */
+  keyRotationPending?: boolean;
+}
+
+export interface RegenerateTokenResult {
+  joinToken: string;
+  /** True when the node acknowledged the new key; false = pending (node unreachable, retried on every contact). */
+  rotated: boolean;
 }
 
 export interface ClusterStatus {

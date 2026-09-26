@@ -4,6 +4,7 @@ import { api, ApiError } from './client';
 import type {
   AddServerResult,
   DelegationCheckResult,
+  RegenerateTokenResult,
   ClusterStatus,
   DnsProviderInfo,
   ResourceSample,
@@ -904,7 +905,7 @@ export function useUpdateServer() {
 
 export function useRegenerateServerToken() {
   return useMutation({
-    mutationFn: (id: string) => api.post<{ joinToken: string }>(`/api/servers/${encodeURIComponent(id)}/token`),
+    mutationFn: (id: string) => api.post<RegenerateTokenResult>(`/api/servers/${encodeURIComponent(id)}/token`),
   });
 }
 
