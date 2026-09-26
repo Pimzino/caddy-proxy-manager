@@ -12,3 +12,6 @@ artifacts/
 .DS_Store
 TestResults/
 .claude/worktrees/
+
+# Logo concept renders (regenerate with docs/brand/logo-concepts/generate.ts <set>)
+docs/brand/logo-concepts/out/

@@ -93,7 +93,14 @@
     <SetProperty Id="CPM_UI_HOST" Action="CPM_SetUiHost" Value="[CPM_UI_BIND]" After="CPM_SetUiBindFromBind" Sequence="both"
                  Condition="CPM_UI_BIND AND NOT (CPM_UI_BIND &gt;&lt; &quot;:&quot;) AND CPM_UI_BIND &lt;&gt; &quot;0.0.0.0&quot; AND NOT (CPM_UI_BIND &lt;&lt; &quot;127.&quot;)" />
 
+    <!-- Branding: the product icon (same file as the exe's ApplicationIcon) and the wizard artwork, all rendered by
+         docs/brand/logo-concepts/generate.ts assets. Dialog bitmap 493×312 (welcome/finish), banner 493×58. -->
+    <Icon Id="CaddyProxyManager.ico" SourceFile="$(var.RepoRoot)\src\CaddyManager\app.ico" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.RepoRoot)\installer\assets\dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.RepoRoot)\installer\assets\banner.bmp" />
+
     <!-- Add/Remove Programs -->
+    <Property Id="ARPPRODUCTICON" Value="CaddyProxyManager.ico" />
     <Property Id="ARPCOMMENTS" Value="Web UI to install, configure and monitor the Caddy web server / reverse proxy on Windows Server." />
     <Property Id="ARPCONTACT" Value="Caddy Proxy Manager" />
     <Property Id="ARPHELPTEXT" Value="Open the web UI on the server (http://localhost:81/ unless UI_PORT was changed). First-run setup token: C:\ProgramData\CaddyProxyManager\setup-token.txt" />

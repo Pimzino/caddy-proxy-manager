@@ -1,4 +1,11 @@
-# Caddy Proxy Manager
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.png">
+    <img src="docs/brand/logo-light.png" alt="Caddy Proxy Manager" width="360">
+  </picture>
+</p>
+
+<div align="center">
 
 [![Build & tests](https://github.com/Pimzino/caddy-proxy-manager/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Pimzino/caddy-proxy-manager/actions/workflows/build.yml)
 [![Latest release](https://img.shields.io/github/v/release/Pimzino/caddy-proxy-manager?sort=semver&display_name=tag&label=release)](https://github.com/Pimzino/caddy-proxy-manager/releases/latest)
@@ -9,6 +16,8 @@
 [![Last commit](https://img.shields.io/github/last-commit/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/commits/main)
 [![License: MIT](https://img.shields.io/github/license/Pimzino/caddy-proxy-manager)](LICENSE)
 [![Open issues](https://img.shields.io/github/issues/Pimzino/caddy-proxy-manager)](https://github.com/Pimzino/caddy-proxy-manager/issues)
+
+</div>
 
 A web-based reverse proxy manager for **[Caddy](https://caddyserver.com)**, built to run natively on **Windows** as a
 proper Windows service — Windows Server 2019, 2022 and 2025 (Desktop Experience or Server Core) and Windows 10/11,

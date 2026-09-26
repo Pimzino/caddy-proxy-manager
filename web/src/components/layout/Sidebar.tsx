@@ -3,7 +3,7 @@ import { PanelLeftClose, PanelLeftOpen, X } from 'lucide-react';
 import { useAuth } from '@/auth';
 import { cn } from '@/lib/cn';
 import { navGroups } from '@/nav';
-import { Logo } from './Logo';
+import { Logo, LogoMark } from './Logo';
 
 export function Sidebar({
   collapsed,
@@ -22,18 +22,14 @@ export function Sidebar({
   const compact = collapsed && !mobile;
   return (
     <div className={cn('flex h-full flex-col bg-sidebar', !mobile && 'border-r border-border')}>
-      <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b border-border', compact ? 'justify-center px-2' : 'px-4')}>
-        <Logo className="h-6 w-6 shrink-0" />
-        {!compact && (
-          <div className="min-w-0 flex-1 leading-tight">
-            <p className="truncate text-sm font-semibold text-fg">Caddy Proxy Manager</p>
-          </div>
-        )}
+      {/* The stacked logo needs more height than the 48px top bar; collapsed, the square mark lines up with it. */}
+      <div className={cn('flex shrink-0 items-center gap-2', compact ? 'h-12 justify-center border-b border-border px-2' : 'h-24 px-5')}>
+        {compact ? <LogoMark className="h-7 w-7" /> : <Logo className="h-[4.5rem]" />}
         {mobile && (
           <button
             type="button"
             onClick={onNavigate}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg"
+            className="mt-3 ml-auto flex h-7 w-7 items-center justify-center self-start rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg"
             aria-label="Close navigation"
           >
             <X size={16} />

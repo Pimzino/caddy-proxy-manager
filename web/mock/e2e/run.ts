@@ -462,6 +462,94 @@ async function serversScenario() {
   });
 }
 
+/**
+ * Branding: the raster logo (docs/brand/logo-concepts) replaced the old inline SVG everywhere in the UI.
+ * Failure modes checked: an image that 404s or fails to decode (naturalWidth 0), both theme variants showing at
+ * once (or neither), the collapsed sidebar still trying to fit the lockup, the sign-in page without the logo, the
+ * favicon link pointing at a missing or non-ICO file, and a leftover SVG logo/favicon.
+ */
+async function brandingScenario() {
+  const S = 'branding';
+  await scenario(S, {}, async ({ mock, page }) => {
+    // one entry per <img> of the logo that is actually displayed
+    const shown = `[...document.querySelectorAll('img[alt="Caddy Proxy Manager"]')].filter((i) => i.getClientRects().length)
+      .map((i) => ({ src: new URL(i.src).pathname, ok: i.complete && i.naturalWidth > 0, h: Math.round(i.getBoundingClientRect().height) }))`;
+    type Shown = { src: string; ok: boolean; h: number }[];
+    const setTheme = async (theme: 'light' | 'dark', sidebar: 'collapsed' | null, path: string, ready: string, what: string, logoVisible = true) => {
+      await page.eval(`localStorage.setItem('cpm.theme', ${js(theme)}); ${sidebar ? `localStorage.setItem('cpm.sidebar', 'collapsed')` : `localStorage.removeItem('cpm.sidebar')`}`);
+      await page.goto(`${mock.base}${path}`, ready, what);
+      if (logoVisible) await page.waitFor(`${what}: logo images decoded`, `(${shown}).length > 0 && (${shown}).every((i) => i.ok)`);
+    };
+    const oneLockup = (variant: 'light' | 'dark', minH: number) => async () => {
+      const imgs = await page.eval<Shown>(shown);
+      if (imgs.length !== 1) return `expected exactly one visible logo, got ${js(imgs)}`;
+      if (!/\/logo-(light|dark)(-[\w-]+)?\.png$/.test(imgs[0].src)) return `not the lockup PNG: ${imgs[0].src}`;
+      if (!imgs[0].src.includes(`logo-${variant}`)) return `expected the ${variant} lockup, got ${imgs[0].src}`;
+      if (imgs[0].h < minH) return `lockup only ${imgs[0].h}px tall (want ≥ ${minH}px so “Proxy Manager” stays legible)`;
+    };
+    const sidebarReady = `!!document.querySelector('aside img[alt="Caddy Proxy Manager"]')`;
+
+    await page.goto(`${mock.base}/`, sidebarReady, 'the dashboard');
+    await setTheme('light', null, '/', sidebarReady, 'the dashboard (light)');
+    await shot(page, 'branding-sidebar-light');
+    await check(S, ['WEB-BRAND'], 'light theme: the sidebar shows only the light lockup, loaded, ≥ 64px tall', oneLockup('light', 64));
+
+    await setTheme('dark', null, '/', sidebarReady, 'the dashboard (dark)');
+    await shot(page, 'branding-sidebar-dark');
+    await check(S, ['WEB-BRAND'], 'dark theme: the sidebar shows only the dark lockup, loaded, ≥ 64px tall', oneLockup('dark', 64));
+
+    await setTheme('light', 'collapsed', '/', sidebarReady, 'the dashboard (collapsed sidebar)');
+    await shot(page, 'branding-sidebar-collapsed');
+    await check(S, ['WEB-BRAND'], 'collapsed sidebar: the square mark replaces the lockup', async () => {
+      const imgs = await page.eval<Shown>(shown);
+      if (imgs.length !== 1 || !/\/mark(-[\w-]+)?\.png$/.test(imgs[0].src)) return `expected only the mark, got ${js(imgs)}`;
+    });
+
+    // phone width: the navigation drawer shows the lockup with the close button beside it
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await setTheme('light', null, '/', `!!document.querySelector('button[aria-label="Open navigation"]')`, 'the dashboard (phone)', false);
+    await page.eval(`document.querySelector('button[aria-label="Open navigation"]').click()`);
+    await page.waitFor('the navigation drawer', `!!document.querySelector('button[aria-label="Close navigation"]') && (${shown}).length > 0 && (${shown}).every((i) => i.ok) && document.getAnimations().every((x) => x.playState !== 'running')`);
+    await shot(page, 'branding-drawer-phone');
+    await check(S, ['WEB-BRAND'], 'phone drawer: the lockup and the close button sit side by side without overlapping', async () => {
+      const r = await page.eval<{ logo: number[]; close: number[] } | null>(`(() => {
+        const logo = [...document.querySelectorAll('img[alt="Caddy Proxy Manager"]')].find((i) => i.getClientRects().length && !i.closest('aside'));
+        const close = document.querySelector('button[aria-label="Close navigation"]');
+        if (!logo || !close) return null;
+        const a = logo.getBoundingClientRect(), b = close.getBoundingClientRect();
+        return { logo: [a.left, a.right], close: [b.left, b.right] };
+      })()`);
+      if (!r) return 'drawer logo or close button not found';
+      if (r.logo[1] > r.close[0]) return `logo (right edge ${r.logo[1]}) overlaps the close button (left edge ${r.close[0]})`;
+    });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+
+    await check(S, ['WEB-BRAND'], 'the favicon link serves an ICO (Vite-processed, so hashed in builds), and no SVG logo is left', async () => {
+      const r = await page.eval<{ href: string; status: number; magic: number[]; svgs: number; apple: number }>(`(async () => {
+        const href = document.querySelector('link[rel="icon"]').getAttribute('href');
+        const res = await fetch(href);
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const apple = (await fetch(document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'))).status;
+        return { href, status: res.status, magic: [...buf.slice(0, 4)], svgs: document.querySelectorAll('svg[viewBox="0 0 32 32"] rect.fill-accent, link[type="image/svg+xml"]').length, apple };
+      })()`);
+      if (r.status !== 200) return `favicon ${r.href} → HTTP ${r.status}`;
+      if (js(r.magic) !== js([0, 0, 1, 0])) return `favicon is not an ICO (first bytes ${js(r.magic)})`;
+      if (!/favicon(-[\w-]+)?\.ico$/.test(r.href) || r.href === '/favicon.ico') return `favicon is not the Vite-processed asset: ${r.href}`;
+      if (r.apple !== 200) return `apple-touch-icon → HTTP ${r.apple}`;
+      if (r.svgs) return `${r.svgs} SVG logo element(s)/favicon link(s) still present`;
+    });
+
+    // sign-in page: sign out first (the mock starts signed in)
+    await mock.api('POST', '/api/auth/logout');
+    const loginReady = `!!document.querySelector('input[type="password"]')`;
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(theme, null, '/login', loginReady, `the sign-in page (${theme})`);
+      await shot(page, `branding-login-${theme}`);
+      await check(S, ['WEB-BRAND'], `sign-in page (${theme}): the ${theme} lockup is shown above the form, ≥ 80px tall`, oneLockup(theme, 80));
+    }
+  });
+}
+
 // ---------------------------------------------------------------- main
 
 const started = new Date();
@@ -471,6 +559,7 @@ try {
   await settingsScenario();
   await dnsOnlyScenarios();
   await serversScenario();
+  await brandingScenario();
 } finally {
   mkdirSync(ARTIFACTS, { recursive: true });
   const failed = checks.filter((c) => c.result === 'fail').length;

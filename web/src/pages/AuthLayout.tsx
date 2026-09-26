@@ -5,9 +5,8 @@ export function AuthLayout({ title, description, children, footer }: { title: st
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center bg-bg px-4 py-10">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-2.5">
-          <Logo className="h-8 w-8" />
-          <span className="text-base font-semibold text-fg">Caddy Proxy Manager</span>
+        <div className="mb-7 flex justify-center">
+          <Logo className="h-24" />
         </div>
         <div className="rounded-lg border border-border bg-surface p-6 shadow-xs">
           <h1 className="text-base font-semibold text-fg">{title}</h1>
