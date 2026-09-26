@@ -1,5 +1,6 @@
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
+using CaddyManager.Core.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -35,8 +36,10 @@ internal static class ClusterEndpoints
         {
             try
             {
-                var status = cluster.Join(body?.Token);
-                audit.Record("joined", "cluster", cluster.Settings.NodeId, status.PrimaryName, $"Joined the cluster of '{status.PrimaryName}' as a managed node");
+                var status = cluster.Join(body?.Token, out var rejoined);
+                audit.Record("joined", "cluster", cluster.Settings.NodeId, status.PrimaryName, rejoined
+                    ? $"Joined the cluster of '{status.PrimaryName}' again with a new token"
+                    : $"Joined the cluster of '{status.PrimaryName}' as a managed node");
                 return Results.Ok(status);
             }
             catch (FormatException ex) { return ApiResults.BadRequest(ex.Message, new Dictionary<string, string[]> { ["token"] = [ex.Message] }); }
@@ -76,7 +79,8 @@ internal static class ClusterEndpoints
         {
             if (id == Local) return Results.Ok(await cluster.LocalSummaryAsync(ct));
             if (cluster.FindNode(id) is null) return ApiResults.NotFound("Server");
-            // Fresh: heartbeat now (QueryTimeout); the summary falls back to the cached data when the node does not answer.
+            // Fresh: `hello` now (QueryTimeout); the summary falls back to the cached data when the node does not answer. A node
+            // that is behind gets a background push — the request never waits for a sync.
             var node = await worker.HeartbeatAsync(id, ct);
             return node is null ? ApiResults.NotFound("Server") : Results.Ok(ClusterService.ToSummary(node));
         });
@@ -147,16 +151,20 @@ internal static class ClusterEndpoints
             return Results.Ok(ClusterService.ToSummary(node));
         }).RequireAuthorization(Policies.Admin);
 
-        g.MapPost("/{id}/token", (string id, ClusterService cluster, NodeClient client, IAuditLog audit) =>
+        g.MapPost("/{id}/token", async (string id, ClusterService cluster, ClusterWorker worker, IAuditLog audit, CancellationToken ct) =>
         {
             if (id == Local || cluster.FindNode(id) is not { } node) return ApiResults.NotFound("Server");
-            var token = cluster.RegenerateToken(id);
-            client.Reset(id);
-            audit.Record("tokenRegenerated", "server", id, node.Name, "New join token issued; the previous token and key no longer work");
-            return Results.Ok(new { joinToken = token });
+            // Key rotation: the node gets the new key over the encrypted channel (`rekey`); until it confirmed, it still
+            // trusts its current key (KeyRotationPending) and the rotation is retried at every contact.
+            if (await worker.RotateKeyAsync(id, ct) is not { } rotation) return ApiResults.NotFound("Server");
+            audit.Record("tokenRegenerated", "server", id, node.Name, rotation.Rotated
+                ? "New key and join token: the node switched to the new key; the previous token and key no longer work"
+                : "New key and join token issued, but the node could not be reached: it still accepts the previous key until the rotation " +
+                  "completes (retried at every contact) or the node leaves the cluster");
+            return Results.Ok(new RegenerateTokenResult { JoinToken = rotation.Token, Rotated = rotation.Rotated });
         }).RequireAuthorization(Policies.Admin);
 
-        g.MapDelete("/{id}", async (string id, ClusterService cluster, NodeClient client, IAuditLog audit) =>
+        g.MapDelete("/{id}", async (string id, ClusterService cluster, NodeClient client, IAuditLog audit, IServiceProvider sp) =>
         {
             if (id == Local || cluster.FindNode(id) is not { } node) return ApiResults.NotFound("Server");
             string outcome;
@@ -168,7 +176,13 @@ internal static class ClusterEndpoints
             }
             catch (NodeRpcException ex)
             {
-                outcome = "the node could not be told to leave (" + ex.Message + "); run \"CaddyManager.exe cluster leave\" on it";
+                outcome = "the node could not be told to leave (" + ex.Message + "); it still trusts its cluster key until " +
+                          "\"CaddyManager.exe cluster leave\" (or Settings › Cluster › Leave) is run on it";
+                // Visible on the Events page: whoever holds the node's key (or token) can still manage it.
+                sp.GetService<IEventSink>()?.Raise(EventSeverity.Warning, "cluster", $"Server '{node.Name}' was removed but could not be told to leave",
+                    $"{node.Url}: {ex.Message}. The server still accepts requests signed with its cluster key and serves its last configuration. " +
+                    "Run \"CaddyManager.exe cluster leave\" on it (service stopped) or Settings › Cluster › Leave there.",
+                    key: ClusterWorker.RemovedKeyPrefix + node.Id);
             }
             cluster.RemoveNode(id);
             client.Reset(id);

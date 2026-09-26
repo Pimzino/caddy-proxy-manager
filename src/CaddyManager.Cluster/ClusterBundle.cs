@@ -57,7 +57,16 @@ public static class ClusterBundle
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
             {
-                warnings.Add($"Certificate '{c.Name}' was not replicated: its files could not be read on the primary ({ex.Message}).");
+                // Still listed (without material): the certificate exists on the primary, only its files could not be read
+                // just now (a renewal in progress, a share briefly unreachable). Nodes keep the copy they have instead of
+                // deleting it and dropping every site that uses it.
+                warnings.Add($"Certificate '{c.Name}' could not be read on the primary ({ex.Message}); nodes keep the copy they already have.");
+                certs.Add(new JsonObject
+                {
+                    ["id"] = c.Id,
+                    ["name"] = c.Name,
+                    ["materialUnavailable"] = true,
+                });
                 continue;
             }
             // Only what a node needs: it stores the certificate as Uploaded in its own certificate store. Source-specific
@@ -100,6 +109,21 @@ public static class ClusterBundle
         bundle["caddySettings"] = settingsNode;
         bundle["caddySecrets"] = secretNode;
         bundle["plugins"] = JsonSerializer.SerializeToNode(store.GetSettings<BinarySettings>().Plugins, o);
+
+        // CustomAcmeRootPath is node-local (a path on the primary means nothing on a node): the root certificate itself is
+        // replicated and each node writes it to its own data folder.
+        if (settings.AcmeCa == AcmeCa.Custom && !string.IsNullOrWhiteSpace(settings.CustomAcmeRootPath))
+        {
+            try
+            {
+                bundle["customAcmeRootPem"] = ReadCertificatePem(settings.CustomAcmeRootPath.Trim());
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException or NotSupportedException)
+            {
+                warnings.Add($"The custom ACME root certificate '{settings.CustomAcmeRootPath}' could not be read on the primary ({ex.Message}); nodes keep the copy they already have.");
+                bundle["customAcmeRootUnavailable"] = true;
+            }
+        }
 
         var canonical = Canonicalize(bundle);
         return new BundleSnapshot(canonical, Revision(canonical), warnings);
@@ -147,6 +171,10 @@ internal sealed class BundleContent
     public JsonObject CaddySettings { get; init; } = new();
     public Dictionary<string, string> CaddySecrets { get; init; } = new();
     public List<string> Plugins { get; init; } = new();
+    /// <summary>PEM of the primary's custom ACME CA root (AcmeCa Custom with a root file), written to the node's data folder.</summary>
+    public string? CustomAcmeRootPem { get; init; }
+    /// <summary>The primary uses a custom ACME root but could not read it: the node keeps what it has.</summary>
+    public bool CustomAcmeRootUnavailable { get; init; }
 
     public static BundleContent Parse(JsonObject bundle)
     {
@@ -162,6 +190,8 @@ internal sealed class BundleContent
             CaddySettings = bundle["caddySettings"] as JsonObject ?? new JsonObject(),
             CaddySecrets = bundle["caddySecrets"]?.Deserialize<Dictionary<string, string>>(o) ?? new(),
             Plugins = bundle["plugins"]?.Deserialize<List<string>>(o) ?? new(),
+            CustomAcmeRootPem = bundle["customAcmeRootPem"]?.GetValue<string>(),
+            CustomAcmeRootUnavailable = bundle["customAcmeRootUnavailable"]?.GetValue<bool>() ?? false,
         };
     }
 }
@@ -179,4 +209,6 @@ internal sealed class BundleCertificate
     public DateTime CreatedAt { get; set; }
     public string CertPem { get; set; } = "";
     public string KeyPem { get; set; } = "";
+    /// <summary>The primary could not read the files just now: keep this node's copy (see ClusterBundle.Build).</summary>
+    public bool MaterialUnavailable { get; set; }
 }

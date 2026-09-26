@@ -18,11 +18,14 @@ What the primary replicates to every node:
 - certificates (the PEM chain and key are sent; nodes store them as *Uploaded* in their own certificate store under the
   same id — also certificates that are file-path, PFX or Windows-store based on the primary);
 - Caddy settings **except** the node-local ones: HTTP port, HTTPS port, public HTTPS port, bind addresses, admin API
-  address and certificate store path (`CaddySettings.NodeLocalProperties`). Secrets (EAB key, DNS provider credentials,
-  Redis password/encryption key, custom storage JSON) travel inside the encrypted channel and are re-encrypted with the
-  node's own DPAPI key;
+  address, certificate store path and custom ACME root certificate path (`CaddySettings.NodeLocalProperties`). Secrets
+  (EAB key, DNS provider credentials, Redis password/encryption key, custom storage JSON) travel inside the encrypted
+  channel and are re-encrypted with the node's own DPAPI key;
+- with a custom ACME CA, the **content** of its root certificate file: each node writes it to
+  `C:\ProgramData\CaddyProxyManager\caddy\cluster-acme-root.pem` and uses that file, unless a node administrator set
+  another root certificate path on the node (a node-local setting);
 - the desired Caddy plugins. A node whose Caddy lacks a desired plugin rebuilds Caddy with the plugins first (a normal
-  binary install job on the node) and applies the configuration when that has finished.
+  binary install job on the node) and stores and applies the configuration only when that has succeeded (see below).
 
 What stays local on every server: users and sign-in settings, the management UI settings, notifications, backups,
 readiness, logs, events, the Caddy binary/service actions and the node-local Caddy settings above.
@@ -31,6 +34,22 @@ The configuration is sent as one **bundle**; its revision is the SHA-256 of its 
 *desired* vs *applied* revision). A node applies a bundle completely or not at all: when its Caddy rejects the
 configuration, the node restores its previous data and keeps running the previous configuration (Caddy never loads a
 config it cannot provision). **Nodes keep serving their last applied configuration while the primary is unreachable.**
+
+Consistency rules:
+
+- The primary builds bundles only from **committed** configuration: while a change is being saved and applied (and
+  possibly rolled back because its Caddy rejected it) a heartbeat reuses the last bundle, so nodes never receive a change
+  the primary itself did not accept.
+- A node stores and applies a bundle while holding the same lock as its own configuration changes, so a node-local
+  settings change (e.g. its HTTPS port) and a replication never overwrite each other.
+- A bundle that needs plugins the node's Caddy lacks is kept aside (*pending*) until Caddy has been rebuilt; the node's
+  stored configuration is not touched before that. A newer revision arriving during the rebuild replaces the waiting
+  one. When the rebuild fails, the node keeps its previous configuration and plugin list, reports the error once
+  (`server-sync` alert) and retries that plugin set automatically only after 10 minutes, then 30 minutes, 1.5 hours ...
+  (at most every 6 hours); **Sync now** retries at once.
+- A certificate whose files cannot be read on the primary at the moment of a push (a renewal in progress, a share
+  briefly unreachable) stays on the nodes unchanged (a warning is shown on the Servers page) instead of being deleted.
+  Only certificates deleted on the primary disappear from the nodes.
 
 Caddy's admin API stays on loopback on every server: the primary talks to the nodes' **manager**
 (`POST /api/cluster/rpc` on the management UI port), which applies the configuration to its local Caddy.
@@ -116,8 +135,12 @@ Steps
    net start CaddyProxyManager
    ```
 
-   Only a standalone server without nodes of its own can join. Joining replaces the node's hosts, certificates, access
-   lists, streams and replicated settings at the first sync (its node-local settings, users etc. stay).
+   A standalone server without nodes of its own can join. A node can join **its own primary** again with a new token
+   (same primary name, or a token issued for its node id — e.g. after **Regenerate token**, or after the primary was
+   restored) with `cluster join <token>` (or `POST /api/cluster/join`), without leaving first; a node of another
+   primary must leave that cluster first. Joining replaces the
+   node's hosts, certificates, access lists, streams and replicated settings at the first sync (its node-local settings,
+   users etc. stay).
 3. Within one heartbeat (15 s) the primary pushes its configuration. The Servers page shows the node *Online* with
    matching desired/applied revisions; the node shows the banner *Managed by &lt;primary&gt;*.
 4. Configure shared storage (above) and point your load balancer/DNS at all servers.
@@ -126,22 +149,41 @@ After that, every change on the primary is pushed about 2 s after it is applied 
 heartbeat, which also resyncs a node that reports another revision). **Sync now** pushes immediately.
 
 Removing: Servers → **Remove** tells the node to leave (it becomes standalone and keeps its last configuration, now
-editable). If the node is unreachable, run `CaddyManager.exe cluster leave` on it with the service stopped. A node can
-also leave by itself (Settings → Cluster → Leave), after which the primary shows it as not joined.
+editable). If the node is unreachable it is removed on the primary anyway, but it **still trusts its cluster key** (whoever
+holds that key or the node's join token can still manage it): the primary raises a `server-removed:<nodeId>` warning, and
+you run `CaddyManager.exe cluster leave` on the node with the service stopped (or Settings → Cluster → Leave there). A
+node can also leave by itself (Settings → Cluster → Leave), after which the primary shows it as not joined (*pending*,
+without alerts).
 
 ## Security model
 
 - **Join token** `cpmj1.<base64url(json)>` = `{ v: 1, primary: <primary name>, nodeId, secret: <32 random bytes> }`. It is
-  shown once; anyone holding it can make a server a node of your primary — treat it like a password. **Regenerate
-  token** issues a new secret; the old token and the node's current key stop working immediately (the node shows as
-  *Pending* until it leaves and joins again with the new token). Both sides store the secret encrypted with DPAPI.
+  shown once; the secret in it is the node's cluster key, so anyone holding the token can manage the node (and make a
+  server a node of your primary) — treat it like a password. Both sides store the secret encrypted with DPAPI.
+- **Regenerate token** is a key rotation: the primary sends the new secret to the node over the encrypted channel (RPC
+  `rekey`, sealed with the current key); the node switches at once and the old key and token stop working. The answer
+  (`{ joinToken, rotated }`) says whether the node confirmed. When the node cannot be reached, the rotation is
+  **pending** (Servers page: *key rotation pending*): the node **still accepts its previous key** until the primary reaches
+  it — it retries at every heartbeat — or the node joins again with the new token or leaves. The new token is needed only
+  to join the node again (e.g. after it left or its stored key became unusable).
+- A node obeys one **primary instance**: every RPC carries the primary's random instance id and the node pins the first one
+  it sees after joining. A copy of the primary running alongside the original (a cloned VM, a restored backup) is refused
+  (`server-sync` alert on that copy: *obeys another instance of the primary*), so two primaries never take turns
+  reconfiguring a node. A primary database that is started on a machine with another name becomes a new instance: after
+  a restore on new hardware, regenerate each node's token there and join the nodes again with it (that also replaces
+  keys that DPAPI cannot decrypt on the new machine).
 - **Every RPC** is `POST /api/cluster/rpc` with `{ v, nodeId, ts, nonce, ct }`: AES-256-GCM with a key derived by
   HKDF-SHA256 from the secret (salt `cpm-cluster-v1`, info `aes-256-gcm`). The associated data binds direction, node id,
   timestamp and nonce (`cpm1|req|<nodeId>|<ts>|<nonce>`); the response additionally binds the request nonce
   (`cpm1|resp|<nodeId>|<ts>|<nonce>|<requestNonce>`), so a response cannot be replayed for another request. The node
-  rejects timestamps outside ±300 s, nonces seen in the last 10 minutes, unknown node ids and anything that does not
-  decrypt with **401 without detail** (the reason is in the node's manager log), and answers **404** when it is not a
+  rejects timestamps outside ±300 s, nonces seen in the last 10 minutes, requests signed before its manager started (the
+  nonce memory does not survive a restart; the primary's clock offset is remembered for this check, with 2 s tolerance),
+  unknown node ids and anything that does not decrypt with **401 without detail**, and answers **404** when it is not a
   node. The endpoint is anonymous at the cookie level: possession of the key is the authentication.
+- Rejections are logged in the node's manager log (and so in the Windows Application event log) at most once per remote
+  address and minute (`Rejected cluster RPC from …`, the next one says how many were not logged); an address that
+  causes 30 rejections within a minute gets **429** without its requests being read until the minute is over. Request
+  bodies are limited to 64 MB (also when sent chunked): a larger configuration bundle is refused with **413**.
 - The payload (configuration, certificates' private keys, DNS/Redis secrets) is always encrypted end to end, so the
   channel is confidential even over plain `http://`. Use **https** node URLs anyway: the TLS certificate is checked, and
   a self-signed/untrusted certificate is accepted only when its SHA-256 fingerprint matches the one **pinned** when the
@@ -150,18 +192,22 @@ also leave by itself (Settings → Cluster → Leave), after which the primary s
 - Node administrators cannot change replicated resources (409 *Managed by the cluster primary*), but they remain
   administrators of that Windows server: they can leave the cluster, and anyone who controls a node controls what it
   serves. Only join servers that are managed by the same team.
-- Every cluster action is audited: `server` (created, updated, tokenRegenerated, deleted, synced, restarted, caddyUpdate)
-  on the primary; `cluster` (joined, left, synced, syncFailed) on the node; CLI actions as `cli:<user>`.
+- Every cluster action is audited: `server` (created, updated, tokenRegenerated, keyRotated, deleted, synced, restarted,
+  caddyUpdate) on the primary; `cluster` (joined, left, keyRotated, synced, syncFailed) on the node; CLI actions as
+  `cli:<user>`.
 
 ## Monitoring
 
 | Event key | When | Alert rule |
 |---|---|---|
 | `server-offline:<nodeId>` | 3 consecutive heartbeats failed (Warning); *Recovered* when it answers again | Server offline |
-| `server-sync:<nodeId>` | the node could not apply the configuration — Caddy's (secret-scrubbed) error; *Recovered* after the next successful sync or when the node runs the current configuration again | Configuration failure |
+| `server-sync:<nodeId>` | the node could not apply the configuration — Caddy's (secret-scrubbed) error, a failed Caddy rebuild, a bundle the node refuses (413), or the node obeys another primary instance; *Recovered* once the node runs the current configuration (a sync that is only pending — Caddy being rebuilt again — does not count) | Configuration failure |
+| `server-removed:<nodeId>` | the server was removed on the primary but could not be told to leave: it still trusts its cluster key | — (Events page) |
 
-A revision the node rejected is not pushed again automatically for 5 minutes (a new change or **Sync now** is pushed at
-once), so a persistent failure does not flood the node's configuration history.
+A revision the node could not apply (rejected by its Caddy, failed rebuild, refused as too large) is not pushed again
+automatically for 5 minutes (a new change or **Sync now** is pushed at once), so a persistent failure does not flood the
+node's configuration history. A server that has not joined yet (or left) is shown as *pending*: configuration changes are
+not pushed to it and raise no alert.
 
 The Servers page shows each server's status (online / offline / pending / error), manager and Caddy versions, live
 resources, sync state, and — per server — details, charts and traffic statistics (proxied from the node through the
@@ -172,12 +218,16 @@ same encrypted channel). Caddy on a node can be restarted and updated from the p
 | Symptom | Cause / fix |
 |---|---|
 | *The server at … is not a cluster node* | The node has not joined yet or left the cluster: join it with the token (regenerate one if it was lost). |
-| *The node rejected the request (authentication failed)* | The token was regenerated (join again with the new one), the node left/joined another primary, or the clocks differ by more than 5 minutes. The node's manager log names the exact reason (`Rejected cluster RPC from …`). |
+| *The node rejected the request (authentication failed)* | The node left or joined another primary, its stored key cannot be decrypted (database restored on another machine), or the clocks differ by more than 5 minutes: regenerate the token and join the node again with it. The node's manager log names the reason (`Rejected cluster RPC from …`). |
+| *Key rotation pending* | The node was not reachable when the token was regenerated; it still accepts its previous key. The rotation completes at the next successful heartbeat, when the node joins again with the new token, or when it leaves. |
+| *This server obeys another instance of the primary …* | Two primaries with the same keys (a clone or restored copy running alongside the original). Shut the copy down; to move the node to this instance, regenerate its token here and join the node again with it. |
+| *The node refused the request because it is too large (HTTP 413)* | The configuration bundle exceeds 64 MB (thousands of certificates). Remove unused certificates or hosts. |
+| *The node is temporarily refusing requests from this address (HTTP 429)* | Many rejected cluster requests came from the primary's address within a minute (wrong key, or something else on that address probing the node). It clears after a minute; check the node's manager log. |
 | *Its HTTPS certificate is not trusted and does not match the pinned fingerprint* | The node's UI certificate changed. Verify the new certificate, then Servers → Edit → Re-pin. |
 | *The node redirects to https://…* | The node redirects HTTP to HTTPS for its UI: change the server URL to the https address. |
 | Node *Offline* | Firewall/port/DNS between primary and node, or the node's manager service is stopped. The node keeps serving. |
 | *Configuration sync to server … failed* | Caddy on the node rejected the configuration — typically a plugin/module only the primary has (add it to the desired plugins so nodes rebuild) or a node-local port that is already in use on the node. The node keeps its previous configuration. |
-| Node *pending* with a Caddy rebuild | The node downloads Caddy with the desired plugins (needs access to caddyserver.com, or the outbound proxy in the node's Settings → Updates). The job log is on the node's Caddy page. |
+| Node *pending* with a Caddy rebuild | The node downloads Caddy with the desired plugins (needs access to caddyserver.com, or the outbound proxy in the node's Settings → Updates). The job log is on the node's Caddy page. The node keeps its previous configuration until the rebuild succeeded; after a failure it retries with growing intervals (10 min, 30 min, ... up to 6 h) — **Sync now** retries at once. |
 | Every server requests its own certificates / HTTP-01 fails behind the load balancer | Storage backend is Local: configure shared storage. |
 | Caddy log `permission denied` / `access is denied` under the storage path | The computer account lacks Modify on the share/folder, or the group membership is not effective yet (reboot / `klist -li 0x3e7 purge`). |
 | `cluster join` says *Stop the CaddyProxyManager service first* | The CLI opens the database directly: `net stop CaddyProxyManager`, run the command, `net start CaddyProxyManager`. |

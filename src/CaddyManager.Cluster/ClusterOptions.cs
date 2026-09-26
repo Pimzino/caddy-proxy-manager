@@ -29,4 +29,23 @@ public sealed class ClusterOptions
     public TimeSpan NonceRetention { get; set; } = TimeSpan.FromMinutes(10);
     /// <summary>How often a node polls the Caddy rebuild job it started for missing plugins.</summary>
     public TimeSpan PendingJobPoll { get; set; } = TimeSpan.FromSeconds(2);
+    /// <summary>
+    /// After a failed Caddy rebuild (missing plugins) a node retries the same plugin set automatically only after this
+    /// delay, tripled after every further failure (capped by <see cref="RebuildRetryMaxBackoff"/>). "Sync now" retries at once.
+    /// </summary>
+    public TimeSpan RebuildRetryBackoff { get; set; } = TimeSpan.FromMinutes(10);
+    public TimeSpan RebuildRetryMaxBackoff { get; set; } = TimeSpan.FromHours(6);
+    /// <summary>Largest RPC request body a node accepts (a sync carries the whole configuration bundle).</summary>
+    public long MaxRpcBodyBytes { get; set; } = 64L * 1024 * 1024;
+    /// <summary>
+    /// Rejected RPCs (bad key, malformed, replayed...) one remote address may cause per <see cref="RpcRejectionWindow"/>
+    /// before the node answers 429 without reading or logging further requests from it.
+    /// </summary>
+    public int RpcRejectionLimit { get; set; } = 30;
+    public TimeSpan RpcRejectionWindow { get; set; } = TimeSpan.FromMinutes(1);
+    /// <summary>
+    /// How long a heartbeat waits for the configuration mutation lock to build a new bundle; when a change is being applied
+    /// it reuses the last bundle built from committed configuration instead.
+    /// </summary>
+    public TimeSpan BundleLockTimeout { get; set; } = TimeSpan.FromMilliseconds(250);
 }

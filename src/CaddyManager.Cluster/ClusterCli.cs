@@ -93,7 +93,8 @@ public static class ClusterCli
     private static int Join(ClusterService cluster, IStore store, string token, TextWriter stdout, TextWriter stderr)
     {
         ClusterStatus status;
-        try { status = cluster.Join(token); }
+        bool rejoined;
+        try { status = cluster.Join(token, out rejoined); }
         catch (FormatException ex)
         {
             stderr.WriteLine(ex.Message);
@@ -104,8 +105,12 @@ public static class ClusterCli
             stderr.WriteLine(ex.Message);
             return 1;
         }
-        Audit(store, "joined", status.PrimaryName, $"Joined the cluster of '{status.PrimaryName}' from the command line");
-        stdout.WriteLine($"This server is now a node of '{status.PrimaryName}' (node id {cluster.Settings.NodeId}).");
+        Audit(store, "joined", status.PrimaryName, rejoined
+            ? $"Joined the cluster of '{status.PrimaryName}' again with a new token from the command line"
+            : $"Joined the cluster of '{status.PrimaryName}' from the command line");
+        stdout.WriteLine(rejoined
+            ? $"This server joined the cluster of '{status.PrimaryName}' again with the new token (node id {cluster.Settings.NodeId}); the previous key no longer works."
+            : $"This server is now a node of '{status.PrimaryName}' (node id {cluster.Settings.NodeId}).");
         stdout.WriteLine("Start the CaddyProxyManager service: the primary pushes its configuration at its next heartbeat. Hosts, certificates,");
         stdout.WriteLine("access lists, streams, Caddy settings (except listeners and local paths) and plugins are then managed on the primary.");
         return 0;
@@ -173,7 +178,8 @@ public static class ClusterCli
     private static void PrintUsage(TextWriter w)
     {
         w.WriteLine("Usage:");
-        w.WriteLine("  CaddyManager.exe cluster join <token> [--data-dir <dir>]   Make this server a node of the primary that issued the token.");
+        w.WriteLine("  CaddyManager.exe cluster join <token> [--data-dir <dir>]   Make this server a node of the primary that issued the token");
+        w.WriteLine("                                                             (a node joins its own primary again with a new token).");
         w.WriteLine("  CaddyManager.exe cluster leave [--data-dir <dir>]          Leave the cluster (keeps the last applied configuration).");
         w.WriteLine("  CaddyManager.exe cluster status [--data-dir <dir>]         Show this server's cluster role and state.");
         w.WriteLine($"Stop the {AppPaths.ManagerServiceName} service before running these commands.");

@@ -27,6 +27,28 @@ public sealed class ClusterSettings : ISettingsDocument
     public string? PendingJobId { get; set; }
     /// <summary>Node only: error of the last failed sync (cleared by the next successful one).</summary>
     public string? LastSyncError { get; set; }
+    /// <summary>Node only: revision <see cref="LastSyncError"/> belongs to (reported in hello so the primary can throttle it).</summary>
+    public string? LastSyncErrorRevision { get; set; }
+    /// <summary>
+    /// Node only: the primary instance (PrimaryInstanceId) this node obeys, pinned at the first authenticated RPC after
+    /// joining. RPCs from another instance holding the same key (a cloned or restored primary running alongside the
+    /// original) are refused. Joining again clears it.
+    /// </summary>
+    public string? PinnedPrimaryId { get; set; }
+    /// <summary>
+    /// Node only: the primary's clock minus this node's clock (seconds), as measured from accepted RPCs. After a manager
+    /// restart, requests signed before the restart (on the primary's clock) are refused, so a captured request cannot be
+    /// replayed once the in-memory nonce cache is gone.
+    /// </summary>
+    public long? PrimaryClockOffsetSeconds { get; set; }
+
+    /// <summary>Primary only: random id of this primary instance, sent with every RPC (nodes pin it).</summary>
+    public string? PrimaryInstanceId { get; set; }
+    /// <summary>
+    /// Primary only: the machine <see cref="PrimaryInstanceId"/> was created on. A database restored on (or cloned to) a
+    /// machine with another name gets a new id, so the nodes do not obey two primaries at once.
+    /// </summary>
+    public string? PrimaryInstanceMachine { get; set; }
 }
 
 /// <summary>A managed node, as known by the primary.</summary>
@@ -37,6 +59,11 @@ public sealed class ClusterNode : Entity
     public string Url { get; set; } = "";
     /// <summary>Shared 32-byte cluster secret (base64), protected with ISecretProtector.</summary>
     public string SecretProtected { get; set; } = "";
+    /// <summary>
+    /// A new secret issued by "Regenerate token" that the node has not confirmed yet (the `rekey` RPC could not reach it).
+    /// Until then the node still trusts <see cref="SecretProtected"/>; the rotation is retried on every contact.
+    /// </summary>
+    public string? PendingSecretProtected { get; set; }
     /// <summary>SHA-256 fingerprint (AA:BB:...) of the node's HTTPS certificate pinned on add/first contact (TOFU).</summary>
     public string? PinnedFingerprint { get; set; }
     public DateTime? TokenIssuedAt { get; set; }

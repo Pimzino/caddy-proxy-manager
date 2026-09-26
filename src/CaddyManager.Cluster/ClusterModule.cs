@@ -19,6 +19,7 @@ public static class ClusterModule
         services.AddSingleton<ClusterService>();
         services.AddSingleton<IClusterRole>(sp => sp.GetRequiredService<ClusterService>());
         services.AddSingleton<NonceCache>();
+        services.AddSingleton<RpcRejectionThrottle>();
         services.AddSingleton<NodeClient>();
         services.AddSingleton<NodeSync>();
         services.AddSingleton<NodeRpcHandler>();

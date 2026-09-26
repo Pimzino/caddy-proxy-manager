@@ -126,6 +126,31 @@ public sealed class TestCertificateMaterialStore(CertificateFileStore files) : I
     }
 }
 
+/// <summary>
+/// IConfigMutationLock over the Config module's ConfigMutationGate (the lock every Config mutation takes) — registered only
+/// when the Config module in this build does not provide one yet (it is implemented by the Config builder in parallel).
+/// </summary>
+public sealed class TestConfigMutationLock(CaddyManager.Config.Endpoints.ConfigMutationGate gate) : IConfigMutationLock
+{
+    public async Task<IDisposable> AcquireAsync(CancellationToken ct = default)
+    {
+        await gate.Lock.WaitAsync(ct);
+        return new Releaser(gate.Lock);
+    }
+
+    public async Task<IDisposable?> TryAcquireAsync(TimeSpan timeout, CancellationToken ct = default) =>
+        await gate.Lock.WaitAsync(timeout, ct) ? new Releaser(gate.Lock) : null;
+
+    private sealed class Releaser(SemaphoreSlim semaphore) : IDisposable
+    {
+        private int _released;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0) semaphore.Release();
+        }
+    }
+}
+
 /// <summary>Collects log lines of one manager (printed when a test fails).</summary>
 public sealed class CaptureLoggerProvider(string prefix) : ILoggerProvider
 {
@@ -175,6 +200,7 @@ public sealed class Manager : IAsyncDisposable
     /// <summary>Type of the registered IServerTelemetry (the Telemetry module's ServerTelemetry).</summary>
     public string? TelemetryImplementation { get; private set; }
     public bool UsesTestMaterialStore { get; private set; }
+    public bool UsesTestMutationLock { get; private set; }
     /// <summary>Set when the Config module in this build has no IConfigChangeFeed: the test raises Applied itself.</summary>
     public FakeConfigChangeFeed? FakeFeed { get; private set; }
     private Action<ClusterOptions>? _clusterOptions;
@@ -273,6 +299,8 @@ public sealed class Manager : IAsyncDisposable
         builder.Services.TryAddSingleton<IConfigChangeFeed>(fakeFeed);
         // ICertificateMaterialStore is provided by the Config module; the stand-in is used only when it is absent.
         builder.Services.TryAddSingleton<ICertificateMaterialStore>(sp => new TestCertificateMaterialStore(sp.GetRequiredService<CertificateFileStore>()));
+        // IConfigMutationLock is provided by the Config module; the stand-in (over the same gate) is used only when it is absent.
+        builder.Services.TryAddSingleton<IConfigMutationLock>(sp => new TestConfigMutationLock(sp.GetRequiredService<CaddyManager.Config.Endpoints.ConfigMutationGate>()));
         builder.Services.ConfigureHttpJsonOptions(o => JsonDefaults.Configure(o.SerializerOptions));
         builder.Services.AddProblemDetails();
 
@@ -290,6 +318,7 @@ public sealed class Manager : IAsyncDisposable
         App = app;
         TelemetryImplementation = app.Services.GetService<IServerTelemetry>()?.GetType().FullName;
         UsesTestMaterialStore = app.Services.GetService<ICertificateMaterialStore>() is TestCertificateMaterialStore;
+        UsesTestMutationLock = app.Services.GetService<IConfigMutationLock>() is TestConfigMutationLock;
         FakeFeed = ReferenceEquals(app.Services.GetService<IConfigChangeFeed>(), fakeFeed) ? fakeFeed : null;
         await app.StartAsync();
 

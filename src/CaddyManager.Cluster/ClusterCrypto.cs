@@ -141,10 +141,17 @@ public static class ClusterCrypto
     }
 }
 
-/// <summary>Remembers RPC nonces seen by this node so a captured request cannot be replayed.</summary>
+/// <summary>
+/// Remembers RPC nonces seen by this node so a captured request cannot be replayed. The cache lives in memory, so it also
+/// records when it was created (this manager's start): NodeRpcHandler refuses requests signed before that (see
+/// ClusterSettings.PrimaryClockOffsetSeconds), which a restart would otherwise let through once.
+/// </summary>
 public sealed class NonceCache(TimeProvider time)
 {
     private readonly ConcurrentDictionary<string, DateTime> _seen = new(StringComparer.Ordinal);
+
+    /// <summary>Unix seconds (this server's clock) when this manager instance started accepting RPCs.</summary>
+    public long StartedAtUnix { get; } = time.GetUtcNow().ToUnixTimeSeconds();
     private DateTime _nextPrune = DateTime.MinValue;
 
     /// <summary>False when the nonce was already used within <paramref name="retention"/>.</summary>

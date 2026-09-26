@@ -131,14 +131,23 @@ public sealed class ClusterService : IClusterRole
 
     // ------------------------------------------------------------------ membership (node side)
 
-    /// <summary>Joins the cluster of the primary that issued <paramref name="token"/>. Only a standalone server without nodes can join.</summary>
-    public ClusterStatus Join(string? token)
+    /// <summary>
+    /// Joins the cluster of the primary that issued <paramref name="token"/>. A standalone server without nodes can join;
+    /// a node can join again with a new token of its own primary (same primary name, or a token for its node id), e.g.
+    /// after the primary regenerated its token or was restored. A node of another primary must leave first.
+    /// </summary>
+    public ClusterStatus Join(string? token) => Join(token, out _);
+
+    public ClusterStatus Join(string? token, out bool rejoined)
     {
         var t = JoinToken.Parse(token);
         lock (_gate)
         {
-            if (_settings.Role == ClusterRole.Node)
-                throw new ClusterConflictException($"This server is already a node of '{_settings.PrimaryName}'. Leave that cluster first.");
+            rejoined = _settings.Role == ClusterRole.Node;
+            if (rejoined && !string.Equals(t.Primary, _settings.PrimaryName, StringComparison.Ordinal) &&
+                !string.Equals(t.NodeId, _settings.NodeId, StringComparison.Ordinal))
+                throw new ClusterConflictException($"This server is a node of '{_settings.PrimaryName}', and the token was issued by '{t.Primary}'. " +
+                                                   "Leave that cluster first (Settings › Cluster › Leave, or \"cluster leave\"), then join with the new token.");
             if (_nodeCount > 0)
                 throw new ClusterConflictException("This server is a cluster primary (it manages other servers) and cannot join another cluster. Remove its servers first.");
         }
@@ -155,9 +164,13 @@ public sealed class ClusterService : IClusterRole
             s.PendingRevision = null;
             s.PendingJobId = null;
             s.LastSyncError = null;
+            s.LastSyncErrorRevision = null;
+            // The token is the authority: the primary instance that uses it next is pinned again.
+            s.PinnedPrimaryId = null;
+            s.PrimaryClockOffsetSeconds = null;
         });
         _keys.Clear();
-        _logger.LogInformation("Joined the cluster of {Primary} as node {NodeId}", t.Primary, t.NodeId);
+        _logger.LogInformation("{Action} the cluster of {Primary} as node {NodeId}", rejoined ? "Joined again" : "Joined", t.Primary, t.NodeId);
         return GetStatus();
     }
 
@@ -176,10 +189,79 @@ public sealed class ClusterService : IClusterRole
             s.PendingRevision = null;
             s.PendingJobId = null;
             s.LastSyncError = null;
+            s.LastSyncErrorRevision = null;
+            s.PinnedPrimaryId = null;
+            s.PrimaryClockOffsetSeconds = null;
         });
         _keys.Clear();
         _logger.LogInformation("Left the cluster of {Primary}", primary);
         return GetStatus();
+    }
+
+    /// <summary>Node only: replaces the shared secret (the `rekey` RPC of a key rotation). The previous key stops working.</summary>
+    internal void Rekey(byte[] secret)
+    {
+        if (secret.Length != ClusterCrypto.SecretLength) throw new ArgumentException("The new cluster key has the wrong length.");
+        UpdateSettings(s =>
+        {
+            if (s.Role != ClusterRole.Node) throw new ClusterConflictException("This server is not a cluster node.");
+            s.SecretProtected = _secrets.Protect(Convert.ToBase64String(secret));
+        });
+        _keys.TryRemove("self", out _);
+    }
+
+    /// <summary>
+    /// Node only: remembers the primary's clock offset (primary − node, seconds) measured from an accepted RPC. Persisted
+    /// only when it moved by more than 1 s (timestamps are whole seconds), so steady heartbeats never write the database.
+    /// </summary>
+    internal void ObservePrimaryClock(long offsetSeconds)
+    {
+        lock (_gate)
+            if (_settings.PrimaryClockOffsetSeconds is { } known && Math.Abs(known - offsetSeconds) <= 1) return;
+        UpdateSettings(s => s.PrimaryClockOffsetSeconds = offsetSeconds);
+    }
+
+    /// <summary>Node only: pins the primary instance at its first RPC; false when another instance is pinned.</summary>
+    internal bool AcceptPrimaryInstance(string primaryId)
+    {
+        lock (_gate)
+        {
+            if (_settings.PinnedPrimaryId == primaryId) return true;
+            if (_settings.PinnedPrimaryId is not null) return false;
+        }
+        var accepted = false;
+        UpdateSettings(s =>
+        {
+            s.PinnedPrimaryId ??= primaryId;
+            accepted = s.PinnedPrimaryId == primaryId;
+        });
+        return accepted;
+    }
+
+    /// <summary>
+    /// Primary: this instance's id, sent with every RPC. Created on first use and created again when the database now runs
+    /// on a machine with another name (restored elsewhere or cloned and renamed), so nodes never obey two live primaries.
+    /// </summary>
+    public string PrimaryInstanceId
+    {
+        get
+        {
+            var machine = Environment.MachineName;
+            lock (_gate)
+                if (_settings.PrimaryInstanceId is { Length: > 0 } id && _settings.PrimaryInstanceMachine == machine) return id;
+            string? previous = null;
+            UpdateSettings(s =>
+            {
+                if (s.PrimaryInstanceId is { Length: > 0 } && s.PrimaryInstanceMachine == machine) return;
+                previous = s.PrimaryInstanceMachine;
+                s.PrimaryInstanceId = Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+                s.PrimaryInstanceMachine = machine;
+            });
+            if (previous is not null)
+                _logger.LogWarning("This database was last used as a cluster primary on '{Previous}': this server is a new primary instance. " +
+                                   "Its nodes accept it after they join again with a regenerated token.", previous);
+            lock (_gate) return _settings.PrimaryInstanceId!;
+        }
     }
 
     /// <summary>Node only: AES key derived from the stored secret (cached).</summary>
@@ -226,20 +308,42 @@ public sealed class ClusterService : IClusterRole
         return (node, new JoinToken(ServerName, node.Id, secret).Encode());
     }
 
-    /// <summary>New secret for the node (the previous token and key stop working) and its join token.</summary>
-    public string RegenerateToken(string id)
+    /// <summary>
+    /// Starts a key rotation: a new secret is kept as the node's pending key and a join token for it is returned. The node
+    /// still trusts the current key until it confirms the new one (`rekey` RPC, see ClusterWorker.RotateKeyAsync) or joins
+    /// again with the returned token.
+    /// </summary>
+    public string BeginKeyRotation(string id)
     {
         var secret = ClusterCrypto.NewSecret();
         var node = UpdateNode(id, n =>
         {
-            n.SecretProtected = _secrets.Protect(Convert.ToBase64String(secret));
+            n.PendingSecretProtected = _secrets.Protect(Convert.ToBase64String(secret));
             n.TokenIssuedAt = _time.GetUtcNow().UtcDateTime;
-            n.Status = ServerStatus.Pending;
-            n.LastError = "A new join token was issued: join the server again with it.";
         }) ?? throw new KeyNotFoundException();
-        _keys.TryRemove(id, out _);
         return new JoinToken(ServerName, node.Id, secret).Encode();
     }
+
+    /// <summary>The node confirmed <paramref name="pendingProtected"/>: it becomes the node's key (no-op when superseded).</summary>
+    internal ClusterNode? CompleteKeyRotation(string id, string pendingProtected)
+    {
+        var node = UpdateNode(id, n =>
+        {
+            if (n.PendingSecretProtected != pendingProtected) return;
+            n.SecretProtected = pendingProtected;
+            n.PendingSecretProtected = null;
+            n.LastSeenAt = _time.GetUtcNow().UtcDateTime;
+        });
+        _keys.TryRemove(id, out _);
+        return node;
+    }
+
+    /// <summary>Plain pending secret of a rotation (sent to the node inside the encrypted `rekey` RPC).</summary>
+    internal byte[] PendingSecret(ClusterNode node) =>
+        Convert.FromBase64String(_secrets.Unprotect(node.PendingSecretProtected ?? throw new InvalidOperationException("No key rotation is pending.")));
+
+    internal byte[] PendingKey(ClusterNode node) =>
+        Key(node.Id + "#pending", node.PendingSecretProtected ?? throw new InvalidOperationException("No key rotation is pending."));
 
     /// <summary>Re-reads the node, applies the change and saves it (callers on different threads never overwrite each other's fields).</summary>
     public ClusterNode? UpdateNode(string id, Action<ClusterNode> change)
@@ -264,6 +368,7 @@ public sealed class ClusterService : IClusterRole
             _nodeCount = _store.Col<ClusterNode>().Count();
         }
         _keys.TryRemove(id, out _);
+        _keys.TryRemove(id + "#pending", out _);
         return removed;
     }
 
@@ -371,6 +476,7 @@ public sealed class ClusterService : IClusterRole
         AddedAt = n.CreatedAt,
         Fingerprint = n.PinnedFingerprint,
         TokenIssuedAt = n.TokenIssuedAt,
+        KeyRotationPending = n.PendingSecretProtected is not null,
     };
 
     private static T? Parse<T>(string? json) where T : class

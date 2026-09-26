@@ -13,10 +13,13 @@ using Microsoft.Extensions.Logging;
 namespace CaddyManager.Cluster;
 
 /// <summary>An RPC to a node failed. <see cref="Unreachable"/> distinguishes transport problems from answers of the node.</summary>
-public sealed class NodeRpcException(string message, bool unreachable = false, bool unauthorized = false) : Exception(message)
+public sealed class NodeRpcException(string message, bool unreachable = false, bool unauthorized = false, bool conflict = false) : Exception(message)
 {
     public bool Unreachable { get; } = unreachable;
+    /// <summary>The node is not (or no longer) a node of this primary with this key (401/404).</summary>
     public bool Unauthorized { get; } = unauthorized;
+    /// <summary>The node obeys another primary instance holding the same key (NodeRpcHandler.PrimaryConflictCode).</summary>
+    public bool Conflict { get; } = conflict;
 }
 
 /// <summary>
@@ -33,10 +36,17 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
     private readonly ConcurrentDictionary<string, Channel> _channels = new();
 
     /// <summary>Calls <paramref name="op"/> on the node and returns the result node (null for a void result).</summary>
-    public async Task<JsonNode?> CallAsync(ClusterNode node, string op, object? args, TimeSpan timeout, CancellationToken ct = default)
+    public Task<JsonNode?> CallAsync(ClusterNode node, string op, object? args, TimeSpan timeout, CancellationToken ct = default) =>
+        CallAsync(node, op, args, timeout, usePendingKey: false, ct);
+
+    /// <summary>
+    /// <paramref name="usePendingKey"/>: seal with the key of a pending rotation instead of the current one (checks whether
+    /// the node already uses it, e.g. after it joined again with the new token).
+    /// </summary>
+    public async Task<JsonNode?> CallAsync(ClusterNode node, string op, object? args, TimeSpan timeout, bool usePendingKey, CancellationToken ct)
     {
         byte[] key;
-        try { key = cluster.NodeKey(node); }
+        try { key = usePendingKey ? cluster.PendingKey(node) : cluster.NodeKey(node); }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException)
         {
             // e.g. the database was restored on another machine (DPAPI LocalMachine keys do not travel).
@@ -47,6 +57,8 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
         {
             ["op"] = op,
             ["args"] = args switch { null => null, JsonNode n => n.DeepClone(), _ => JsonSerializer.SerializeToNode(args, JsonDefaults.Api) },
+            // Nodes pin the primary instance they obey (a cloned/restored primary with the same keys is refused).
+            ["primaryId"] = cluster.PrimaryInstanceId,
         });
         var request = ClusterCrypto.SealRequest(key, node.Id, plaintext, time.GetUtcNow().ToUnixTimeSeconds());
 
@@ -77,6 +89,12 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
             if (resp.StatusCode == HttpStatusCode.NotFound)
                 throw new NodeRpcException($"The server at {node.Url} is not a cluster node: it has not joined yet (run \"cluster join\" or paste " +
                                            "the join token under Settings → Cluster on it) or it left the cluster.", unauthorized: true);
+            if (resp.StatusCode == HttpStatusCode.RequestEntityTooLarge)
+                throw new NodeRpcException("The node refused the request because it is too large (HTTP 413): the configuration bundle exceeds the " +
+                                           "node's RPC size limit. Reduce the replicated configuration (e.g. unused certificates).");
+            if (resp.StatusCode == HttpStatusCode.TooManyRequests)
+                throw new NodeRpcException("The node is temporarily refusing requests from this address (HTTP 429) after many rejected " +
+                                           "cluster requests from it. It accepts requests again after a minute; check the node's manager log.");
             if ((int)resp.StatusCode is >= 300 and < 400)
                 throw new NodeRpcException($"The node redirects to {resp.Headers.Location} (it probably requires HTTPS for its management UI): " +
                                            "change this server's URL to that address.");
@@ -97,7 +115,8 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
 
             var reply = JsonNode.Parse(plain) as JsonObject ?? throw new NodeRpcException("The node sent an invalid response.");
             if (reply["ok"]?.GetValue<bool>() != true)
-                throw new NodeRpcException(reply["error"]?.GetValue<string>() ?? "The node reported an error.");
+                throw new NodeRpcException(reply["error"]?.GetValue<string>() ?? "The node reported an error.",
+                    conflict: reply["code"]?.GetValue<string>() == NodeRpcHandler.PrimaryConflictCode);
             return reply["result"];
         }
     }

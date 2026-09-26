@@ -29,6 +29,8 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
     private readonly JsonObject _report = E2EArtifacts.Report(nameof(ClusterE2ETests) + "." + nameof(PrimaryAndNodeReplicateAndServeTraffic));
     private readonly JsonArray _steps = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
+    /// <summary>A request the node accepted (an on-path observer's capture), replayed after the node's manager restarted.</summary>
+    private (RpcEnvelope Envelope, byte[] Key)? _captured;
 
     [Fact]
     public async Task PrimaryAndNodeReplicateAndServeTraffic()
@@ -76,6 +78,37 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 Assert.Equal(1, cluster.GetProperty("nodeCount").GetInt32());
                 // A node that has not joined answers 404 to RPC: the primary reports it as not joined yet.
                 return new JsonObject { ["nodeId"] = nodeId, ["tokenLength"] = token.Length };
+            });
+
+            await Step("a configuration change before the node joined is not pushed and raises no sync alert (not joined = pending)", async () =>
+            {
+                // Before the fix every change queued a push to every node: the node answered 404 and the primary raised a
+                // "Configuration sync failed" (configFailure) alert and flipped the row to error.
+                var created = await P.Api.PostAsJsonAsync("api/hosts", new
+                {
+                    kind = "response", domains = new[] { "prejoin.cluster.test" }, tls = "none", responseStatus = 200, responseBody = "prejoin",
+                }).OkJsonAsync("POST /api/hosts (before the node joined)");
+                var hostId = created.GetProperty("item").GetProperty("id").GetString()!;
+                // The debounced push (200 ms) and several heartbeats (500 ms) pass; the row must stay pending throughout.
+                var statuses = new HashSet<string>();
+                var watch = Stopwatch.StartNew();
+                while (watch.Elapsed < TimeSpan.FromSeconds(3))
+                {
+                    statuses.Add((await Server(P, nodeId)).GetProperty("status").GetString()!);
+                    await Task.Delay(100);
+                }
+                var summary = await Server(P, nodeId);
+                Assert.Equal(["pending"], statuses);
+                Assert.Contains("not a cluster node", summary.GetProperty("lastError").GetString());
+                Assert.Empty(Events(P, "server-sync:" + nodeId));
+                Assert.False(summary.GetProperty("sync").TryGetProperty("lastError", out var syncError) && syncError.ValueKind == JsonValueKind.String,
+                    "no sync error recorded for a node that has not joined: " + syncError);
+                await P.Api.DeleteAsync($"api/hosts/{hostId}").OkJsonAsync("DELETE /api/hosts/{id} (prejoin)");
+                return new JsonObject
+                {
+                    ["statusesWhileNotJoined"] = new JsonArray(statuses.Select(x => (JsonNode)x).ToArray()),
+                    ["lastError"] = summary.GetProperty("lastError").GetString(), ["syncEvents"] = 0,
+                };
             });
 
             await Step("node joins with the token; the primary syncs it", async () =>
@@ -184,15 +217,21 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 var unchanged = await N.Api.GetFromJsonAsync<JsonElement>("api/settings/caddy");
                 Assert.Empty(unchanged.GetProperty("trustedProxies").EnumerateArray());
                 Assert.Equal(N.HttpPort, unchanged.GetProperty("httpPort").GetInt32());
-                using (var join = await N.Api.PostAsJsonAsync("api/cluster/join", new { token }))
+                // A node joins again only with a token of its own primary (e.g. after a key rotation): a token issued by another
+                // primary needs "leave" first.
+                var otherPrimary = new JoinToken("another-primary", "another-node-id", ClusterCrypto.NewSecret()).Encode();
+                using (var join = await N.Api.PostAsJsonAsync("api/cluster/join", new { token = otherPrimary }))
+                {
                     Assert.Equal(HttpStatusCode.Conflict, join.StatusCode);
+                    Assert.Contains("Leave that cluster first", (await join.JsonAsync()).GetProperty("detail").GetString());
+                }
                 using (var add = await N.Api.PostAsJsonAsync("api/servers", new { name = "x", url = "http://127.0.0.1:1" }))
                     Assert.Equal(HttpStatusCode.Conflict, add.StatusCode);
                 using (var primaryJoin = await P.Api.PostAsJsonAsync("api/cluster/join", new { token }))
                     Assert.Equal(HttpStatusCode.Conflict, primaryJoin.StatusCode);
                 using (var anonymous = await P.NewClient().GetAsync("api/servers"))
                     Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
-                result["nodeJoinAgain"] = 409;
+                result["nodeJoinOtherPrimary"] = 409;
                 result["nodeAddServer"] = 409;
                 result["primaryJoin"] = 409;
                 result["anonymousServers"] = 401;
@@ -288,6 +327,7 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 var anonymous = N.NewClient(csrf: false);
 
                 var valid = ClusterCrypto.SealRequest(key, nodeId, hello, now);
+                _captured = (valid, key);
                 using var ok = await raw.PostAsJsonAsync("api/cluster/rpc", valid);
                 Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
                 var reply = (await ok.Content.ReadFromJsonAsync<RpcEnvelope>())!;
@@ -407,8 +447,13 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
             });
 
             // ---- offline detection and recovery
-            await Step("node stopped → server-offline event after 3 failed heartbeats; restarted → Recovered", async () =>
+            await Step("node stopped → server-offline event after 3 failed heartbeats; restarted → Recovered; a request captured before the restart cannot be replayed", async () =>
             {
+                // The replay check below tolerates 2 s of clock jitter: a request signed within the last 2 s before the node's
+                // manager started is not covered. A real restart takes longer; this in-process one is fast, so let the
+                // captured request age first.
+                var capturedTs = (_captured ?? throw new InvalidOperationException("no captured request")).Envelope.Ts;
+                while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - capturedTs < 3) await Task.Delay(100);
                 var stoppedAt = Stopwatch.StartNew();
                 await N.StopAsync();
                 var offline = await Wait.ForAsync(() => Task.FromResult(Events(P, "server-offline:" + nodeId).FirstOrDefault(e => e.Severity == EventSeverity.Warning)),
@@ -424,11 +469,25 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                     TimeSpan.FromSeconds(30), () => "Recovered event\n" + P.LogTail());
                 var back = await WaitInSync(P, nodeId, null, "after node restart");
                 var (code, _) = await WaitHttp(await NodeHttpPort(N), "app.cluster.test", "/after-manager-restart");
+
+                // Replay protection survives the restart: the nonce cache is gone, but a request signed before the node's
+                // manager started is refused. Before the fix the captured request was accepted once more (HTTP 200).
+                var (captured, key) = _captured ?? throw new InvalidOperationException("no captured request");
+                var age = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - captured.Ts;
+                Assert.True(age < 300, $"the captured request is {age} s old: still inside the 300 s window, only the restart protects");
+                using var replay = await N.NewClient().PostAsJsonAsync("api/cluster/rpc", captured);
+                Assert.Equal(HttpStatusCode.Unauthorized, replay.StatusCode);
+                var fresh = ClusterCrypto.SealRequest(key, nodeId, Encoding.UTF8.GetBytes("{\"op\":\"hello\",\"args\":{}}"), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                using var accepted = await N.NewClient().PostAsJsonAsync("api/cluster/rpc", fresh);
+                Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+                var offset = N.Store.GetSettings<ClusterSettings>().PrimaryClockOffsetSeconds;
+                Assert.NotNull(offset);
                 return new JsonObject
                 {
                     ["offlineAfterMs"] = offlineMs, ["failuresWhenOffline"] = failures, ["offlineEvent"] = offline.Message,
                     ["offlineAlertCategory"] = offline.Category, ["recoveredEvent"] = recovered.Message, ["statusAfterRestart"] = back.GetProperty("status").GetString(),
-                    ["httpAfterManagerRestart"] = code,
+                    ["httpAfterManagerRestart"] = code, ["replayAfterRestartAgeSeconds"] = age, ["replayAfterRestart"] = (int)replay.StatusCode,
+                    ["freshRequestAfterRestart"] = (int)accepted.StatusCode, ["primaryClockOffsetSeconds"] = offset,
                 };
             });
 

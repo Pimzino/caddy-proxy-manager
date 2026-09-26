@@ -12,17 +12,18 @@ namespace CaddyManager.Cluster.Tests;
 /// <summary>
 /// End to end over HTTPS: the node's management UI uses a self-signed certificate. The primary pins its SHA-256 fingerprint
 /// when the node is added (TOFU), talks to it only while the presented certificate matches, reports it when the node's
-/// certificate changes, and works again after an admin re-pins. Regenerating the join token invalidates the old key until
-/// the node joins again with the new token. Writes e2e-artifacts/cluster-https-pin-e2e.json.
+/// certificate changes, and works again after an admin re-pins. Regenerating the join token rotates the node's key over
+/// that channel (the old key stops working at once; the node stays in sync) and the new token can be used to join again.
+/// Writes e2e-artifacts/cluster-https-pin-e2e.json.
 /// </summary>
 public sealed class ClusterHttpsPinE2ETests(ITestOutputHelper output)
 {
-    private readonly JsonObject _report = E2EArtifacts.Report(nameof(ClusterHttpsPinE2ETests) + "." + nameof(HttpsNodeIsPinnedAndTokenRegenerationRequiresRejoin));
+    private readonly JsonObject _report = E2EArtifacts.Report(nameof(ClusterHttpsPinE2ETests) + "." + nameof(HttpsNodeIsPinnedAndTokenRegenerationRotatesTheKey));
     private readonly JsonArray _steps = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
 
     [Fact]
-    public async Task HttpsNodeIsPinnedAndTokenRegenerationRequiresRejoin()
+    public async Task HttpsNodeIsPinnedAndTokenRegenerationRotatesTheKey()
     {
         Assert.True(DevCaddy.Path is not null, "The development Caddy binary .dev/bin/caddy is required (copy .dev from the main checkout).");
         _report["steps"] = _steps;
@@ -80,37 +81,46 @@ public sealed class ClusterHttpsPinE2ETests(ITestOutputHelper output)
                 };
             });
 
-            await Step("regenerating the token invalidates the old key; the node works again after leave + join with the new token", async () =>
+            await Step("regenerating the token rotates the node's key over the pinned channel: the old key stops working at once, the node stays in sync", async () =>
             {
                 int OfflineWarnings() => P.Store.Col<Core.Models.EventEntry>()
                     .Find(e => e.Key == "server-offline:" + nodeId).Count(e => e.Severity == Core.Models.EventSeverity.Warning);
                 var offlineBefore = OfflineWarnings();
+                var oldKey = ClusterCrypto.DeriveKey(JoinToken.Parse(token).Secret);
                 var regenerated = await P.Api.PostAsync($"api/servers/{nodeId}/token", null).OkJsonAsync("POST /api/servers/{id}/token");
                 var newToken = regenerated.GetProperty("joinToken").GetString()!;
                 Assert.NotEqual(token, newToken);
                 Assert.Equal(nodeId, JoinToken.Parse(newToken).NodeId);
-                var pending = await Wait.ForValueAsync(async () =>
-                {
-                    var s = await Server(P, nodeId);
-                    var error = s.TryGetProperty("lastError", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString()! : "";
-                    return (s.GetProperty("status").GetString() == "pending" && error.Contains("authentication failed"), s);
-                }, TimeSpan.FromSeconds(30), () => "old key rejected by the node\n" + P.LogTail());
-                // A node that answers but rejects the key is not "offline": no new server-offline warning.
+                // Before the fix the node kept trusting the old key (whoever held the old token kept control of it) and the
+                // primary lost contact until someone ran leave + join on the node.
+                Assert.True(regenerated.GetProperty("rotated").GetBoolean(), "the node confirmed the new key");
+                var summary = await Server(P, nodeId);
+                Assert.False(summary.GetProperty("keyRotationPending").GetBoolean());
+                using (var old = await RawRpc(N, nodeId, oldKey))
+                    Assert.Equal(HttpStatusCode.Unauthorized, old.StatusCode);
+                using (var current = await RawRpc(N, nodeId, ClusterCrypto.DeriveKey(JoinToken.Parse(newToken).Secret)))
+                    Assert.Equal(HttpStatusCode.OK, current.StatusCode);
+                var synced = await WaitInSync(P, nodeId, null, "still in sync with the new key");
                 Assert.Equal(offlineBefore, OfflineWarnings());
+                var audit = N.Store.Col<Core.Models.AuditEntry>().FindAll().Any(a => a.ObjectType == "cluster" && a.Action == "keyRotated");
+                Assert.True(audit, "the node audits the key rotation");
 
-                using (var joinAgain = await N.Api.PostAsJsonAsync("api/cluster/join", new { token = newToken }))
-                    Assert.Equal(HttpStatusCode.Conflict, joinAgain.StatusCode); // still a node: leave first
+                // The token is still useful: the node joins again with it (a node may re-join its own primary) ...
+                await N.Api.PostAsJsonAsync("api/cluster/join", new { token = newToken }).OkJsonAsync("POST /api/cluster/join (re-join, same primary)");
+                var rejoined = await WaitInSync(P, nodeId, null, "in sync after re-join");
+                // ... and after leaving, too.
                 await N.Api.PostAsync("api/cluster/leave", null).OkJsonAsync("POST /api/cluster/leave");
                 using (var leaveAgain = await N.Api.PostAsync("api/cluster/leave", null))
                     Assert.Equal(HttpStatusCode.Conflict, leaveAgain.StatusCode);
                 using (var badToken = await N.Api.PostAsJsonAsync("api/cluster/join", new { token = "cpmj1.bogus" }))
                     Assert.Equal(HttpStatusCode.BadRequest, badToken.StatusCode);
-                await N.Api.PostAsJsonAsync("api/cluster/join", new { token = newToken }).OkJsonAsync("POST /api/cluster/join (new token)");
-                var synced = await WaitInSync(P, nodeId, null, "online with the new key");
+                await N.Api.PostAsJsonAsync("api/cluster/join", new { token = newToken }).OkJsonAsync("POST /api/cluster/join (after leave)");
+                var back = await WaitInSync(P, nodeId, null, "online after leave + join");
                 return new JsonObject
                 {
-                    ["statusWithOldKey"] = pending.GetProperty("status").GetString(), ["errorWithOldKey"] = pending.GetProperty("lastError").GetString(),
-                    ["newOfflineWarnings"] = OfflineWarnings() - offlineBefore, ["statusAfterRejoin"] = synced.GetProperty("status").GetString(), ["revision"] = Rev(synced),
+                    ["rotated"] = true, ["oldKeyAfterRotation"] = 401, ["newKey"] = 200, ["statusAfterRotation"] = synced.GetProperty("status").GetString(),
+                    ["newOfflineWarnings"] = OfflineWarnings() - offlineBefore, ["statusAfterRejoin"] = rejoined.GetProperty("status").GetString(),
+                    ["statusAfterLeaveAndJoin"] = back.GetProperty("status").GetString(), ["revision"] = Rev(back),
                 };
             });
             _report["result"] = "passed";
@@ -130,6 +140,13 @@ public sealed class ClusterHttpsPinE2ETests(ITestOutputHelper output)
             if (node is not null) await node.DisposeAsync();
             if (primary is not null) await primary.DisposeAsync();
         }
+    }
+
+    /// <summary>A `hello` sealed with <paramref name="key"/>, posted to the node like the primary would.</summary>
+    private static async Task<HttpResponseMessage> RawRpc(Manager node, string nodeId, byte[] key)
+    {
+        var hello = System.Text.Encoding.UTF8.GetBytes("{\"op\":\"hello\",\"args\":{}}");
+        return await node.NewClient().PostAsJsonAsync("api/cluster/rpc", ClusterCrypto.SealRequest(key, nodeId, hello, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
     /// <summary>Kestrel on macOS needs a certificate whose key is not ephemeral: round-trip through PKCS#12.</summary>

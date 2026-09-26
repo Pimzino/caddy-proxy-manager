@@ -27,8 +27,8 @@ or `CM_DATA_DIR`).
 
 | Verb | Purpose |
 |---|---|
-| `cluster join <token>` | Make this server a node of the primary that issued the token (Servers → Add server on the primary). Only a standalone server without nodes can join. Start the service afterwards: the primary pushes its configuration at its next heartbeat. Exit code 2 for an invalid token, 1 when this server is already a node or is a primary. |
-| `cluster leave` | Leave the cluster (for example when the primary is gone). The last applied configuration stays and becomes editable. Remove the server on the primary too. |
+| `cluster join <token>` | Make this server a node of the primary that issued the token (Servers → Add server on the primary). A standalone server without nodes can join; a node can join its own primary again with a new token (Servers → Regenerate token), e.g. when its stored key is unusable or a key rotation could not reach it. Start the service afterwards: the primary pushes its configuration at its next heartbeat. Exit code 2 for an invalid token, 1 when this server is a node of another primary (run `cluster leave` first) or is a primary. |
+| `cluster leave` | Leave the cluster (for example when the primary is gone, or the server was removed on the primary while it was unreachable — until then it still trusts its cluster key). The last applied configuration stays and becomes editable. Remove the server on the primary too. |
 | `cluster status` | Role, primary, node id, last contact from the primary, applied revision (nodes) or the node list (primary), and warnings such as *Local storage: each server obtains its own certificates*. |
 
 ```powershell
