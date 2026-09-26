@@ -120,8 +120,8 @@ public sealed class TrafficStore : IDisposable
     {
         var file = DbFile(paths);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-        // LiteDB fixes a new file's string collation from the current culture (IgnoreCase) — under th-TH on Windows'
-        // ICU, "*|…" ids were not found again. Every key here is built by us, so compare them ordinally.
+        // LiteDB fixes a new file's string collation from the current culture (IgnoreCase), so id and host comparisons
+        // would follow whatever culture the service first ran under. Every key here is built by us: compare ordinally.
         _db = new LiteDatabase(new ConnectionString
         {
             Filename = file, Connection = ConnectionType.Direct, Collation = Collation.Binary,
