@@ -123,12 +123,6 @@ public sealed class CaddySettings : ISettingsDocument
     public int? DnsTtlSeconds { get; set; }
     /// <summary>DNS resolvers (host:port) used for propagation checks, e.g. 1.1.1.1:53 — useful behind split-horizon DNS.</summary>
     public List<string> DnsResolvers { get; set; } = new();
-    /// <summary>
-    /// Default delegated challenge record name (challenges.dns.override_domain), e.g. "_acme-challenge.validation.example.net".
-    /// Every DNS-challenge domain then needs a one-time CNAME _acme-challenge.&lt;domain&gt; → this name, and the DNS provider
-    /// credentials only need write access to the (separate) zone that holds it. Hosts can override it (SiteHost.DnsDelegation).
-    /// </summary>
-    public string? DnsOverrideDomain { get; set; }
 
     // ---- Round 3: storage (clustering). Servers configured with the same storage coordinate certificates as a Caddy cluster.
     public StorageBackend StorageBackend { get; set; } = StorageBackend.Local;

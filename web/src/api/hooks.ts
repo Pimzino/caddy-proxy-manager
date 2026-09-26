@@ -3,7 +3,6 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClie
 import { api, ApiError } from './client';
 import type {
   AddServerResult,
-  DelegationCheckResult,
   RegenerateTokenResult,
   ClusterStatus,
   DnsProviderInfo,
@@ -952,14 +951,5 @@ export function useServerJob(serverId: string, jobId: string | null) {
     queryFn: () => api.get<JobInfo>(`/api/servers/${encodeURIComponent(serverId)}/jobs/${encodeURIComponent(jobId as string)}`),
     enabled: !!jobId,
     refetchInterval: (q) => (q.state.data?.state === 'running' || !q.state.data ? 1000 : false),
-  });
-}
-
-// ---------------------------------------------------------------- Round 3b: DNS challenge delegation
-
-export function useDelegationCheck() {
-  return useMutation({
-    mutationFn: (input: { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean; systemResolvers?: boolean }) =>
-      api.post<DelegationCheckResult>('/api/dns/delegation-check', input),
   });
 }

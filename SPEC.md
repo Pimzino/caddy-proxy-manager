@@ -346,7 +346,7 @@ plus `ClusterCli.TryRunAsync(args)`. Test projects `tests/CaddyManager.Cluster.T
 New Core contract (already written — do not change without the lead):
 - Models: `AcmeChallengeType {Http, Dns}`, `StorageBackend {Local, FileSystem, Redis, Custom}`, `HostAcmeChallenge {Default, Http, Dns}`,
   `SiteHost.AcmeChallenge`, CaddySettings DNS fields (`DefaultAcmeChallenge, DnsProvider, DnsProviderOptions, DnsProviderSecretsProtected,
-  DnsPropagationDelaySeconds, DnsPropagationTimeoutSeconds, DnsTtlSeconds, DnsResolvers, DnsOverrideDomain`), storage fields
+  DnsPropagationDelaySeconds, DnsPropagationTimeoutSeconds, DnsTtlSeconds, DnsResolvers`), storage fields
   (`StorageBackend, StoragePath, RedisAddresses, RedisDb, RedisUsername, RedisPasswordProtected, RedisTls, RedisTlsInsecure,
   RedisKeyPrefix, RedisEncryptionKeyProtected, StorageJsonProtected`), `TrafficStatsEnabled`, `CaddySettings.NodeLocalProperties`,
   `NotificationSettings.AlertServerOffline` (alertRule `serverOffline`), `AppPaths.StatsLogDir/StatsLogFile`.
@@ -375,8 +375,8 @@ Changing `dnsProvider` to a different provider clears options and secrets that a
   a wildcard domain on a host with effective Http uses Dns when a provider is configured (warning otherwise, as today).
 - Generation: ACME subjects are split into one automation policy per effective challenge. Dns policies get, on every ACME
   issuer, `challenges.dns = { provider: { name, ...options (typed per catalog), ...secrets }, ttl?, propagation_delay?,
-  propagation_timeout? (-1 → -1), resolvers? (on every issuer — apps.tls.resolvers is not used by the ACME issuer),
-  override_domain? }` (durations as strings like "30s"). Http policies are unchanged. `AcmeIssuerJson` (advanced) is still
+  propagation_timeout? (-1 → -1), resolvers? (on every issuer — apps.tls.resolvers is not used by the ACME issuer) }`
+  in a single DNS policy (durations as strings like "30s"). Http policies are unchanged. `AcmeIssuerJson` (advanced) is still
   deep-merged into every ACME issuer after generation. Warn (ApplyResult warning) when the provider module is not in the
   installed binary; 400 on PUT settings/host when Dns is selected but no provider is configured or a required field is missing.
 - Secrets must never leak: Caddy errors returned by /load (e.g. Cloudflare's provisioning error contains the token) are
@@ -503,40 +503,19 @@ Nav: **Overview** gains **Servers** (`/servers`, `/servers/:id`) and **Traffic**
   disabled (read-only views).
 - Notifications: "Server offline" alert toggle.
 
-### Round 3b: guided DNS challenge delegation (CNAME) — no DNS write access to the production zone
-Users who do not want the manager writing to their real DNS zone delegate the challenge once:
-`_acme-challenge.<domain> CNAME <override name>` (wildcard `*.example.com` → `_acme-challenge.example.com`). The ACME CA
-follows the CNAME; Caddy writes the TXT at the override name (`challenges.dns.override_domain`), so the DNS provider
-credentials only need access to a separate validation zone (e.g. a Cloudflare token scoped to `validation.example.net`).
-- Core: `CaddySettings.DnsOverrideDomain` (default for all hosts), `SiteHost.DnsDelegation` (Default | Off | Custom) +
-  `SiteHost.DnsOverrideDomain` (Custom). Effective override of a DNS-challenge host: Custom → the host's name; Off → none;
-  Default → the settings value (none when empty).
-- Generator: DNS policies are grouped by effective override domain (one automation policy per distinct value; hosts without
-  delegation share one); `override_domain` is set per policy, never globally.
-- Validation (400): override names must be valid DNS names (no wildcard; `_` labels allowed), stored lower-case without a
-  trailing dot; `dnsDelegation: custom` requires `dnsOverrideDomain` (dropped otherwise). A host uses the DNS challenge when
-  its effective challenge is DNS, or when it has a wildcard domain and a provider is configured. Off/Custom on an ACME host
-  that does not use the DNS challenge → field error `dnsDelegation`; non-ACME hosts silently reset to Default.
-- `POST /api/dns/delegation-check` (viewer) `{ hostId?: string, domains?: string[], target?: string, publicResolvers?: bool }`
-  → `DelegationCheckResult`. With `hostId` the host's domains and effective target are used; otherwise `domains` + `target`
-  (default: settings DnsOverrideDomain). Queries CNAME at `_acme-challenge.<base>` following up to 8 CNAME hops, via
-  the public resolvers 1.1.1.1:53 and 8.8.8.8:53 when `publicResolvers` (what the CA sees; the explicit flag wins), else
-  CaddySettings.DnsResolvers when set, else the OS resolvers ("system"); 5 s timeout per domain; status per
-  `DelegationStatus`. Case-insensitive, trailing dots
-  ignored. Answers are never cached.
-- UI: Settings > Caddy ACME section gets a "Challenge delegation (CNAME)" panel (default delegation name, plain-language
-  explanation, a table of the CNAME records every DNS-challenge host needs with copy buttons, and "Check DNS"). Host editor TLS
-  tab (DNS challenge): Delegation select (Use default / Off / Custom name), the records for this host with copy buttons and
-  "Check DNS" showing per-domain status. Help text points to scoped tokens on a separate zone as the recommended setup.
+### Round 3b: DNS challenge delegation (CNAME) — removed
+The guided CNAME delegation (`CaddySettings.DnsOverrideDomain`, `SiteHost.DnsDelegation` / `DnsOverrideDomain`,
+`challenges.dns.override_domain`, `POST /api/dns/delegation-check` and its UI) was removed. Stored documents may still carry
+the old fields; both serializers ignore them. A manual TXT flow is not offered because a DNS-01 TXT value changes with every
+issuance and renewal; the set-once `dns-persist-01` challenge is to be added when Let's Encrypt offers it in production and
+Caddy supports it.
 
 ### Round 3c: behaviour after the adversarial review (supersedes the sections above where they differ)
 - **Providers**: 23 (Hetzner removed: only the retired dns.hetzner.com v1 module is buildable at caddyserver.com). RFC 2136 is
-  for BIND/Knot/PowerDNS; Windows DNS accepts only GSS-TSIG → use CNAME delegation. A selected provider plus
+  for BIND/Knot/PowerDNS; Windows DNS accepts only GSS-TSIG → use the HTTP challenge or another DNS host. A selected provider plus
   `acmeIssuerJson.challenges.dns.provider` → 400 (`acmeIssuerJson`); stored legacy data: the generator drops the legacy provider
   from DNS policies with a warning. A provider whose module is missing from a known binary → 400 (`dnsProvider` /
   `acmeChallenge`) as soon as anything uses the DNS challenge. IP names always stay in the HTTP policy.
-- **Delegation check resolvers**: explicit `publicResolvers` → explicit `systemResolvers` (new input) → configured
-  `DnsResolvers` → public (1.1.1.1:53, 8.8.8.8:53) by default, because Caddy on Windows also falls back to public DNS.
 - **Storage**: Redis takes exactly one address (several would switch the plugin to Redis Cluster). The server option `logs`
   is merged (logger_names/skip_unmapped_hosts stay managed).
 - **Static roots**: the generator answers 403 (and warns) for static roots on this server's protected folders (data folder,

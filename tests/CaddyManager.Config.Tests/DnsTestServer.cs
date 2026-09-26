@@ -14,7 +14,7 @@ namespace CaddyManager.Config.Tests;
 /// and target a writable zone (read-only zones answer REFUSED, unknown zones NOTAUTH, names outside the zone NOTZONE);
 /// responses to signed updates are signed too (the client, miekg/dns, verifies them).
 ///
-/// CNAMEs (challenge delegation): a query of another type at a CNAME owner is answered with the CNAME plus the records of
+/// CNAMEs: a query of another type at a CNAME owner is answered with the CNAME plus the records of
 /// the target when the target is in one of the zones, restarting at most 8 times (RFC 1034 §4.3.2 step 3a) — the way a
 /// recursive resolver answers, which Pebble's Go resolver relies on (it takes the TXT records from the same answer).
 /// A CNAME query returns only the CNAME.

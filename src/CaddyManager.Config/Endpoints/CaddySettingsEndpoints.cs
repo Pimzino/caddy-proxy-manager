@@ -342,8 +342,6 @@ internal static class SettingsEndpoints
         plain = plain with { DnsProviderSecrets = dnsSecrets };
 
         next.DnsResolvers = (next.DnsResolvers ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(NormalizeResolver).Distinct().ToList();
-        // Lower case without a trailing dot: certmagic appends the dot itself (libdns.RelativeName(dnsName+".", zone)).
-        next.DnsOverrideDomain = NetUtil.NormalizeDomain(next.DnsOverrideDomain);
 
         // storage
         next.StoragePath = string.IsNullOrWhiteSpace(next.StoragePath) ? null : next.StoragePath.Trim();

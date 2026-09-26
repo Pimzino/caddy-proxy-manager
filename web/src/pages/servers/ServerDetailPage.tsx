@@ -39,7 +39,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { useFeedback } from '@/components/feedback';
-import { DnsName } from '@/pages/hosts/DelegationRecords';
+import { DnsName } from '@/components/DnsName';
 import { formatBytes, formatDateTime, formatDuration, formatRelative } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
 import { useServerActions } from './ServerDialogs';

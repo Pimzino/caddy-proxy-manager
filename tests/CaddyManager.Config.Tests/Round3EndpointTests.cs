@@ -87,7 +87,8 @@ public sealed class Round3EndpointTests
             var rfcInfo = list.Single(p => p!["name"]!.GetValue<string>() == "rfc2136")!;
             Assert.DoesNotContain("Windows", rfcInfo["label"]!.GetValue<string>());
             Assert.Contains("GSS-TSIG", rfcInfo["notes"]!.GetValue<string>());
-            Assert.Contains("CNAME", rfcInfo["notes"]!.GetValue<string>());
+            Assert.Contains("HTTP challenge", rfcInfo["notes"]!.GetValue<string>());
+            Assert.DoesNotContain("delegat", rfcInfo["notes"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
             Assert.True(rfc.Last()!["secret"]!.GetValue<bool>());
         }
 

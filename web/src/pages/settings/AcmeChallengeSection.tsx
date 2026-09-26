@@ -8,21 +8,20 @@ import { Badge, Callout, Checkbox, ChipInput, controlBase, Field, FormSection, I
 import { cn } from '@/lib/cn';
 import type { FieldErrors } from '@/lib/validation';
 import { hasStoredSecret, isResolverAddress } from './caddyForm';
-import { ChallengeDelegationPanel } from './ChallengeDelegationPanel';
 import { PluginRequirement } from './PluginInstallAction';
 import { fieldError } from './shared';
 
 /** Field keys this section displays (for the form's "unplaced errors" summary). */
 export const DNS_FIELDS = [
   'defaultAcmeChallenge', 'dnsProvider', 'dnsProviderOptions', 'dnsProviderSecrets', 'dnsPropagationDelaySeconds',
-  'dnsPropagationTimeoutSeconds', 'dnsTtlSeconds', 'dnsResolvers', 'dnsOverrideDomain',
+  'dnsPropagationTimeoutSeconds', 'dnsTtlSeconds', 'dnsResolvers',
 ];
 
 type Set = <K extends keyof CaddySettingsInput>(k: K, v: CaddySettingsInput[K]) => void;
 
 /**
  * Settings › Caddy › "ACME challenge" (SPEC round 3 DNS-01): default challenge, DNS provider from the caddy-dns catalog
- * with typed fields (secrets write-only), challenge delegation (round 3b), propagation/TTL/resolvers, and the plugin rebuild
+ * with typed fields (secrets write-only), propagation/TTL/resolvers, and the plugin rebuild
  * flow when the provider module is not in the installed Caddy.
  */
 export function AcmeChallengeSection({
@@ -119,10 +118,7 @@ export function AcmeChallengeSection({
       )}
 
       {(form.dnsProvider || form.defaultAcmeChallenge === 'dns') && (
-        <>
-          <ChallengeDelegationPanel settings={settings} form={form} set={set} error={errors.dnsOverrideDomain} disabled={disabled} />
-          <AdvancedDns form={form} set={set} errors={errors} disabled={disabled} />
-        </>
+        <AdvancedDns form={form} set={set} errors={errors} disabled={disabled} />
       )}
     </FormSection>
   );

@@ -165,7 +165,7 @@ public static partial class DnsProviderCatalog
         P("rfc2136", "RFC 2136 (BIND, Knot, PowerDNS, ...)",
             "Dynamic DNS updates signed with a TSIG key. The server must allow updates for the zone with this key. " +
             "Windows DNS (Active Directory) accepts only Kerberos-signed (GSS-TSIG) secure updates, which this provider cannot send: " +
-            "for a zone on Windows DNS, delegate _acme-challenge with a CNAME to a zone on a TSIG-capable server or a supported DNS provider (see Challenge delegation).",
+            "for a zone on Windows DNS, use the HTTP challenge, or host the zone at a TSIG-capable server or a supported DNS provider.",
             T("server", "Server", required: true, placeholder: "10.0.0.53:53"),
             T("key_name", "TSIG key name", required: true),
             T("key_alg", "TSIG algorithm", required: true, placeholder: "hmac-sha256"),

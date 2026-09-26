@@ -251,51 +251,44 @@ async function trafficScenario() {
   });
 }
 
-/** WEB-1: a host whose only DNS-01 names are wildcards keeps (and can change) its delegation. */
+/** WEB-1: the DNS challenge has no CNAME delegation any more — neither the host editor nor Settings › Caddy offers it. */
 async function hostsScenario() {
   const S = 'hosts';
   await scenario(S, {}, async ({ mock, page }) => {
     const find = async () => (await mock.api<SiteHost[]>('GET', '/api/hosts')).find((h) => h.domains.includes('shop.example.com'))!;
-    const before = await find();
-    await check(S, ['WEB-1'], 'precondition: shop.example.com uses DNS-01 with a custom delegation', () =>
-      eq([before.acmeChallenge, before.dnsDelegation, before.dnsOverrideDomain], ['dns', 'custom', '_acme-challenge.shop.validation.example.net'], 'host'),
-    );
+    await check(S, ['WEB-1'], 'precondition: shop.example.com uses the DNS challenge', async () => eq((await find()).acmeChallenge, 'dns', 'acmeChallenge'));
 
-    const openTls = async () => {
-      await page.goto(`${mock.base}/hosts/proxy`, `__e2e.has('shop.example.com')`, 'the proxy hosts list');
-      await page.eval(`__e2e.one('tr', 'shop.example.com').click()`);
-      await page.waitFor('the host editor', `!!__e2e.dialog() && __e2e.withText('[role="tab"]', 'TLS').length > 0`);
-      await page.eval(`__e2e.click('[role="tab"]', 'TLS', __e2e.dialog())`);
-      await page.waitFor('the ACME challenge field', `!!__e2e.control('ACME challenge', __e2e.dialog())`);
-    };
-    const save = async () => {
-      await page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
-      await page.waitFor('the editor to close after saving', `!document.querySelector('[aria-modal="true"]')`, 10_000);
-    };
-
-    await openTls();
-    await page.eval(`__e2e.setLabel('ACME challenge', 'http', __e2e.dialog())`);
-    await page.waitFor('the challenge change', `__e2e.control('ACME challenge', __e2e.dialog()).value === 'http' && __e2e.has('Wildcard names use DNS-01')`);
-    await shot(page, 'host-wildcard-only-delegation');
-    await check(S, ['WEB-1'], 'after switching to HTTP-01 the editor still offers the delegation of the wildcard names, set to Custom', async () =>
-      eq(await page.eval(`__e2e.control('Challenge delegation (CNAME)', __e2e.dialog()).value`), 'custom', 'delegation select'),
-    );
-    await check(S, ['WEB-1'], 'the CNAME shown for *.shop.example.com points at the custom name', async () => {
-      const shown = await page.eval<boolean>(`__e2e.has('_acme-challenge.shop.example.com') && __e2e.has('_acme-challenge.shop.validation.example.net')`);
-      return shown ? undefined : 'record _acme-challenge.shop.example.com → _acme-challenge.shop.validation.example.net not shown';
+    await page.goto(`${mock.base}/hosts/proxy`, `__e2e.has('shop.example.com')`, 'the proxy hosts list');
+    await page.eval(`__e2e.one('tr', 'shop.example.com').click()`);
+    await page.waitFor('the host editor', `!!__e2e.dialog() && __e2e.withText('[role="tab"]', 'TLS').length > 0`);
+    await page.eval(`__e2e.click('[role="tab"]', 'TLS', __e2e.dialog())`);
+    await page.waitFor('the ACME challenge field', `!!__e2e.control('ACME challenge', __e2e.dialog())`);
+    await shot(page, 'host-dns-challenge-no-delegation');
+    await check(S, ['WEB-1'], 'the TLS tab of a DNS-01 host shows no delegation select and no CNAME records', async () => {
+      const shown = await page.eval<boolean>(
+        `__e2e.has('Challenge delegation') || __e2e.has('_acme-challenge.shop.example.com') || __e2e.has('Check DNS')`,
+      );
+      return shown ? 'delegation UI still shown' : undefined;
     });
-    await save();
-    const saved = await find();
-    await check(S, ['WEB-1'], 'saved host: HTTP-01 challenge, custom delegation kept (the CNAME the admin created stays valid)', () =>
-      eq([saved.acmeChallenge, saved.dnsDelegation, saved.dnsOverrideDomain], ['http', 'custom', '_acme-challenge.shop.validation.example.net'], 'saved host'),
-    );
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    await page.waitFor('the editor to close after saving', `!document.querySelector('[aria-modal="true"]')`, 10_000);
+    await check(S, ['WEB-1'], 'the saved host carries no delegation fields', async () => {
+      const saved = (await find()) as unknown as Record<string, unknown>;
+      return eq(['dnsDelegation' in saved, 'dnsOverrideDomain' in saved, saved.acmeChallenge], [false, false, 'dns'], 'saved host');
+    });
 
-    await check(S, ['WEB-1'], 'a wildcard-only DNS-01 host can switch its delegation to Off', async () => {
-      await openTls();
-      await page.eval(`__e2e.setLabel('Challenge delegation (CNAME)', 'off', __e2e.dialog())`);
-      await save();
-      const off = await find();
-      return eq([off.acmeChallenge, off.dnsDelegation, off.dnsOverrideDomain ?? null], ['http', 'off', null], 'saved host');
+    await page.goto(`${mock.base}/settings`, `__e2e.has('ACME challenge')`, 'Settings › Caddy');
+    await shot(page, 'settings-acme-challenge-no-delegation');
+    await check(S, ['WEB-1'], 'Settings › Caddy shows no challenge delegation panel', async () =>
+      (await page.eval<boolean>(`__e2e.has('Challenge delegation') || __e2e.has('Default delegation name')`)) ? 'delegation panel still shown' : undefined,
+    );
+    await check(S, ['WEB-1'], 'the delegation-check endpoint is gone', async () => {
+      try {
+        await mock.api('POST', '/api/dns/delegation-check', { domains: ['shop.example.com'] });
+        return 'POST /api/dns/delegation-check still answers';
+      } catch {
+        return undefined;
+      }
     });
   });
 }

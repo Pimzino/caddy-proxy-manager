@@ -33,8 +33,6 @@ export type StorageBackend = 'local' | 'fileSystem' | 'redis' | 'custom';
 export type ClusterRole = 'standalone' | 'primary' | 'node';
 export type ServerStatus = 'online' | 'offline' | 'pending' | 'error';
 export type TrafficRange = 'hour' | 'day' | 'week' | 'month';
-export type HostDnsDelegation = 'default' | 'off' | 'custom';
-export type DelegationStatus = 'ok' | 'missing' | 'wrong' | 'error';
 
 // ---------------------------------------------------------------- Entities (Models/Hosts.cs)
 
@@ -82,10 +80,6 @@ export interface SiteHostFields {
   certificateId?: string | null;
   /** ACME challenge for this host (tls = acme only). "default" = CaddySettings.defaultAcmeChallenge. */
   acmeChallenge: HostAcmeChallenge;
-  /** DNS challenge delegation (effective challenge DNS only). */
-  dnsDelegation: HostDnsDelegation;
-  /** Delegated challenge record name when dnsDelegation = "custom". */
-  dnsOverrideDomain?: string | null;
   forceHttps: boolean;
   hsts: boolean;
   hstsSubdomains: boolean;
@@ -289,7 +283,6 @@ export interface CaddySettings {
   dnsPropagationTimeoutSeconds?: number | null;
   dnsTtlSeconds?: number | null;
   dnsResolvers: string[];
-  dnsOverrideDomain?: string | null;
 
   // ---- Round 3: storage (clustering)
   storageBackend: StorageBackend;
@@ -931,24 +924,4 @@ export interface AddServerResult {
   joinToken: string;
   /** SHA-256 fingerprint of the node's HTTPS certificate when pinned. */
   fingerprint?: string | null;
-}
-
-// ---------------------------------------------------------------- Round 3b: DNS challenge delegation check
-
-export interface DelegationCheck {
-  domain: string;
-  /** Record to create: _acme-challenge.<domain without "*."> */
-  recordName: string;
-  /** CNAME target it must point to. */
-  expectedTarget: string;
-  status: DelegationStatus;
-  /** CNAME chain found, in order. */
-  found: string[];
-  detail?: string | null;
-}
-
-export interface DelegationCheckResult {
-  resolvers: string[];
-  checks: DelegationCheck[];
-  checkedAt: IsoDate;
 }

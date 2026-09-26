@@ -21,7 +21,6 @@ independent and not affiliated with or endorsed by the Caddy project.
 | MailKit / MimeKit | MIT | https://github.com/jstedfast/MailKit |
 | BouncyCastle.Cryptography (MailKit dependency) | MIT | https://github.com/bcgit/bc-csharp |
 | SharpZipLib | MIT | https://github.com/icsharpcode/SharpZipLib |
-| DnsClient.NET 1.8.0 (DNS lookups for the challenge delegation check) | Apache 2.0 | https://github.com/MichaCo/DnsClient.NET |
 | React, React DOM | MIT | https://github.com/facebook/react |
 | React Router | MIT | https://github.com/remix-run/react-router |
 | TanStack Query | MIT | https://github.com/TanStack/query |
@@ -32,10 +31,6 @@ independent and not affiliated with or endorsed by the Caddy project.
 
 The MIT, ISC and similar licenses require that the copyright notice and permission notice of each component are
 retained; they are available in each project's repository linked above.
-
-DnsClient.NET: Copyright (c) Michael Conrad (MichaCo). Licensed under the Apache License, Version 2.0
-(https://www.apache.org/licenses/LICENSE-2.0); it is used unmodified and ships no NOTICE file. Distributed on an "AS IS"
-basis, without warranties or conditions of any kind.
 
 ## Fonts — SIL Open Font License 1.1
 

@@ -246,8 +246,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   return (
     <form onSubmit={(e) => void submit(e)} noValidate>
       <Card className="p-5">
-        {/* Three fieldsets instead of one: the ACME challenge section disables its own inputs, so its delegation panel's Copy and
-            Check DNS stay usable for every role. The hidden spans keep FormSection's first/last-child spacing and borders. */}
+        {/* Three fieldsets instead of one: the ACME challenge section disables its own inputs. The hidden spans keep FormSection's first/last-child spacing and borders. */}
         <fieldset disabled={locked} className="contents">
           <UnplacedErrors errors={errors} fields={CADDY_FIELDS} />
           {managed && (

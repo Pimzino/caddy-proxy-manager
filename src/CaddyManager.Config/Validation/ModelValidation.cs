@@ -52,17 +52,7 @@ public static partial class ModelValidation
         h.ResponseContentType = string.IsNullOrWhiteSpace(h.ResponseContentType) ? "text/plain; charset=utf-8" : h.ResponseContentType.Trim();
         if (h.Tls != TlsMode.Custom) h.CertificateId = null;
         if (h.Tls != TlsMode.Acme) h.AcmeChallenge = HostAcmeChallenge.Default;
-        // Like the challenge choice, delegation only exists for ACME hosts: other TLS modes drop it silently. For ACME hosts
-        // whose challenge is not DNS, a non-default choice is a field error instead (see ValidateFields), because the
-        // effective challenge also depends on the settings and the user should notice the delegation is not used.
-        if (h.Tls != TlsMode.Acme) h.DnsDelegation = HostDnsDelegation.Default;
-        h.DnsOverrideDomain = h.DnsDelegation == HostDnsDelegation.Custom ? NetUtil.NormalizeDomain(h.DnsOverrideDomain) : null;
     }
-
-    /// <summary>The field error text for an invalid delegation record name.</summary>
-    private static string DelegationNameError(string name) => name.Contains('*')
-        ? $"'{name}' contains a wildcard; the delegation name is a single DNS record, e.g. _acme-challenge.validation.example.net."
-        : $"'{name}' is not a valid DNS name. Enter the record the CNAMEs point to, e.g. _acme-challenge.validation.example.net.";
 
     /// <summary>Validator that prefixes field names (e.g. "hosts[2]." for bulk imports).</summary>
     internal sealed class FieldErrors(Validator target, string prefix)
@@ -158,15 +148,6 @@ public static partial class ModelValidation
         if (modules is not null && CaddyConfigGenerator.UsesDnsChallenge(h, store.GetSettings<CaddySettings>())
             && DnsProviderModuleProblem(store.GetSettings<CaddySettings>().DnsProvider, modules) is { } moduleProblem)
             v.Add("acmeChallenge", moduleProblem);
-        if (h.DnsDelegation != HostDnsDelegation.Default && !CaddyConfigGenerator.UsesDnsChallenge(h, store.GetSettings<CaddySettings>()))
-            v.Add("dnsDelegation", "Challenge delegation only applies to the DNS challenge, and this host uses the HTTP challenge. Select the DNS challenge, or set delegation back to 'Use default'.");
-        if (h.DnsDelegation == HostDnsDelegation.Custom)
-        {
-            if (h.DnsOverrideDomain is null)
-                v.Add("dnsOverrideDomain", "Enter the delegation name the _acme-challenge CNAME records point to, e.g. _acme-challenge.validation.example.net.");
-            else if (!NetUtil.IsValidDnsName(h.DnsOverrideDomain))
-                v.Add("dnsOverrideDomain", DelegationNameError(h.DnsOverrideDomain));
-        }
 
         if (h.AdvancedRoutesJson is not null)
         {
@@ -456,8 +437,6 @@ public static partial class ModelValidation
         if (s.DnsPropagationTimeoutSeconds is not null and (< -1 or > 86400))
             v.Add("dnsPropagationTimeoutSeconds", "Propagation timeout must be 1-86400 seconds, or -1 to skip the propagation check.");
         if (s.DnsTtlSeconds is < 0 or > 604800) v.Add("dnsTtlSeconds", "TTL must be 0-604800 seconds.");
-        if (s.DnsOverrideDomain is { } od && !NetUtil.IsValidDnsName(od))
-            v.Add("dnsOverrideDomain", DelegationNameError(od));
 
         switch (s.StorageBackend)
         {

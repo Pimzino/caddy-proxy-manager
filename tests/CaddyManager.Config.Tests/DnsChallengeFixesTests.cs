@@ -189,7 +189,7 @@ public sealed class DnsChallengeFixesTests
     /// (1) an IP address of an ACME host whose effective challenge is DNS lands in a DNS policy (dns-01 cannot validate IP
     ///     identifiers — RFC 8738 — and a DNS solver makes certmagic use DNS-01 exclusively, so it is never issued);
     /// (2) the host's DNS names leave the DNS policy, or the IP is dropped altogether;
-    /// (3) the delegation check / delegation validation treat an IP-only host as a DNS-challenge host.
+    /// (3) UsesDnsChallenge (host validation) treats an IP-only host as a DNS-challenge host.
     /// </summary>
     [Fact]
     public void Ip_names_of_a_dns_challenge_host_stay_in_the_http_policy()

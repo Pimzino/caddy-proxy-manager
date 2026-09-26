@@ -2,7 +2,6 @@ import { caddySettingsInput } from '@/api/settings';
 import type { CaddySettings, CaddySettingsInput, DnsProviderInfo } from '@/api/types';
 import { secretPayload } from '@/components/SecretInput';
 import { isIpv4, isIpv6, type FieldErrors } from '@/lib/validation';
-import { isDelegationName } from '../hosts/dnsDelegation';
 import { parseObject } from './pluginExamples';
 
 // Round 3 helpers shared by the Caddy tab (ACME challenge / DNS) and the Cluster tab (shared storage): both edit the
@@ -19,7 +18,6 @@ export function caddyFormInput(s: CaddySettings): CaddySettingsInput {
     dnsPropagationDelaySeconds: rest.dnsPropagationDelaySeconds ?? null,
     dnsPropagationTimeoutSeconds: rest.dnsPropagationTimeoutSeconds ?? null,
     dnsTtlSeconds: rest.dnsTtlSeconds ?? null,
-    dnsOverrideDomain: rest.dnsOverrideDomain ?? null,
     storagePath: rest.storagePath ?? null,
     redisAddresses: rest.redisAddresses ?? [],
     redisUsername: rest.redisUsername ?? null,
@@ -67,7 +65,6 @@ export function round3Payload(form: CaddySettingsInput, settings: CaddySettings,
     dnsPropagationDelaySeconds: nullableNumber(form.dnsPropagationDelaySeconds),
     dnsPropagationTimeoutSeconds: nullableNumber(form.dnsPropagationTimeoutSeconds),
     dnsTtlSeconds: nullableNumber(form.dnsTtlSeconds),
-    dnsOverrideDomain: form.dnsOverrideDomain?.trim() || null,
     storagePath: form.storagePath?.trim() || null,
     redisUsername: form.redisUsername?.trim() || null,
     redisKeyPrefix: form.redisKeyPrefix.trim() || 'caddy',
@@ -129,8 +126,6 @@ export function validateDns(f: CaddySettingsInput, settings: CaddySettings, prov
   const t = f.dnsPropagationTimeoutSeconds;
   if (t != null && !Number.isNaN(t) && t !== -1 && !(Number.isInteger(t) && t >= 1)) e.dnsPropagationTimeoutSeconds = 'Enter whole seconds (1 or more), or leave empty for the default.';
   if (!isWholeSeconds(f.dnsTtlSeconds, 0)) e.dnsTtlSeconds = 'Enter whole seconds, or leave empty for the provider default.';
-  const od = f.dnsOverrideDomain?.trim();
-  if (od && !isDelegationName(od)) e.dnsOverrideDomain = 'Enter a DNS name such as _acme-challenge.validation.example.net (no wildcard).';
   return e;
 }
 

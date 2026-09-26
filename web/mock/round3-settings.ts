@@ -1,9 +1,8 @@
 // Round 3 mock API routes. Owner: WEB-SETTINGS builder: /api/cluster*, /api/settings/caddy/dns-providers (and Round 3 settings fields in fixtures/plugin).
-// Round 3b: POST /api/dns/delegation-check against a simulated DNS (see DNS_CNAMES).
 //
 // Environment switch: MOCK_CLUSTER_ROLE=standalone|primary|node (default primary). On a node, mutations of replicated
 // resources answer 409 "Managed by the cluster primary" like the real server (see managedNodeGuard).
-import type { CaddySettings, ClusterStatus, DelegationCheck, DelegationCheckResult, DnsProviderField, DnsProviderInfo, SiteHost } from '../src/api/types.ts';
+import type { CaddySettings, ClusterStatus, DnsProviderField, DnsProviderInfo } from '../src/api/types.ts';
 import { iso, newId, type MockState } from './fixtures.ts';
 import type { HttpError as HttpErrorClass, MockHelpers, MockRoute } from './plugin.ts';
 
@@ -210,8 +209,6 @@ export function applyRound3CaddySettings(s: MockState, body: Record<string, unkn
       if (!present) add(f.secret ? `dnsProviderSecrets.${f.name}` : `dnsProviderOptions.${f.name}`, `${f.label} is required for ${provider.label}.`);
     }
   }
-  if (typeof b.dnsOverrideDomain === 'string' && b.dnsOverrideDomain.trim() && !DELEGATION_NAME.test(b.dnsOverrideDomain.trim()))
-    add('dnsOverrideDomain', 'The delegation name must be a valid DNS name without a wildcard, e.g. _acme-challenge.validation.example.net.');
   if (b.dnsPropagationTimeoutSeconds != null && b.dnsPropagationTimeoutSeconds !== -1 && b.dnsPropagationTimeoutSeconds < 1)
     add('dnsPropagationTimeoutSeconds', 'Use a positive number of seconds, or -1 to skip the propagation check.');
 
@@ -263,91 +260,6 @@ export function applyRound3CaddySettings(s: MockState, body: Record<string, unkn
   if (!providerName) delete cs.dnsProvider;
   for (const k of [...ROUND3_WRITE_ONLY, ...ROUND3_OUTPUT_ONLY]) delete rest[k];
   return rest;
-}
-
-// ---------------------------------------------------------------- DNS challenge delegation check (SPEC round 3b)
-
-export const DELEGATION_NAME = /^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.?$/i;
-const norm = (n: string) => n.trim().toLowerCase().replace(/\.$/, '');
-
-/**
- * Simulated DNS: CNAME chains at _acme-challenge names as the OS resolvers see them. Names under corp.example.com exist only in
- * internal DNS (public resolvers answer NXDOMAIN); portal.example.net's authoritative servers time out; docs has a TXT record.
- * Names not listed get a stable pseudo-random answer so any typed domain shows a realistic mix.
- */
-const DNS_CNAMES: Record<string, string[]> = {
-  '_acme-challenge.app.example.com': ['_acme-challenge.validation.example.net'],
-  '_acme-challenge.www.app.example.com': ['_acme-challenge.app.example.com', '_acme-challenge.validation.example.net'],
-  '_acme-challenge.grafana.example.com': ['_acme-challenge.old-validation.example.net'],
-  '_acme-challenge.shop.example.com': ['_acme-challenge.shop.validation.example.net'],
-  '_acme-challenge.wiki.corp.example.com': ['_acme-challenge.validation.example.net'],
-};
-const DNS_MISSING = new Set(['_acme-challenge.api.example.com']);
-const DNS_TXT_ONLY = new Set(['_acme-challenge.docs.example.com']);
-const DNS_TIMEOUT = /(^|\.)portal\.example\.net$/;
-
-function lookupDelegation(recordName: string, expected: string, publicDns: boolean): Omit<DelegationCheck, 'domain' | 'recordName' | 'expectedTarget'> {
-  const base = recordName.replace(/^_acme-challenge\./, '');
-  if (DNS_TIMEOUT.test(base)) return { status: 'error', found: [], detail: 'No answer within 5 s (the zone’s name servers did not respond).' };
-  if (publicDns && /(^|\.)corp\.example\.com$/.test(base))
-    return { status: 'missing', found: [], detail: 'Public DNS does not know this name (NXDOMAIN). It exists only in internal DNS, so a public CA cannot follow it.' };
-  if (DNS_TXT_ONLY.has(recordName)) return { status: 'wrong', found: [], detail: 'A TXT record exists at this name instead of a CNAME (left over from an earlier challenge?). Delete it and add the CNAME.' };
-  let chain = DNS_CNAMES[recordName];
-  if (!chain && !DNS_MISSING.has(recordName)) {
-    const h = [...recordName].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 5;
-    if (h === 3) return { status: 'error', found: [], detail: 'SERVFAIL from the resolver.' };
-    chain = h === 0 || h === 1 ? [expected] : h === 2 ? [] : [`_acme-challenge.${base.split('.').slice(-2).join('.')}`];
-  }
-  if (!chain?.length) return { status: 'missing', found: [], detail: `No CNAME record at ${recordName}.` };
-  if (chain.includes(expected)) return { status: 'ok', found: chain };
-  return { status: 'wrong', found: chain, detail: `Points to ${chain.at(-1)} instead of ${expected}.` };
-}
-
-function effectiveDnsDomains(h: SiteHost, s: MockState): { domains: string[]; target: string | null } {
-  const cs = s.caddySettings;
-  if (h.tls !== 'acme' || !cs.dnsProvider) return { domains: [], target: null };
-  const challenge = h.acmeChallenge === 'default' ? cs.defaultAcmeChallenge : h.acmeChallenge;
-  const domains = challenge === 'dns' ? h.domains : h.domains.filter((d) => d.startsWith('*.'));
-  const target = h.dnsDelegation === 'custom' ? h.dnsOverrideDomain : h.dnsDelegation === 'off' ? null : cs.dnsOverrideDomain;
-  return { domains, target: target?.trim() ? norm(target) : null };
-}
-
-async function delegationCheck(body: unknown, s: MockState): Promise<DelegationCheckResult> {
-  const { HttpError } = helpers!;
-  const b = (body ?? {}) as { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean; systemResolvers?: boolean };
-  // Same order as the API: explicit public, explicit system, configured resolvers, else public DNS.
-  const usePublic = !!b.publicResolvers || (!b.systemResolvers && s.caddySettings.dnsResolvers.length === 0);
-  let domains: string[];
-  let target: string | null;
-  if (b.hostId) {
-    const host = s.hosts.find((h) => h.id === b.hostId);
-    if (!host) throw new HttpError(404, 'Not found', 'The host does not exist.');
-    ({ domains, target } = effectiveDnsDomains(host, s));
-    if (!domains.length) throw new HttpError(400, 'Invalid request', `${host.domains[0]} does not use the DNS challenge.`, { hostId: ['This host does not use the DNS challenge.'] });
-    if (!target) throw new HttpError(400, 'Invalid request', `${host.domains[0]} does not delegate its DNS challenge.`, { hostId: ['This host has no challenge delegation.'] });
-  } else {
-    domains = (b.domains ?? []).map(norm).filter(Boolean);
-    target = b.target?.trim() ? norm(b.target) : s.caddySettings.dnsOverrideDomain ? norm(s.caddySettings.dnsOverrideDomain) : null;
-    const errors: Record<string, string[]> = {};
-    if (!domains.length) errors.domains = ['Add at least one domain.'];
-    const bad = domains.filter((d) => !DELEGATION_NAME.test(d.replace(/^\*\./, '')));
-    if (bad.length) errors.domains = [`Not a valid domain name: ${bad.join(', ')}`];
-    if (!target) errors.target = ['No delegation name: enter one, or set the default in Settings › Caddy.'];
-    else if (!DELEGATION_NAME.test(target)) errors.target = ['The delegation name must be a valid DNS name without a wildcard.'];
-    if (Object.keys(errors).length) throw new HttpError(400, 'Invalid request', 'One or more fields are invalid.', errors);
-  }
-  await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
-  const expected = target!;
-  const seen = new Set<string>();
-  const checks: DelegationCheck[] = [];
-  for (const domain of domains) {
-    const recordName = `_acme-challenge.${norm(domain).replace(/^\*\./, '')}`;
-    if (seen.has(recordName)) continue;
-    seen.add(recordName);
-    checks.push({ domain, recordName, expectedTarget: expected, ...lookupDelegation(recordName, expected, usePublic) });
-  }
-  const resolvers = usePublic ? ['1.1.1.1:53', '8.8.8.8:53'] : b.systemResolvers ? ['system'] : s.caddySettings.dnsResolvers;
-  return { resolvers, checks, checkedAt: iso() };
 }
 
 // ---------------------------------------------------------------- Cluster
@@ -451,10 +363,6 @@ export function round3SettingsRoutes(h: MockHelpers): MockRoute[] {
     ['GET', '/api/settings/caddy/dns-providers', (_c, s) => {
       sessionRole(s);
       return ok(providerCatalog(s));
-    }],
-    ['POST', '/api/dns/delegation-check', async (c, s) => {
-      sessionRole(s);
-      return ok(await delegationCheck(c.body, s));
     }],
     ['GET', '/api/cluster', (_c, s) => {
       sessionRole(s);
