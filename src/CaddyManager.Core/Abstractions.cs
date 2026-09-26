@@ -203,3 +203,25 @@ public interface IServerTelemetry
     IReadOnlyList<ResourceSample> GetSamples(DateTime? since = null);
     Task<TrafficReport> GetTrafficAsync(TrafficQuery query, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Implemented by the Config module: replaces every configured secret (DNS provider secrets, storage secrets, EAB key...),
+/// including URL-encoded forms, with "***". Use it on any text that may contain Caddy output before it leaves the process
+/// (log viewer, events, notifications, status errors).
+/// </summary>
+public interface ISecretScrubber
+{
+    string Scrub(string text);
+}
+
+/// <summary>
+/// Implemented by the Config module (ConfigMutationGate): serialises configuration mutations (persist → apply → rollback)
+/// so other modules (e.g. cluster replication) never read or write half-applied configuration.
+/// </summary>
+public interface IConfigMutationLock
+{
+    /// <summary>Waits for the lock. Dispose the result to release it.</summary>
+    Task<IDisposable> AcquireAsync(CancellationToken ct = default);
+    /// <summary>Returns null when the lock is not free within <paramref name="timeout"/>.</summary>
+    Task<IDisposable?> TryAcquireAsync(TimeSpan timeout, CancellationToken ct = default);
+}

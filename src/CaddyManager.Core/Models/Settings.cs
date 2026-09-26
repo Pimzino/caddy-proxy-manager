@@ -159,7 +159,7 @@ public sealed class CaddySettings : ISettingsDocument
     public static readonly string[] NodeLocalProperties =
     [
         nameof(HttpPort), nameof(HttpsPort), nameof(PublicHttpsPort), nameof(BindAddresses), nameof(AdminListen),
-        nameof(CertificateStorePath),
+        nameof(CertificateStorePath), nameof(CustomAcmeRootPath),
     ];
 }
 

@@ -11,3 +11,4 @@ artifacts/
 ._*
 .DS_Store
 TestResults/
+.claude/worktrees/
