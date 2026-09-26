@@ -25,7 +25,8 @@ namespace CaddyManager.Telemetry.Tests;
 ///     or the line is applied to some of its six buckets twice.
 ///  3. A line that fails every time blocks all later lines forever.
 ///  4. Bucket ids depend on the current culture: a calendar change (th-TH) creates a second document for the same bucket
-///     and the report throws on the duplicate (TEL-8).
+///     and the report throws on the duplicate (TEL-8). Or the database's string collation follows the culture it was
+///     created under, so an id written under th-TH is not found again by id (seen on Windows' ICU only).
 ///  5. Unique-client hashes can be reversed: unkeyed (the same hash in every installation), the key stored inside the
 ///     statistics database, or stored unprotected (TEL-9). Or the key changes on every start, so the same client counts
 ///     again after a restart.

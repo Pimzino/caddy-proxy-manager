@@ -73,7 +73,9 @@ public sealed class TrafficWriteLoadE2ETests
             }
         });
         var savesAtStart = store.Saves;
-        await Parallel.ForEachAsync(Enumerable.Range(0, 8), async (worker, _) =>
+        // All 8 workers must run at once (the default parallelism is the CPU count): each covers its own clients, and the
+        // expected unique clients assume every worker sent.
+        await Parallel.ForEachAsync(Enumerable.Range(0, 8), new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (worker, _) =>
         {
             for (var i = worker; !stop.IsCancellationRequested; i += 8)
             {
