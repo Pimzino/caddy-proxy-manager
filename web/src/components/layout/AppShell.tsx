@@ -46,7 +46,7 @@ export function AppShell() {
 
   return (
     <ManagerUpdateProvider>
-      <div className="flex h-dvh overflow-hidden">
+      <div className="relative flex h-dvh overflow-hidden">
         <a
           href="#main"
           className="sr-only z-50 rounded-md bg-surface px-3 py-2 text-sm focus:not-sr-only focus:absolute focus:top-2 focus:left-2"
@@ -96,7 +96,7 @@ export function AppShell() {
             <UserMenu />
           </header>
           <ManagedNodeBanner />
-          <main id="main" className="min-h-0 flex-1 overflow-y-auto" tabIndex={-1}>
+          <main id="main" className="relative min-h-0 flex-1 overflow-y-auto" tabIndex={-1}>
             <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
               <ErrorBoundary resetKey={location.pathname}>
                 <Suspense fallback={<LoadingBlock />}>
