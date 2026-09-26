@@ -27,6 +27,8 @@ namespace CaddyManager.Telemetry.Tests;
 ///     lost and reading starts over (TEL-3).
 /// 12. The line handler throws: the rest of the 64 KB chunk is skipped and the offset no longer matches what was delivered,
 ///     so a restart resumes mid-line or re-delivers lines (TEL-7).
+/// 13. Backups rotated within one tick of the file clock (Windows updates last-write times about every 15.6 ms) have equal
+///     timestamps: an older backup is taken for a newer one and read again after a restart.
 /// </summary>
 public sealed class LogTailerTests : IDisposable
 {
@@ -187,6 +189,37 @@ public sealed class LogTailerTests : IDisposable
         Lines(20, 30);
         Rotate();
         Lines(30, 35);
+        using var t2 = new LogTailer(_path, saved);
+        Poll(t2);
+        AssertSequence(35);
+        Assert.Equal(0, t2.FilesMissed);
+    }
+
+    [Fact]
+    public void ResumeWhenBackupsShareOneTimestamp_OlderBackupIsNotReadAgain()
+    {
+        // (13) made deterministic: every backup and the live file get the same last-write time, as on Windows when the
+        // rotations happen within one tick of the file clock.
+        Lines(-5, 0);
+        _got.Clear();
+        var older = Rotate();
+        TrafficCursorDoc saved;
+        using (var t = new LogTailer(_path, null))
+        {
+            Lines(0, 10);
+            Poll(t);
+            _got.Clear();
+            _got.AddRange(Enumerable.Range(0, 10).Select(i => $"line-{i}"));
+            saved = Cursor(t);
+        }
+        Lines(10, 20);
+        var savedBackup = Rotate();
+        Lines(20, 30);
+        var newer = Rotate();
+        Lines(30, 35);
+        var tick = File.GetLastWriteTimeUtc(_path);
+        foreach (var f in new[] { older, savedBackup, newer, _path }) File.SetLastWriteTimeUtc(f, tick);
+        saved.FileLastWriteUtc = tick;
         using var t2 = new LogTailer(_path, saved);
         Poll(t2);
         AssertSequence(35);

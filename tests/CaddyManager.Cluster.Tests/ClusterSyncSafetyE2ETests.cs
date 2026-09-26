@@ -83,8 +83,14 @@ public sealed class ClusterSyncSafetyE2ETests(ITestOutputHelper output)
                 Assert.DoesNotContain(N.Store.Col<SiteHost>().FindAll(), h => h.Domains.Contains("rebuild1.cluster.test"));
                 Assert.Equal(new[] { Plugin }, N.Store.GetSettings<BinarySettings>().Plugins); // what the running job builds
                 Assert.Empty(Events(P, "server-sync:" + nodeId));
-                var summary = await Server(P, nodeId);
-                Assert.Contains(summary.GetProperty("sync").GetProperty("warnings").EnumerateArray(), w => w.GetString()!.Contains("rebuilding Caddy"));
+                // The node stages the revision before its push answer reaches the primary, which records it only then
+                // (ClusterWorker): wait for the primary's view instead of reading it once.
+                JsonElement summary = default;
+                await Wait.UntilAsync(async () =>
+                {
+                    summary = await Server(P, nodeId);
+                    return summary.GetProperty("sync").GetProperty("warnings").EnumerateArray().Any(w => w.GetString()!.Contains("rebuilding Caddy"));
+                }, TimeSpan.FromSeconds(15), () => "the primary reports the node rebuilding Caddy\n" + P.LogTail());
                 return new JsonObject { ["pendingRevision"] = r1, ["status"] = summary.GetProperty("status").GetString(), ["rebuildJobs"] = RebuildJobs() };
             });
 

@@ -426,15 +426,24 @@ internal sealed class LogTailer : IDisposable
     /// <summary>
     /// Backups rotated after the file <paramref name="afterId"/> (last written at <paramref name="afterWrite"/>), oldest
     /// first. ≥ rather than &gt; so a coarse timestamp resolution cannot skip one; files already read are excluded by identity.
+    /// On a tie with the file <paramref name="afterId"/> itself (still present as a backup), the backup name decides: timberjack
+    /// names backups by rotation time, so an equal timestamp with a name that sorts before it is an older backup. Windows
+    /// updates last-write times from a coarse clock (about 15.6 ms), so files rotated in quick succession tie.
     /// A backup that cannot be opened now is included by path: when it is opened later and turns out to be a file already
     /// read, <see cref="OpenFile"/> continues at the offset where that file was finished (nothing is read twice).
     /// </summary>
-    private IEnumerable<string> NewerBackups(string? afterId, DateTime afterWrite, string? liveId) =>
-        Backups()
+    private IEnumerable<string> NewerBackups(string? afterId, DateTime afterWrite, string? liveId)
+    {
+        var backups = Backups();
+        var afterPath = afterId is null ? null : backups.FirstOrDefault(b => b.Id == afterId).Path;
+        return backups
             .Where(b => b.Id is null || (b.Id != afterId && b.Id != liveId && !_completed.Any(c => c.Id == b.Id)))
-            .Where(b => b.LastWriteUtc >= afterWrite)
+            .Where(b => b.LastWriteUtc > afterWrite
+                        || (b.LastWriteUtc == afterWrite && (afterPath is null || string.CompareOrdinal(b.Path, afterPath) > 0)))
             .OrderBy(b => b.LastWriteUtc).ThenBy(b => b.Path, StringComparer.Ordinal)
-            .Select(b => b.Path);
+            .Select(b => b.Path)
+            .ToList();
+    }
 
     private static DateTime SafeLastWrite(SafeFileHandle h)
     {
