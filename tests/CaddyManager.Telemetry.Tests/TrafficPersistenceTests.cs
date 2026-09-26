@@ -49,7 +49,10 @@ public sealed class TrafficPersistenceTests
         Assert.True(env.Traffic.Saves >= 1, "the cursor is saved even before the first request");
     }
 
-    private static readonly DateTime Base = new DateTime(DateTime.UtcNow.Ticks - DateTime.UtcNow.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc);
+    private static readonly DateTime Base = HourStart(DateTime.UtcNow);
+
+    // One clock read: two reads differ on Windows (100 ns resolution) and put Base just before the hour.
+    private static DateTime HourStart(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc);
 
     private static void Configure(TempEnv env, params string[] domains)
     {
