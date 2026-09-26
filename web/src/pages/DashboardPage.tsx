@@ -24,6 +24,7 @@ import { useFeedback } from '@/components/feedback';
 import { Sparkline, formatBytesShort, formatCount, formatRatio } from '@/components/charts';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
 import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
+import { useOpenManagerUpdate } from '@/components/ManagerUpdateDialog';
 import { Button, Callout, Card, EmptyState, PageHeader, Skeleton, StatusDot, useToast, type Tone } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { formatDateTime, formatDuration, formatNumber, formatRelative, pluralize } from '@/lib/format';
@@ -94,6 +95,7 @@ export default function DashboardPage() {
 }
 
 function DashboardBody({ d }: { d: Dashboard }) {
+  const openManagerUpdate = useOpenManagerUpdate();
   const now = useNow(30_000);
   const { canOperate } = useAuth();
   const start = useCaddyAction();
@@ -141,7 +143,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
           {d.caddy.lastError ?? 'Start it from here or from Service & Updates.'}
         </Callout>
       )}
-      <ManagerUpdateCallout o={d.binary} />
+      <ManagerUpdateCallout dismissible />
       {!d.caddy.binaryInstalled && (
         <Callout
           tone="warning"
@@ -312,13 +314,9 @@ function DashboardBody({ d }: { d: Dashboard }) {
                 {d.binary.managerUpdateAvailable && d.binary.managerLatestVersion && (
                   <>
                     {' · '}
-                    {d.binary.managerLatestUrl ? (
-                      <a href={d.binary.managerLatestUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">
-                        Manager v{d.binary.managerLatestVersion.replace(/^v/, '')} available
-                      </a>
-                    ) : (
-                      <span className="text-accent-text">Manager v{d.binary.managerLatestVersion.replace(/^v/, '')} available</span>
-                    )}
+                    <button type="button" onClick={openManagerUpdate} className="text-accent-text hover:underline">
+                      v{d.binary.managerLatestVersion.replace(/^v/, '')} available
+                    </button>
                   </>
                 )}
               </dd>

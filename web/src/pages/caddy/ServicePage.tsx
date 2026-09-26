@@ -31,7 +31,8 @@ import { useFeedback } from '@/components/feedback';
 import { JobDialog } from '@/components/JobDialog';
 import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
-import { Markdown } from '@/components/Markdown';
+import { useOpenManagerUpdate } from '@/components/ManagerUpdateDialog';
+import { ReleaseNotes } from '@/components/ReleaseNotes';
 import {
   Badge,
   Button,
@@ -73,12 +74,12 @@ export default function ServicePage() {
   return (
     <>
       <PageHeader title="Service & Updates" description="Control the Caddy service and keep the Caddy binary up to date." />
-      {binary.data && <ManagerUpdateCallout o={binary.data} className="mb-4" />}
+      <ManagerUpdateCallout className="mb-4" />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ServiceCard status={status.data} error={status.error} loading={status.isPending} />
         <BinaryCard onJob={setJobId} onPickVersion={() => setVersionDialog(true)} onUpload={() => setUploadDialog(true)} />
       </div>
-      {binary.data?.latest?.notes && (
+      {(binary.data?.latest?.notes || binary.data?.latest?.notesHtml) && (
         <Card className="mt-4">
           <CardHeader
             title={`Release notes — ${binary.data.latest.version}`}
@@ -97,7 +98,7 @@ export default function ServicePage() {
             }
           />
           <CardBody className="max-h-[420px] overflow-y-auto text-sm text-fg-muted">
-            <Markdown source={binary.data.latest.notes} />
+            <ReleaseNotes release={binary.data.latest} />
           </CardBody>
         </Card>
       )}
@@ -267,6 +268,7 @@ function ServiceCard({ status, error, loading }: { status?: CaddyStatus; error: 
 }
 
 function BinaryCard({ onJob, onPickVersion, onUpload }: { onJob: (id: string) => void; onPickVersion: () => void; onUpload: () => void }) {
+  const openManagerUpdate = useOpenManagerUpdate();
   const { canOperate, isAdmin } = useAuth();
   const binary = useBinaryOverview();
   const check = useCheckForUpdates();
@@ -479,13 +481,9 @@ function BinaryCard({ onJob, onPickVersion, onUpload }: { onJob: (id: string) =>
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="mono">v{(o.managerVersion ?? '').replace(/^v/, '')}</span>
                       {o.managerUpdateAvailable && o.managerLatestVersion && (
-                        o.managerLatestUrl ? (
-                          <a href={o.managerLatestUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-accent-text hover:underline">
-                            Manager v{o.managerLatestVersion.replace(/^v/, '')} available <ExternalLink size={11} aria-hidden />
-                          </a>
-                        ) : (
-                          <Badge tone="info">Manager v{o.managerLatestVersion.replace(/^v/, '')} available</Badge>
-                        )
+                        <button type="button" onClick={openManagerUpdate} className="text-sm text-accent-text hover:underline">
+                          v{o.managerLatestVersion.replace(/^v/, '')} available — what’s new
+                        </button>
                       )}
                     </span>
                   ),

@@ -4,7 +4,9 @@
 // Environment switches: MOCK_SETUP=1 (first-run setup flow), MOCK_ANON=1 (start signed out),
 // MOCK_ROLE=viewer|operator (start as a lower role), MOCK_LATENCY=ms (default 180),
 // MOCK_CLUSTER_ROLE=standalone|primary|node (default primary; see round3-settings.ts),
-// MOCK_DNS_ONLY=1 (DNS-01 is the default challenge; HTTP-01 and TLS-ALPN-01 are disabled).
+// MOCK_DNS_ONLY=1 (DNS-01 is the default challenge; HTTP-01 and TLS-ALPN-01 are disabled),
+// MOCK_MANAGER_UPDATE=available|none|error (manager self-update check, default available: installed 1.0.1 with the
+// recorded GitHub releases 1.1.0 and 1.0.2 newer; none = installed 1.1.0; error = GitHub request fails; see manager-update.ts).
 // End-to-end checks of the UI against this mock: mock/e2e/run.ts.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
@@ -42,6 +44,7 @@ import {
   type MockJob,
   type MockState,
 } from './fixtures.ts';
+import { installedManagerVersion, managerUpdateInfo, syncManagerOverview } from './manager-update.ts';
 import { round3ServersRoutes } from './round3-servers.ts';
 import { applyRound3CaddySettings, managedNodeGuard, round3SettingsRoutes, stripRound3Secrets } from './round3-settings.ts';
 
@@ -491,7 +494,7 @@ function jobSnapshot(j: MockJob) {
 const routes: [string, string, Handler][] = [
   ['GET', '/api/health', (_c, s) => {
     if (Date.now() < s.restartingUntil) throw new HttpError(503, 'Service unavailable', 'Restarting');
-    return ok({ status: 'ok', version: '1.0.0', product: 'Caddy Proxy Manager' });
+    return ok({ status: 'ok', version: installedManagerVersion(), product: 'Caddy Proxy Manager' });
   }],
 
   // ---- setup & auth
@@ -617,12 +620,23 @@ const routes: [string, string, Handler][] = [
       readiness: s.readiness ? { ranAt: s.readiness.ranAt, pass: s.readiness.pass, warn: s.readiness.warn, fail: s.readiness.fail } : null,
       upstreams: { total: 7, unhealthy: s.status.state === 'running' ? 1 : 0 },
       recentEvents: s.events.slice(0, 10),
-      system: { hostname: 'WEB-PROXY01', os: 'Microsoft Windows Server 2025 Standard 10.0.26100', managerVersion: '1.0.0', uptimeSeconds: Math.floor((Date.now() - s.startedAt) / 1000), dataDir: 'C:\\ProgramData\\CaddyProxyManager' },
+      system: { hostname: 'WEB-PROXY01', os: 'Microsoft Windows Server 2025 Standard 10.0.26100', managerVersion: installedManagerVersion(), uptimeSeconds: Math.floor((Date.now() - s.startedAt) / 1000), dataDir: 'C:\\ProgramData\\CaddyProxyManager' },
     });
   }],
   ['GET', '/api/system/info', (_c, s) => {
     currentUser(s);
-    return ok({ version: '1.0.0', product: 'Caddy Proxy Manager', hostMode: 'windows-service', dataDir: 'C:\\ProgramData\\CaddyProxyManager', installDir: 'C:\\Program Files\\Caddy Proxy Manager', os: 'Microsoft Windows Server 2025 Standard 10.0.26100', machineName: 'WEB-PROXY01', uptimeSeconds: Math.floor((Date.now() - s.startedAt) / 1000), isService: true });
+    return ok({ version: installedManagerVersion(), product: 'Caddy Proxy Manager', hostMode: 'windows-service', dataDir: 'C:\\ProgramData\\CaddyProxyManager', installDir: 'C:\\Program Files\\Caddy Proxy Manager', os: 'Microsoft Windows Server 2025 Standard 10.0.26100', machineName: 'WEB-PROXY01', uptimeSeconds: Math.floor((Date.now() - s.startedAt) / 1000), isService: true });
+  }],
+  ['GET', '/api/system/manager-update', (_c, s) => {
+    currentUser(s);
+    return ok(managerUpdateInfo(s.binarySettings, s.managerCheckedAt));
+  }],
+  ['POST', '/api/system/manager-update/check', (_c, s) => {
+    requireRole(s, 'operator');
+    s.managerCheckedAt = iso();
+    const info = managerUpdateInfo(s.binarySettings, s.managerCheckedAt);
+    syncManagerOverview(s.binary, info);
+    return ok(info);
   }],
   ['POST', '/api/system/restart', (_c, s) => {
     requireRole(s, 'admin');
@@ -1003,15 +1017,9 @@ const routes: [string, string, Handler][] = [
     const b = c.body as BinarySettingsBody;
     if (b.managerReleaseRepo && !/^[\w.-]+\/[\w.-]+$/.test(b.managerReleaseRepo))
       throw new HttpError(400, 'Invalid request', 'Use owner/repository.', { ManagerReleaseRepo: ['Use the GitHub owner/repository form.'] });
-    Object.assign(s.binarySettings, b);
-    s.binary.managerUpdateAvailable = !!b.managerReleaseRepo;
-    if (!b.managerReleaseRepo) {
-      delete s.binary.managerLatestVersion;
-      delete s.binary.managerLatestUrl;
-    } else {
-      s.binary.managerLatestVersion = '1.1.0';
-      s.binary.managerLatestUrl = `https://github.com/${b.managerReleaseRepo}/releases/tag/v1.1.0`;
-    }
+    Object.assign(s.binarySettings, b, { checkManagerUpdates: b.checkManagerUpdates !== false, managerReleaseRepo: b.managerReleaseRepo?.trim() || null });
+    s.managerCheckedAt = iso();
+    syncManagerOverview(s.binary, managerUpdateInfo(s.binarySettings, s.managerCheckedAt));
     audit(s, 'updated', 'settings', 'Updates');
     return ok(s.binarySettings);
   }],
@@ -1400,6 +1408,7 @@ function send(res: ServerResponse, r: NonNullable<Result>) {
 
 export function mockApi(): Plugin {
   const state = createState();
+  syncManagerOverview(state.binary, managerUpdateInfo(state.binarySettings, state.managerCheckedAt));
   const latency = Number(process.env.MOCK_LATENCY ?? 180);
   return {
     name: 'cpm-mock-api',

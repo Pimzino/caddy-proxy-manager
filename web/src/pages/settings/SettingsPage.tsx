@@ -1,8 +1,10 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
+import { RefreshCw } from 'lucide-react';
 import {
   useBinaryOverview,
   useBinarySettings,
+  useCheckManagerUpdate,
   useCaddySettings,
   useDnsProviders,
   useIsManagedNode,
@@ -16,9 +18,11 @@ import { uiSettingsInput } from '@/api/settings';
 import type { AcmeCa, BinarySettings, CaddySettings, CaddySettingsInput, DefaultSiteBehavior, UiSettings, UiSettingsInput } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
+import { useOpenManagerUpdate } from '@/components/ManagerUpdateDialog';
 import { SecretInput, secretPayload } from '@/components/SecretInput';
 import {
   Badge,
+  Button,
   Callout,
   Card,
   CardBody,
@@ -482,7 +486,9 @@ function normalizeRepo(v: string | null | undefined): string {
 }
 
 function UpdatesForm({ settings }: { settings: BinarySettings }) {
-  const { isAdmin } = useAuth();
+  const { isAdmin, canOperate } = useAuth();
+  const openManagerUpdate = useOpenManagerUpdate();
+  const checkManager = useCheckManagerUpdate();
   const binary = useBinaryOverview();
   const versionText = binary.data?.managerVersion ? `v${binary.data.managerVersion.replace(/^v/, '')}` : null;
   const [form, setForm] = useState<BinarySettings>(settings);
@@ -585,21 +591,52 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
               </Field>
             )}
           </FormSection>
-          <FormSection title="Manager updates" description="Checks a GitHub repository for new releases of Caddy Proxy Manager itself and shows a notice on the dashboard. Updating the manager is done with the installer.">
-            <Field
-              label="Release repository"
-              error={errors.managerReleaseRepo}
-              hint={
-                <>
-                  GitHub <span className="mono">owner/repository</span>. Leave empty to disable the check.
-                  {versionText && <> Installed: <span className="mono">{versionText}</span>.</>}
-                </>
-              }
-            >
-              <Input mono placeholder="contoso/caddy-proxy-manager" value={form.managerReleaseRepo ?? ''} onChange={(e) => set('managerReleaseRepo', e.target.value)} />
-            </Field>
-          </FormSection>
         </fieldset>
+        {/* Outside the form's fieldset so that “Check now” works for every role (the fields below stay read-only). */}
+        <div className="mt-6 border-t border-border pt-6">
+          <FormSection
+            title="Manager updates"
+            description="Checks GitHub for new releases of Caddy Proxy Manager itself and shows a notice in the top bar and on the dashboard. Updating the manager is done with the installer."
+            actions={
+              <Button
+                size="sm"
+                icon={<RefreshCw size={13} />}
+                onClick={() => {
+                  openManagerUpdate();
+                  if (canOperate && settings.checkManagerUpdates) checkManager.mutate();
+                }}
+              >
+                {canOperate && settings.checkManagerUpdates ? 'Check now' : 'View update status'}
+              </Button>
+            }
+          >
+            <fieldset disabled={!isAdmin || save.isPending} className="flex min-w-0 flex-col gap-4">
+              <SwitchField
+                label="Check for Caddy Proxy Manager updates"
+                description={versionText ? <>Installed: <span className="mono">{versionText}</span>.</> : undefined}
+                checked={form.checkManagerUpdates}
+                onChange={(v) => set('checkManagerUpdates', v)}
+              />
+              <Field
+                label="Release repository"
+                error={errors.managerReleaseRepo}
+                hint={
+                  <>
+                    GitHub <span className="mono">owner/repository</span>. Leave empty to use the official repository; set it to follow an internal fork.
+                  </>
+                }
+              >
+                <Input
+                  mono
+                  placeholder="Pimzino/caddy-proxy-manager"
+                  value={form.managerReleaseRepo ?? ''}
+                  onChange={(e) => set('managerReleaseRepo', e.target.value)}
+                  disabled={!form.checkManagerUpdates}
+                />
+              </Field>
+            </fieldset>
+          </FormSection>
+        </div>
         <div className="mt-5 border-t border-border pt-4">
           <SaveBar dirty={dirty} saving={save.isPending} onReset={() => setForm(settings)} readOnly={!isAdmin} />
         </div>

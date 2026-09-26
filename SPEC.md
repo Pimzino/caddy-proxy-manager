@@ -195,7 +195,11 @@ staging → `staging\caddy version` → `staging\caddy validate --config <curren
 Caddy → move current to `.previous` → move staged in → start → wait for admin API (30s) → on failure
 restore `.previous`, start, raise event. Update check: background every `CheckIntervalHours`
 (GitHub `releases/latest`), raising `IEventSink` event (category "update", key "update-available:<ver>",
-alertRule "updateAvailable") once per new version; optional auto-install.
+alertRule "updateAvailable") once per new version; optional auto-install. On the same cadence, unless
+`BinarySettings.CheckManagerUpdates` is off, the manager checks its own releases (`ManagerReleaseRepo`, empty = the official
+`Pimzino/caddy-proxy-manager`) with one request to `GET /repos/{repo}/releases?per_page=30` (drafts and pre-releases ignored,
+cached 1 h) and raises "manager-update-available:<ver>" once per version with the MSI download link. All GitHub release
+requests use `Accept: application/vnd.github.full+json` (adds `body_html`).
 
 ### Readiness (Platform)
 | GET /api/readiness (viewer) → ReadinessReport (204 when never run) |
@@ -216,6 +220,8 @@ All PowerShell is executed with `powershell.exe -NoProfile -NonInteractive -Exec
 
 ### System (Platform)
 | GET /api/system/info (viewer) → `{ version, product, hostMode, dataDir, installDir, os, machineName, uptimeSeconds, isService }` |
+| GET /api/system/manager-update (viewer) → ManagerUpdateInfo `{ enabled, repo, repoIsDefault, releasesUrl, currentVersion, updateAvailable, latest, newerReleases (stable releases newer than the installed version, newest first, ≤20), checkedAt, error }` (cached) |
+| POST /api/system/manager-update/check (operator) → ManagerUpdateInfo; asks GitHub now; a GitHub failure (rate limit, network, unknown repository) is returned in `error` with the last successful data, never as 5xx |
 | POST /api/system/restart (admin) → 202; restarts the manager service (exit code 1 → SCM recovery restarts it; in console mode just logs) |
 
 ### Notifications & UI settings (Ops) — admin
@@ -288,7 +294,8 @@ All new settings fields follow the settings wire-shape rule above. New Core fiel
 `CertificateSource.PfxFile|WindowsStore` + `Certificate.SourcePath, PfxPasswordProtected, StoreLocation, StoreName,
 StoreThumbprint, StoreSubject, LastSyncedAt, LastSyncError`; `CaddySettings.ExtraAppsJson, AcmeIssuerJsonProtected
 (wire hasAcmeIssuerJson/acmeIssuerJson), TlsConnectionPolicyJson`; `BinarySettings.ProxyCaddyTraffic, NoProxy,
-ManagerReleaseRepo`; `NotificationSettings.SmtpAuth (none|password|oAuth2ClientCredentials), OAuthTenantId,
+ManagerReleaseRepo (empty = official repository), CheckManagerUpdates (default true)`; `ReleaseInfo.Name, NotesHtml, Assets
+(ReleaseAsset { name, size, downloadUrl, contentType, sha256 })`; `NotificationSettings.SmtpAuth (none|password|oAuth2ClientCredentials), OAuthTenantId,
 OAuthClientId, OAuthClientSecretProtected (wire hasOAuthClientSecret/oAuthClientSecret), WebhookFormat
 (generic|slack|teamsWorkflow)`; `UiSettings.RedirectHttpToHttps`; `BinaryOverview.CanRollback, PreviousVersion,
 ManagerVersion, ManagerLatestVersion, ManagerLatestUrl, ManagerUpdateAvailable`; `User.ExternalSource, ExternalId`;

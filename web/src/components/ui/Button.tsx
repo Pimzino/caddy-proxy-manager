@@ -22,6 +22,17 @@ const sizes: Record<ButtonSize, string> = {
 
 const iconSizes: Record<ButtonSize, string> = { xs: 'h-6 w-6', sm: 'h-7 w-7', md: 'h-8 w-8' };
 
+/** Button look for other elements (e.g. an <a> download link). */
+export function buttonClasses({ variant = 'secondary', size = 'md', iconOnly = false }: { variant?: ButtonVariant; size?: ButtonSize; iconOnly?: boolean } = {}) {
+  return cn(
+    'inline-flex shrink-0 items-center justify-center rounded-md border font-medium whitespace-nowrap select-none',
+    'transition-colors duration-100 disabled:opacity-50 disabled:cursor-not-allowed',
+    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+    variants[variant],
+    iconOnly ? cn(iconSizes[size], 'p-0') : sizes[size],
+  );
+}
+
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -51,14 +62,7 @@ export function Button({
       type={type}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
-      className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-md border font-medium whitespace-nowrap select-none',
-        'transition-colors duration-100 disabled:opacity-50 disabled:cursor-not-allowed',
-        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-        variants[variant],
-        iconOnly ? cn(iconSizes[size], 'p-0') : sizes[size],
-        className,
-      )}
+      className={cn(buttonClasses({ variant, size, iconOnly }), className)}
       {...rest}
     >
       {loading ? <Spinner size={size === 'xs' ? 12 : 14} /> : icon}

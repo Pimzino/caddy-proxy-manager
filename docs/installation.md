@@ -82,8 +82,9 @@ removes it).
 Run the newer MSI (or re-run `install.ps1` with the newer zip). Data, settings and certificates in
 `C:\ProgramData\CaddyProxyManager` are kept, and you sign in with your existing accounts — the installer's final page
 only asks for the setup token on a server that has never been set up (the manager records completed setup in
-`HKLM\SOFTWARE\Caddy Proxy Manager\SetupCompleted`; an uninstall with `-Purge` clears it). The UI shows *Manager vX available* when **Settings › Updates ›
-Manager release repository** is set.
+`HKLM\SOFTWARE\Caddy Proxy Manager\SetupCompleted`; an uninstall with `-Purge` clears it). The manager checks GitHub for its own new releases (the official
+`Pimzino/caddy-proxy-manager` repository, or the repository set in **Settings › Updates**; the check can be turned off
+there) and shows *Manager vX available* with the release notes of every newer version and the MSI download link.
 
 Pre-release builds from CI (`1.0.0-ci.<run>`) all carry MSI version 1.0.0 and replace each other in **either**
 direction (the MSI allows same-version upgrades, and Windows Installer ignores anything after the third version

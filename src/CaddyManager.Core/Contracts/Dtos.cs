@@ -38,9 +38,53 @@ public sealed record InstalledBinary
 public sealed record ReleaseInfo
 {
     public string Version { get; init; } = "";          // "v2.11.4"
+    /// <summary>Release title as published on GitHub ("Caddy Proxy Manager v1.1.0").</summary>
+    public string? Name { get; init; }
     public DateTime? PublishedAt { get; init; }
     public string Url { get; init; } = "";               // release notes URL
     public string? Notes { get; init; }                  // markdown body (truncated)
+    /// <summary>
+    /// GitHub's own rendering of the release notes (body_html from the application/vnd.github.full+json media type).
+    /// Untrusted third-party HTML: the web UI passes it through an allowlist sanitizer before display. Null when GitHub
+    /// did not send it or it exceeded the size limit (the UI then renders <see cref="Notes"/> as Markdown).
+    /// </summary>
+    public string? NotesHtml { get; init; }
+    /// <summary>Downloadable files attached to the release (browser_download_url links on github.com).</summary>
+    public List<ReleaseAsset> Assets { get; init; } = new();
+}
+
+public sealed record ReleaseAsset
+{
+    public string Name { get; init; } = "";              // "CaddyProxyManager-1.1.0-x64.msi"
+    public long Size { get; init; }
+    public string DownloadUrl { get; init; } = "";       // https://github.com/{owner}/{repo}/releases/download/{tag}/{name}
+    public string? ContentType { get; init; }
+    /// <summary>Lower-case hex SHA-256 from GitHub's asset "digest" ("sha256:…"), when GitHub provides one.</summary>
+    public string? Sha256 { get; init; }
+}
+
+/// <summary>GET /api/system/manager-update: is a newer Caddy Proxy Manager published on GitHub, and what changed.</summary>
+public sealed record ManagerUpdateInfo
+{
+    /// <summary>False when BinarySettings.CheckManagerUpdates is off (nothing is fetched).</summary>
+    public bool Enabled { get; init; }
+    /// <summary>GitHub "owner/repo" that is checked (BinarySettings.ManagerReleaseRepo or the official repository).</summary>
+    public string? Repo { get; init; }
+    /// <summary>True when <see cref="Repo"/> is the built-in official repository (no custom repository configured).</summary>
+    public bool RepoIsDefault { get; init; }
+    /// <summary>https://github.com/{repo}/releases</summary>
+    public string? ReleasesUrl { get; init; }
+    /// <summary>Installed version of Caddy Proxy Manager (no leading "v").</summary>
+    public string CurrentVersion { get; init; } = "";
+    public bool UpdateAvailable { get; init; }
+    /// <summary>Newest stable (non-draft, non-prerelease) release, whether or not it is newer than the installed version.</summary>
+    public ReleaseInfo? Latest { get; init; }
+    /// <summary>Every stable release newer than the installed version, newest first (at most 20): the changelog since the installed version.</summary>
+    public List<ReleaseInfo> NewerReleases { get; init; } = new();
+    /// <summary>When GitHub last answered successfully.</summary>
+    public DateTime? CheckedAt { get; init; }
+    /// <summary>Why the last check failed (rate limit, no network, unknown repository …); null after a successful check.</summary>
+    public string? Error { get; init; }
 }
 
 public sealed record BinaryOverview

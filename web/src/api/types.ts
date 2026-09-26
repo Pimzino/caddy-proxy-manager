@@ -355,7 +355,9 @@ export interface BinarySettings {
   proxyCaddyTraffic: boolean;
   /** NO_PROXY for Caddy when proxyCaddyTraffic is on. */
   noProxy: string;
-  /** GitHub "owner/repo" checked for new manager versions; empty = disabled. */
+  /** Check GitHub for new versions of Caddy Proxy Manager itself. */
+  checkManagerUpdates: boolean;
+  /** GitHub "owner/repo" checked for new manager versions; empty = the official repository. */
   managerReleaseRepo?: string | null;
 }
 
@@ -489,9 +491,43 @@ export interface InstalledBinary {
 
 export interface ReleaseInfo {
   version: string;
+  /** Release title as published on GitHub. */
+  name?: string;
   publishedAt?: IsoDate;
   url: string;
+  /** Markdown body (truncated). */
   notes?: string;
+  /** GitHub's rendering of the notes. Untrusted HTML: only ever displayed through the ReleaseNotes sanitizer. */
+  notesHtml?: string;
+  assets?: ReleaseAsset[];
+}
+
+export interface ReleaseAsset {
+  name: string;
+  size: number;
+  /** github.com browser_download_url */
+  downloadUrl: string;
+  contentType?: string;
+  /** Lower-case hex SHA-256 (GitHub asset digest), when available. */
+  sha256?: string;
+}
+
+/** GET /api/system/manager-update (POST /api/system/manager-update/check forces a fresh GitHub request). */
+export interface ManagerUpdateInfo {
+  /** False when checking for manager updates is switched off. */
+  enabled: boolean;
+  repo?: string;
+  repoIsDefault: boolean;
+  releasesUrl?: string;
+  /** Installed version, no leading "v". */
+  currentVersion: string;
+  updateAvailable: boolean;
+  /** Newest stable release (may equal the installed version). */
+  latest?: ReleaseInfo;
+  /** Stable releases newer than the installed one, newest first. */
+  newerReleases: ReleaseInfo[];
+  checkedAt?: IsoDate;
+  error?: string;
 }
 
 export interface BinaryOverview {

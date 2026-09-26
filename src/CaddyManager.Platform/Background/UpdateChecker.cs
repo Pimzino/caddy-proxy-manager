@@ -11,8 +11,9 @@ namespace CaddyManager.Platform.Background;
 /// <summary>
 /// Checks GitHub for a newer Caddy release every BinarySettings.CheckIntervalHours. Raises one
 /// "update-available:&lt;ver&gt;" event per new version (alert rule "updateAvailable") and optionally
-/// installs it (BinarySettings.AutoInstallUpdates). On the same cadence it checks BinarySettings.ManagerReleaseRepo for a
-/// newer Caddy Proxy Manager release and raises "manager-update-available:&lt;ver&gt;" once per version (never auto-installed).
+/// installs it (BinarySettings.AutoInstallUpdates). On the same cadence (unless BinarySettings.CheckManagerUpdates is off) it
+/// checks the manager's release repository (BinarySettings.ManagerReleaseRepo, empty = the official repository) for a newer
+/// Caddy Proxy Manager release and raises "manager-update-available:&lt;ver&gt;" once per version (never auto-installed).
 /// </summary>
 public sealed class UpdateChecker(
     AppPaths paths,
@@ -88,19 +89,26 @@ public sealed class UpdateChecker(
         return caddy;
     }
 
-    /// <summary>Checks the manager's own release repository (when configured). Returns the newer version found, if any.</summary>
+    /// <summary>
+    /// Checks the manager's own release repository (unless BinarySettings.CheckManagerUpdates is off). Returns the newer
+    /// version found, if any.
+    /// </summary>
     public async Task<string?> CheckManagerAsync(CancellationToken ct)
     {
+        if (!store.GetSettings<BinarySettings>().CheckManagerUpdates) return null;
         var latest = await binary.GetManagerLatestAsync(force: true, ct);
         var current = CaddyBinaryManager.ManagerVersion;
         if (latest is null || !CaddyVersion.IsNewer(latest.Version, current)) return null;
         var state = ReadState();
         if (!string.Equals(state.NotifiedManagerVersion, latest.Version, StringComparison.OrdinalIgnoreCase))
         {
+            var msi = latest.Assets.FirstOrDefault(a => a.Name.EndsWith(".msi", StringComparison.OrdinalIgnoreCase));
             logger.LogInformation("Caddy Proxy Manager {Latest} is available (installed: {Installed})", latest.Version, current);
             services.GetService<IEventSink>()?.Raise(EventSeverity.Info, "update",
                 $"Caddy Proxy Manager {latest.Version} is available (installed: {current})",
-                $"Release notes and downloads: {latest.Url}\nUpgrade by running the new MSI on this server (or install.ps1 from the zip); " +
+                $"Release notes and downloads: {latest.Url}\n" +
+                (msi is null ? "" : $"Installer: {msi.DownloadUrl}" + (msi.Sha256 is null ? "" : $" (SHA-256 {msi.Sha256})") + "\n") +
+                "Upgrade by running the new MSI on this server (or install.ps1 from the zip); " +
                 "settings, hosts and certificates are kept, and Caddy keeps serving while the manager restarts.",
                 key: $"manager-update-available:{latest.Version}", alertRule: "updateAvailable");
             WriteState(state with { NotifiedManagerVersion = latest.Version });

@@ -174,7 +174,12 @@ public sealed class BinarySettings : ISettingsDocument
     public bool ProxyCaddyTraffic { get; set; }
     /// <summary>NO_PROXY for Caddy when ProxyCaddyTraffic is on (upstreams must bypass the proxy).</summary>
     public string NoProxy { get; set; } = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local";
-    /// <summary>Where to look for new versions of the manager itself (GitHub "owner/repo"); empty = disabled.</summary>
+    /// <summary>Check GitHub for new versions of Caddy Proxy Manager itself (on the Caddy update cadence).</summary>
+    public bool CheckManagerUpdates { get; set; } = true;
+    /// <summary>
+    /// Where to look for new versions of the manager itself (GitHub "owner/repo", e.g. an internal fork);
+    /// empty = the official repository (CaddyBinaryManager.DefaultManagerReleaseRepo).
+    /// </summary>
     public string? ManagerReleaseRepo { get; set; }
 }
 

@@ -39,7 +39,8 @@ public sealed class PlatformApiHost : IAsyncDisposable
     public FakeAuditLog Audit { get; } = new();
     public FakeEventSink Events { get; } = new();
 
-    public PlatformApiHost(int adminPort)
+    /// <param name="configureServices">Last-minute service overrides (e.g. a fake GitHub behind the "default" HttpClient).</param>
+    public PlatformApiHost(int adminPort, Action<IServiceCollection>? configureServices = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -65,6 +66,7 @@ public sealed class PlatformApiHost : IAsyncDisposable
             o.AddPolicy(Policies.Operator, p => p.RequireRole("operator", "admin"));
             o.AddPolicy(Policies.Admin, p => p.RequireRole("admin"));
         });
+        configureServices?.Invoke(builder.Services);
         App = builder.Build();
         App.UseAuthentication();
         App.UseAuthorization();

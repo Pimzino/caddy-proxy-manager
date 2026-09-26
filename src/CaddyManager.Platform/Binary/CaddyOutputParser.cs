@@ -106,25 +106,88 @@ public static partial class CaddyOutputParser
         return map;
     }
 
-    /// <summary>Parses a GitHub "release" object (api.github.com/repos/{o}/{r}/releases/latest).</summary>
+    /// <summary>
+    /// Largest body_html kept (characters). Longer HTML is dropped as a whole (never cut mid-tag); the UI then renders
+    /// the Markdown body instead.
+    /// </summary>
+    public const int MaxNotesHtmlLength = 200_000;
+
+    [GeneratedRegex(@"^sha256:(?<hex>[0-9a-fA-F]{64})$")]
+    private static partial Regex Sha256Digest();
+
+    /// <summary>
+    /// Parses a GitHub "release" object (api.github.com/repos/{o}/{r}/releases/latest). Reads body_html and the assets
+    /// when present (application/vnd.github.full+json).
+    /// </summary>
     public static ReleaseInfo ParseGitHubRelease(string json, int maxNotesLength = 20000)
     {
         using var doc = JsonDocument.Parse(json);
-        var r = doc.RootElement;
+        if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new FormatException("GitHub release response is not a JSON object.");
+        return ParseRelease(doc.RootElement, maxNotesLength);
+    }
+
+    /// <summary>
+    /// Parses a GitHub release list (api.github.com/repos/{o}/{r}/releases), in the order GitHub returned it.
+    /// Drafts and pre-releases are skipped, as are entries without a tag.
+    /// </summary>
+    public static List<ReleaseInfo> ParseGitHubReleaseList(string json, int maxNotesLength = 20000)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) throw new FormatException("GitHub release list response is not a JSON array.");
+        var list = new List<ReleaseInfo>();
+        foreach (var e in doc.RootElement.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object || string.IsNullOrWhiteSpace(Str(e, "tag_name"))) continue;
+            if (IsTrue(e, "draft") || IsTrue(e, "prerelease")) continue;
+            list.Add(ParseRelease(e, maxNotesLength));
+        }
+        return list;
+    }
+
+    private static ReleaseInfo ParseRelease(JsonElement r, int maxNotesLength)
+    {
         var tag = Str(r, "tag_name");
         if (string.IsNullOrWhiteSpace(tag)) throw new FormatException("GitHub release response has no tag_name.");
         DateTime? published = r.TryGetProperty("published_at", out var p) && p.ValueKind == JsonValueKind.String
                               && p.TryGetDateTime(out var dt) ? dt.ToUniversalTime() : null;
         var notes = Str(r, "body");
         if (notes is { Length: > 0 } && notes.Length > maxNotesLength) notes = notes[..maxNotesLength] + "\n\n…";
+        var html = Str(r, "body_html");
+        if (string.IsNullOrWhiteSpace(html) || html.Length > MaxNotesHtmlLength) html = null;
+        var assets = new List<ReleaseAsset>();
+        if (r.TryGetProperty("assets", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            foreach (var a in arr.EnumerateArray())
+            {
+                var name = Str(a, "name");
+                var url = Str(a, "browser_download_url");
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url)) continue;
+                long size = 0;
+                if (a.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number) sz.TryGetInt64(out size);
+                var digest = Sha256Digest().Match(Str(a, "digest")?.Trim() ?? "");
+                assets.Add(new ReleaseAsset
+                {
+                    Name = name,
+                    Size = size,
+                    DownloadUrl = url,
+                    ContentType = Str(a, "content_type"),
+                    Sha256 = digest.Success ? digest.Groups["hex"].Value.ToLowerInvariant() : null,
+                });
+            }
+        var title = Str(r, "name");
         return new ReleaseInfo
         {
             Version = CaddyVersion.TryParse(tag, out var v) ? v.ToString() : tag,
+            Name = string.IsNullOrWhiteSpace(title) ? null : title.Trim(),
             PublishedAt = published,
             Url = Str(r, "html_url") ?? $"https://github.com/caddyserver/caddy/releases/tag/{tag}",
             Notes = notes,
+            NotesHtml = html,
+            Assets = assets,
         };
     }
+
+    private static bool IsTrue(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// Parses https://caddyserver.com/api/packages → { status_code, result: [{ path, repo, downloads, listed, available, modules: [{ name, ... }] }] }.

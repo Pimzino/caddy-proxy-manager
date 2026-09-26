@@ -19,10 +19,10 @@
 // - An interception leaks into a later step → each one is removed right after its step.
 // - A scenario's state leaks into the next → one mock server (fresh state) per scenario.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import type { CaddySettings, RegenerateTokenResult, ServerSummary, SiteHost, TrafficReport } from '../../src/api/types.ts';
+import type { BinarySettings, CaddySettings, ManagerUpdateInfo, RegenerateTokenResult, ServerSummary, SiteHost, TrafficReport } from '../../src/api/types.ts';
 import { Browser, type Page, until } from './cdp.ts';
 
 const WEB = join(import.meta.dirname, '..', '..');
@@ -550,6 +550,249 @@ async function brandingScenario() {
   });
 }
 
+/**
+ * Caddy Proxy Manager self-update check (MOCK_MANAGER_UPDATE, mock/manager-update.ts): installed 1.0.1, GitHub has
+ * 1.1.0 and 1.0.2 (the recorded GitHub response in tests/…/github-releases-caddy-proxy-manager.json).
+ * Failure modes checked: no notice while an update exists; the dialog linking the wrong asset or page; GitHub's HTML
+ * shown as raw text (literal <details>) or losing its structure (tables, details, commit links); releases missing or
+ * the installed one listed; untrusted HTML that runs script, keeps handlers or dangerous links; “Check now” not
+ * reaching the API; a failed check not shown; the notice surviving “check off”; viewers offered “Check now”; the
+ * dashboard notice not staying dismissed while the top-bar pill must stay.
+ */
+interface GhRelease {
+  tag_name: string;
+  html_url: string;
+  assets: { name: string; browser_download_url: string; digest?: string }[];
+}
+const recorded = JSON.parse(
+  readFileSync(join(WEB, '..', 'tests', 'CaddyManager.Platform.Tests', 'Fixtures', 'github-releases-caddy-proxy-manager.json'), 'utf8'),
+) as GhRelease[];
+const PILL = `document.querySelector('[data-testid="manager-update-pill"]')`;
+const settled = `document.getAnimations().every((x) => x.playState !== 'running')`;
+
+async function managerUpdateScenarios() {
+  let S = 'manager-update';
+  await scenario(S, {}, async ({ mock, page }) => {
+    const gh = recorded.find((r) => r.tag_name === 'v1.1.0')!;
+    const msi = gh.assets.find((a) => a.name.endsWith('.msi'))!;
+    const zip = gh.assets.find((a) => a.name.endsWith('.zip'))!;
+
+    await page.goto(`${mock.base}/`, `!!window.__e2e`, 'the app');
+    await page.eval(`localStorage.setItem('cpm.theme', 'light')`);
+    await page.goto(`${mock.base}/?light`, `location.search === '?light' && !!${PILL} && __e2e.has('Caddy Proxy Manager v1.1.0 is available')`, 'the dashboard with the update notice');
+    await shot(page, 'manager-update-header-pill');
+    await check(S, ['MU-1'], 'the top bar shows “Update available v1.1.0”', async () => eq(await page.eval(`__e2e.norm(${PILL}.innerText)`), 'Update available v1.1.0', 'pill text'));
+
+    await page.eval(`__e2e.click('button[aria-label="Hide this notice for v1.1.0"]')`);
+    await check(S, ['MU-8'], 'the dashboard notice can be hidden for this version; the top-bar pill stays, also after a reload', async () => {
+      await page.waitFor('the notice to go', `!__e2e.has('Caddy Proxy Manager v1.1.0 is available')`, 3_000);
+      await page.goto(`${mock.base}/?reloaded`, `location.search === '?reloaded' && __e2e.has('Run readiness checks') && !!${PILL}`, 'the dashboard after a reload');
+      if (await page.eval<boolean>(`__e2e.has('Caddy Proxy Manager v1.1.0 is available')`)) return 'the notice is back after a reload';
+    });
+
+    await page.eval(`${PILL}.click()`);
+    await page.waitFor('the update dialog', `!!document.querySelector('[aria-modal="true"] [data-testid="installed-version"]') && !!document.querySelector('[data-release-notes="1.1.0"] table')`);
+    const dlg = `__e2e.dialog()`;
+    await check(S, ['MU-2'], 'the dialog is titled for v1.1.0 and shows installed v1.0.1 → v1.1.0', async () =>
+      eq(
+        await page.eval(`[${dlg}.querySelector('h2').textContent, ${dlg}.querySelector('[data-testid="installed-version"]').textContent, __e2e.norm(${dlg}.querySelector('[data-testid="latest-version"]').textContent)]`),
+        ['Caddy Proxy Manager v1.1.0 is available', 'v1.0.1', 'v1.1.0'],
+        'title, installed, latest',
+      ),
+    );
+    await check(S, ['MU-3'], 'download links are the recorded MSI and zip assets; “View on GitHub” is the release page', async () =>
+      eq(
+        await page.eval(`['download-msi', 'download-zip', 'view-on-github'].map((t) => ${dlg}.querySelector('[data-testid="' + t + '"]').getAttribute('href'))`),
+        [msi.browser_download_url, zip.browser_download_url, gh.html_url],
+        'hrefs',
+      ) ?? ((await page.eval<string>(`__e2e.norm(${dlg}.querySelector('[data-testid="download-msi"]').textContent)`)).includes('MB') ? undefined : 'no size on the MSI button'),
+    );
+    await check(S, ['MU-3'], 'the MSI SHA-256 is the recorded asset digest', async () =>
+      eq(await page.eval(`${dlg}.querySelector('[data-testid="msi-sha256"]').textContent`), msi.digest!.replace('sha256:', ''), 'sha256'),
+    );
+    await check(S, ['MU-4'], '“What’s changed” lists 1.1.0 (open) and 1.0.2 (collapsed), not the installed 1.0.1', async () =>
+      eq(await page.eval(`[...${dlg}.querySelectorAll('details[data-release]')].map((d) => [d.dataset.release, d.open])`), [['1.1.0', true], ['1.0.2', false]], 'releases'),
+    );
+    await check(S, ['MU-5'], 'the 1.1.0 notes render GitHub’s HTML: a real table, a <details>, commit links labelled with the short SHA in <code>', async () => {
+      const r = await page.eval<{ rows: number; details: string | null; commit: [string, string, string] | null; raw: boolean; codeLinks: number }>(`(() => {
+        const n = document.querySelector('[data-release-notes="1.1.0"]');
+        const a = [...n.querySelectorAll('a')].find((x) => x.href.includes('/commit/4ba3c3676d699cba140fea8ac54be580662151a0'));
+        const d = n.querySelector('details');
+        return {
+          rows: n.querySelectorAll('table tbody tr').length,
+          details: d && __e2e.norm(d.querySelector('summary').textContent),
+          commit: a && [a.textContent, a.firstElementChild && a.firstElementChild.localName, a.target + ' ' + a.rel],
+          raw: /<\\/?details|&lt;details|<summary/i.test(n.innerText),
+          codeLinks: [...n.querySelectorAll('a[href*="/commit/"]')].filter((x) => /^[0-9a-f]{7}$/.test(x.textContent) && x.querySelector('code')).length,
+        };
+      })()`);
+      if (r.raw) return 'literal <details>/<summary> text is shown';
+      return eq([r.rows, r.details, r.commit], [2, 'SHA-256 checksums', ['4ba3c36', 'code', '_blank noopener noreferrer']], 'table rows, details summary, commit link') ?? (r.codeLinks < 20 ? `only ${r.codeLinks} commit links with a <code> SHA` : undefined);
+    });
+    await page.waitFor('the dialog animation', settled);
+    await shot(page, 'manager-update-dialog');
+
+    // The hostile HTML is appended to the 1.0.2 notes by the mock (HOSTILE_NOTES_HTML).
+    await page.eval(`${dlg}.querySelector('details[data-release="1.0.2"] > summary').click()`);
+    await page.waitFor('the 1.0.2 notes', `!!document.querySelector('[data-release-notes="1.0.2"]') && __e2e.has('Custom element text is kept')`);
+    await page.eval(`(() => { const n = document.querySelector('[data-release-notes="1.0.2"]'); n.querySelectorAll('*').forEach((e) => { e.dispatchEvent(new MouseEvent('click', { bubbles: true })); e.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); }); })()`);
+    await check(S, ['MU-6', 'SEC'], 'untrusted release HTML: no handlers, scripts, frames, forms, SVG, styles or images; only http(s) links; nothing ran', async () => {
+      const r = await page.eval<{ onAttr: string[]; bad: string[]; hrefs: string[]; attrs: string[]; pwned: unknown; fixed: number }>(`(() => {
+        const n = document.querySelector('[data-release-notes="1.0.2"]');
+        const all = [...n.querySelectorAll('*')];
+        return {
+          onAttr: all.flatMap((e) => [...e.attributes].filter((a) => /^on/i.test(a.name)).map((a) => e.localName + '[' + a.name + ']')),
+          bad: all.filter((e) => /^(script|iframe|object|embed|form|input|button|svg|style|img|custom-widget|link|meta)$/.test(e.localName)).map((e) => e.localName),
+          hrefs: [...n.querySelectorAll('[href]')].map((e) => e.getAttribute('href')).filter((h) => !/^https?:\\/\\//.test(h)),
+          attrs: [...new Set(all.flatMap((e) => [...e.attributes].map((a) => a.name)))].filter((a) => !['class', 'href', 'target', 'rel', 'open', 'align', 'start', 'role', 'aria-label', 'data-release-notes'].includes(a)),
+          pwned: window.__pwned,
+          fixed: all.filter((e) => getComputedStyle(e).position === 'fixed').length,
+        };
+      })()`);
+      return eq(r, { onAttr: [], bad: [], hrefs: [], attrs: [], pwned: undefined, fixed: 0 }, 'sanitized notes');
+    });
+    await check(S, ['MU-6'], 'harmless parts survive: link texts, the image as a link labelled by its alt text, task-list boxes as ☑/☐', async () => {
+      const r = await page.eval<{ texts: boolean; img: string | null; boxes: string }>(`(() => {
+        const n = document.querySelector('[data-release-notes="1.0.2"]');
+        const t = __e2e.norm(n.textContent);
+        const img = [...n.querySelectorAll('a')].find((a) => a.textContent === '[Screenshot of the dashboard]');
+        return { texts: ['javascript link', 'data link', 'relative link', 'Overlay attempt', '[broken image]'].every((x) => t.includes(x)), img: img && img.getAttribute('href'), boxes: [...n.querySelectorAll('[role="img"]')].map((e) => e.textContent).join('') };
+      })()`);
+      return eq(r, { texts: true, img: 'https://github.com/user-attachments/assets/screenshot.png', boxes: '☑☐' }, 'kept content');
+    });
+    await page.eval(`__e2e.one('h3', 'Security test content', document.querySelector('[data-release-notes="1.0.2"]')).scrollIntoView({ block: 'start' })`);
+    await shot(page, 'manager-update-hostile-notes');
+
+    const seen: string[] = [];
+    const stop = await page.intercept('*/api/system/manager-update/check', 'Request', (req) => {
+      seen.push(req.method);
+      return null;
+    });
+    await page.eval(`__e2e.click('button', 'Check now', ${dlg})`);
+    await check(S, ['MU-7'], '“Check now” sends POST /api/system/manager-update/check and the footer says “Checked just now”', async () => {
+      await until('the check request', () => seen.length > 0, 5_000);
+      await page.waitFor('the footer', `__e2e.norm(${dlg}.textContent).includes('Checked just now · repo Pimzino/caddy-proxy-manager (official)')`, 5_000);
+      return eq(seen, ['POST'], 'requests');
+    });
+    await stop();
+
+    // Dark theme
+    await page.eval(`localStorage.setItem('cpm.theme', 'dark')`);
+    await page.goto(`${mock.base}/caddy/service`, `location.pathname === '/caddy/service' && !!${PILL} && __e2e.has('Release notes — v2.11.4')`, 'Service & Updates (dark)');
+    await check(S, ['MU-8'], 'Service & Updates shows the (not dismissible) manager notice and Caddy’s release notes', async () => {
+      const r = await page.eval<{ notice: boolean; dismiss: boolean; dark: boolean }>(`({ notice: __e2e.has('Caddy Proxy Manager v1.1.0 is available'), dismiss: !!document.querySelector('button[aria-label^="Hide this notice"]'), dark: document.documentElement.classList.contains('dark') })`);
+      return eq(r, { notice: true, dismiss: false, dark: true }, 'service page');
+    });
+    await page.waitFor('animations to settle', settled);
+    await shot(page, 'manager-update-service-page-dark');
+    await page.eval(`${PILL}.click()`);
+    await page.waitFor('the dialog (dark)', `!!document.querySelector('[data-release-notes="1.1.0"] table') && ${settled}`);
+    await shot(page, 'manager-update-dialog-dark');
+    await page.eval(`localStorage.setItem('cpm.theme', 'light')`);
+
+    // Settings: switch the check off → the pill goes.
+    await page.goto(`${mock.base}/settings?tab=updates`, `!!__e2e.control('Check for Caddy Proxy Manager updates') && !!${PILL}`, 'Settings › Updates');
+    await shot(page, 'manager-update-settings');
+    await check(S, ['MU-9'], 'the repository field shows the official repository as placeholder and explains the fork option', async () =>
+      eq(
+        await page.eval(`[__e2e.control('Release repository').placeholder, __e2e.has('Leave empty to use the official repository; set it to follow an internal fork.')]`),
+        ['Pimzino/caddy-proxy-manager', true],
+        'placeholder, hint',
+      ),
+    );
+    await page.eval(`__e2e.control('Check for Caddy Proxy Manager updates').click()`);
+    await check(S, ['MU-9'], 'turning the check off disables the repository field', async () => ((await page.eval<boolean>(`__e2e.control('Release repository').disabled`)) ? undefined : 'still enabled'));
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save')`);
+    await check(S, ['MU-9'], 'after saving “check off”, the setting is stored and the top-bar pill disappears', async () => {
+      await until('the saved setting', async () => (await mock.api<BinarySettings>('GET', '/api/settings/binary')).checkManagerUpdates === false, 8_000);
+      await page.waitFor('the pill to go', `!${PILL}`, 8_000);
+    });
+    await page.eval(`__e2e.click('button', 'View update status')`);
+    await check(S, ['MU-9'], 'the dialog then says the check is off and offers no “Check now”', async () => {
+      await page.waitFor('the dialog', `${dlg}.querySelector('h2').textContent === 'Update check is off'`, 5_000);
+      return (await page.eval<boolean>(`__e2e.withText('button', 'Check now', ${dlg}).length > 0`)) ? '“Check now” shown' : undefined;
+    });
+    await page.waitFor('animations to settle', settled);
+    await shot(page, 'manager-update-settings-off');
+  });
+
+  S = 'manager-update-error';
+  await scenario(S, { MOCK_MANAGER_UPDATE: 'error' }, async ({ mock, page }) => {
+    await page.goto(`${mock.base}/settings?tab=updates`, `__e2e.has('Manager updates')`, 'Settings › Updates');
+    await check(S, ['MU-10'], 'no top-bar pill when GitHub could not be asked', async () => ((await page.eval<boolean>(`!!${PILL}`)) ? 'pill shown' : undefined));
+    await page.eval(`__e2e.click('button', 'Check now')`);
+    await check(S, ['MU-10'], '“Check now” opens the dialog with the GitHub error', async () => {
+      await page.waitFor('the error', `__e2e.dialog().querySelector('h2').textContent === 'Could not check for updates' && __e2e.withText('[role="alert"]', '403 Forbidden', __e2e.dialog()).length > 0`, 8_000);
+      const api = await mock.api<ManagerUpdateInfo>('GET', '/api/system/manager-update');
+      return api.error ? undefined : 'the API reports no error';
+    });
+    await page.waitFor('animations to settle', settled);
+    await shot(page, 'manager-update-error');
+  });
+
+  S = 'manager-update-none';
+  await scenario(S, { MOCK_MANAGER_UPDATE: 'none' }, async ({ mock, page }) => {
+    await page.goto(`${mock.base}/settings?tab=updates`, `__e2e.has('Manager updates')`, 'Settings › Updates');
+    await page.eval(`__e2e.click('button', 'Check now')`);
+    await check(S, ['MU-11'], 'up to date: no pill, the dialog says “You’re up to date” for v1.1.0', async () => {
+      await page.waitFor('the dialog', `__e2e.dialog().querySelector('h2').textContent === 'You’re up to date' && __e2e.has('Installed: v1.1.0')`, 8_000);
+      return (await page.eval<boolean>(`!!${PILL}`)) ? 'pill shown' : undefined;
+    });
+    await page.waitFor('animations to settle', settled);
+    await shot(page, 'manager-update-up-to-date');
+  });
+
+  S = 'manager-update-viewer';
+  await scenario(S, { MOCK_ROLE: 'viewer' }, async ({ mock, page }) => {
+    await page.goto(`${mock.base}/`, `!!${PILL}`, 'the dashboard (viewer)');
+    await page.eval(`${PILL}.click()`);
+    await check(S, ['MU-12'], 'a viewer sees the pill and the dialog but no “Check now”', async () => {
+      await page.waitFor('the dialog', `!!document.querySelector('[data-release-notes="1.1.0"]')`);
+      return (await page.eval<boolean>(`__e2e.withText('button', 'Check now', __e2e.dialog()).length > 0`)) ? '“Check now” shown to a viewer' : undefined;
+    });
+    await page.waitFor('animations to settle', settled);
+    await shot(page, 'manager-update-viewer');
+
+    // Markdown fallback: the same releases without GitHub's HTML rendering (notesHtml removed from the response).
+    await page.eval(`__e2e.click('button[aria-label="Close"]', undefined, __e2e.dialog())`);
+    const stop = await page.intercept('*/api/system/manager-update', 'Response', (r) => {
+      if (!r.body) return null;
+      const info = JSON.parse(r.body) as ManagerUpdateInfo;
+      for (const x of [info.latest, ...info.newerReleases]) if (x) delete x.notesHtml;
+      return { status: 200, body: JSON.stringify(info) };
+    });
+    await page.goto(`${mock.base}/?markdown`, `location.search === '?markdown' && !!${PILL}`, 'the dashboard (Markdown notes)');
+    await stop();
+    await page.eval(`${PILL}.click()`);
+    await check(S, ['MU-5'], 'Markdown fallback: the table, the commit links with <code> SHAs and the checksum block render; no raw <details>/<summary>', async () => {
+      await page.waitFor('the notes', `!!document.querySelector('[data-release-notes="1.1.0"] table')`);
+      const r = await page.eval<{ rows: number; commit: string | null; raw: boolean; summary: boolean; pre: boolean }>(`(() => {
+        const n = document.querySelector('[data-release-notes="1.1.0"]');
+        const a = [...n.querySelectorAll('a')].find((x) => x.href.includes('/commit/4ba3c36'));
+        return {
+          rows: n.querySelectorAll('table tbody tr').length,
+          commit: a && a.innerHTML.includes('<code') ? a.textContent : null,
+          raw: /<\\/?(details|summary)/i.test(n.innerText),
+          summary: n.innerText.includes('SHA-256 checksums'),
+          pre: [...n.querySelectorAll('pre')].some((p) => p.textContent.includes('CaddyProxyManager-1.1.0-x64.msi')),
+        };
+      })()`);
+      return eq(r, { rows: 2, commit: '4ba3c36', raw: false, summary: true, pre: true }, 'Markdown rendering');
+    });
+    await page.waitFor('animations to settle', settled);
+    await page.eval(`__e2e.one('table', undefined, document.querySelector('[data-release-notes="1.1.0"]')).scrollIntoView({ block: 'center' })`);
+    await shot(page, 'manager-update-markdown-fallback');
+    await check(S, ['MU-12'], 'the check endpoint refuses a viewer (403)', async () => {
+      try {
+        await mock.api('POST', '/api/system/manager-update/check');
+        return 'accepted';
+      } catch (err) {
+        return /→ 403/.test((err as Error).message) ? undefined : (err as Error).message;
+      }
+    });
+  });
+}
+
 // ---------------------------------------------------------------- main
 
 const started = new Date();
@@ -560,6 +803,7 @@ try {
   await dnsOnlyScenarios();
   await serversScenario();
   await brandingScenario();
+  await managerUpdateScenarios();
 } finally {
   mkdirSync(ARTIFACTS, { recursive: true });
   const failed = checks.filter((c) => c.result === 'fail').length;

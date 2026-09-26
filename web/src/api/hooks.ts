@@ -42,6 +42,7 @@ import type {
   LdapSettingsInput,
   LdapTestResult,
   LogResult,
+  ManagerUpdateInfo,
   MutationResult,
   NotificationSettings,
   NotificationSettingsInput,
@@ -90,6 +91,7 @@ export const qk = {
   job: (id: string) => ['jobs', id] as const,
   readiness: ['readiness'] as const,
   systemInfo: ['system', 'info'] as const,
+  managerUpdate: ['system', 'manager-update'] as const,
   dashboard: ['dashboard'] as const,
   users: ['users'] as const,
   audit: ['audit'] as const,
@@ -186,6 +188,32 @@ export function useDashboard() {
 
 export function useSystemInfo() {
   return useQuery({ queryKey: qk.systemInfo, queryFn: () => api.get<SystemInfo>('/api/system/info'), staleTime: 60_000 });
+}
+
+/** New versions of Caddy Proxy Manager itself (the server caches GitHub's answer; any signed-in user). */
+export function useManagerUpdate(enabled = true) {
+  return useQuery({
+    queryKey: qk.managerUpdate,
+    queryFn: () => api.get<ManagerUpdateInfo>('/api/system/manager-update'),
+    enabled,
+    staleTime: 5 * 60_000,
+    refetchInterval: 30 * 60_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+}
+
+/** Asks GitHub again now (operator or admin). A GitHub failure is reported in `error`, not as an HTTP error. */
+export function useCheckManagerUpdate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<ManagerUpdateInfo>('/api/system/manager-update/check'),
+    onSuccess: (info) => qc.setQueryData(qk.managerUpdate, info),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: qk.binary });
+      void qc.invalidateQueries({ queryKey: qk.dashboard });
+    },
+  });
 }
 
 export function useRestartManager() {
@@ -557,6 +585,8 @@ export function useSaveBinarySettings() {
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: qk.settings('binary') });
       void qc.invalidateQueries({ queryKey: qk.binary });
+      void qc.invalidateQueries({ queryKey: qk.managerUpdate });
+      void qc.invalidateQueries({ queryKey: qk.dashboard });
     },
   });
 }

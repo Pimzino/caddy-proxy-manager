@@ -247,7 +247,8 @@ internal static partial class PlatformEndpoints
                 $"autoCheck={updated!.AutoCheckUpdates}, interval={updated.CheckIntervalHours}h, autoInstall={updated.AutoInstallUpdates}, " +
                 $"proxy={(updated.OutboundProxy is null ? "none" : OutboundHttp.RedactProxy(updated.OutboundProxy))}, " +
                 $"proxyCaddyTraffic={updated.ProxyCaddyTraffic}, noProxy={updated.NoProxy}, " +
-                $"managerReleaseRepo={updated.ManagerReleaseRepo ?? "none"}, plugins=[{string.Join(", ", updated.Plugins)}]");
+                $"checkManagerUpdates={updated.CheckManagerUpdates}, " +
+                $"managerReleaseRepo={updated.ManagerReleaseRepo ?? $"{CaddyBinaryManager.DefaultManagerReleaseRepo} (official)"}, plugins=[{string.Join(", ", updated.Plugins)}]");
 
             // Caddy's own environment (HTTPS_PROXY/HTTP_PROXY/NO_PROXY) changed: repair the service and restart Caddy.
             string? notice = null;
@@ -293,7 +294,8 @@ internal static partial class PlatformEndpoints
             OutboundProxy = proxy,
             ProxyCaddyTraffic = body.ProxyCaddyTraffic,
             NoProxy = noProxy,
-            ManagerReleaseRepo = repo,
+            CheckManagerUpdates = body.CheckManagerUpdates,
+            ManagerReleaseRepo = repo, // null = the official repository
             LastCheckedAt = current.LastCheckedAt,           // server-managed
             LatestKnownVersion = current.LatestKnownVersion, // server-managed
         }, null);
@@ -314,6 +316,7 @@ internal static partial class PlatformEndpoints
         OutboundProxy = string.IsNullOrEmpty(s.OutboundProxy) ? s.OutboundProxy : OutboundHttp.RedactProxy(s.OutboundProxy),
         ProxyCaddyTraffic = s.ProxyCaddyTraffic,
         NoProxy = s.NoProxy,
+        CheckManagerUpdates = s.CheckManagerUpdates,
         ManagerReleaseRepo = s.ManagerReleaseRepo,
     };
 
@@ -389,6 +392,22 @@ internal static partial class PlatformEndpoints
                 isService = WindowsServiceHelpers.IsWindowsService(),
             });
         });
+
+        // Is a newer Caddy Proxy Manager published on GitHub (cached; see CaddyBinaryManager.GetManagerUpdateAsync)?
+        g.MapGet("/manager-update", (CaddyBinaryManager bin, CancellationToken ct) => bin.GetManagerUpdateAsync(force: false, ct));
+
+        // Asks GitHub now. A GitHub failure is reported in "error" (200, with the last successful answer), not as a 5xx.
+        g.MapPost("/manager-update/check", async (CaddyBinaryManager bin, IAuditLog audit, CancellationToken ct) =>
+        {
+            var info = await bin.GetManagerUpdateAsync(force: true, ct);
+            audit.Record("checked-updates", "manager", details: !info.Enabled
+                ? "Caddy Proxy Manager update checks are turned off"
+                : info.Error is not null
+                    ? $"Checking {info.Repo ?? "the release repository"} failed: {info.Error}"
+                    : $"{info.Repo}: latest release {info.Latest?.Version ?? "none"}, installed {info.CurrentVersion}" +
+                      (info.UpdateAvailable ? $", {info.NewerReleases.Count} newer release(s)" : ", up to date"));
+            return Results.Ok(info);
+        }).RequireAuthorization(Policies.Operator);
 
         g.MapPost("/restart", (IAuditLog audit, ILoggerFactory lf) =>
         {

@@ -74,10 +74,8 @@ public sealed partial class CaddyBinaryManager(
     private string? _previousVersion;
 
     private readonly SemaphoreSlim _managerGate = new(1, 1);
-    private string? _managerRepo;
-    private ReleaseInfo? _managerLatest;
-    private DateTime _managerFetchedAt;
-    private DateTime _managerFailedAt;
+    /// <summary>Result of the last manager release check (replaced as a whole, so readers see a consistent snapshot).</summary>
+    private volatile ManagerReleaseCache? _manager;
 
     private readonly Lock _jobLock = new();
 
@@ -317,11 +315,24 @@ public sealed partial class CaddyBinaryManager(
             : new ReleaseInfo { Version = known, Url = $"https://github.com/caddyserver/caddy/releases/tag/{known}" };
     }
 
-    /// <summary>GET api.github.com/repos/{owner}/{repo}/releases/latest with rate-limit handling (shared by all GitHub checks).</summary>
-    private async Task<ReleaseInfo> FetchGitHubReleaseAsync(string url, string what, string repo, CancellationToken ct)
+    /// <summary>
+    /// GitHub media type for every release request: the standard JSON plus body_html (GitHub's own rendering of the notes)
+    /// and body_text. https://docs.github.com/en/rest/releases/releases#get-the-latest-release
+    /// </summary>
+    public const string GitHubReleaseMediaType = "application/vnd.github.full+json";
+
+    /// <summary>GET api.github.com/repos/{owner}/{repo}/releases/latest with rate-limit handling.</summary>
+    private Task<ReleaseInfo> FetchGitHubReleaseAsync(string url, string what, string repo, CancellationToken ct) =>
+        FetchGitHubAsync(url, what, repo, body => CaddyOutputParser.ParseGitHubRelease(body), ct);
+
+    /// <summary>
+    /// GET on api.github.com with rate-limit handling (shared by all GitHub checks). <paramref name="parse"/> turns the
+    /// response body into the result; JSON / format errors become InvalidOperationException.
+    /// </summary>
+    private async Task<T> FetchGitHubAsync<T>(string url, string what, string repo, Func<string, T> parse, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Accept.ParseAdd("application/vnd.github+json");
+        req.Headers.Accept.ParseAdd(GitHubReleaseMediaType);
         req.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
         var token = Environment.GetEnvironmentVariable("CM_GITHUB_TOKEN");
         if (!string.IsNullOrWhiteSpace(token)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
@@ -361,13 +372,13 @@ public sealed partial class CaddyBinaryManager(
             }
             if (resp.StatusCode == HttpStatusCode.NotFound)
                 throw new InvalidOperationException(
-                    $"The GitHub repository {repo} has no published release (HTTP 404 from api.github.com{new Uri(url).AbsolutePath}). " +
+                    $"The GitHub repository {repo} does not exist or has no published release (HTTP 404 from api.github.com{new Uri(url).AbsolutePath}). " +
                     "Check the repository name (Settings → Updates); drafts, pre-releases and private repositories are not visible.");
             if (!resp.IsSuccessStatusCode)
                 throw new HttpRequestException($"GitHub returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} for {what}: {Trim(body, 300)}");
             try
             {
-                return CaddyOutputParser.ParseGitHubRelease(body);
+                return parse(body);
             }
             catch (Exception ex) when (ex is JsonException or FormatException)
             {
@@ -406,58 +417,159 @@ public sealed partial class CaddyBinaryManager(
         return s;
     }
 
+    /// <summary>The official Caddy Proxy Manager repository, checked when BinarySettings.ManagerReleaseRepo is empty.</summary>
+    public const string DefaultManagerReleaseRepo = "Pimzino/caddy-proxy-manager";
+
+    /// <summary>Releases requested per check (one request to the list endpoint; drafts and pre-releases are filtered out).</summary>
+    private const int ManagerReleasesPerPage = 30;
+    private const int MaxNewerReleases = 20;
+
+    /// <summary>Stable releases of <paramref name="Repo"/>, newest first (null until GitHub answered once).</summary>
+    private sealed record ManagerReleaseCache(string Repo, List<ReleaseInfo>? Releases, DateTime FetchedAt, DateTime FailedAt,
+        DateTime? CheckedAt, string? Error);
+
     /// <summary>
-    /// Latest release of the manager itself from BinarySettings.ManagerReleaseRepo (null when not configured).
-    /// Cached like the Caddy check; without <paramref name="force"/> failures are logged and the cached value returned.
+    /// The repository the manager checks for its own updates: null (and no error) when BinarySettings.CheckManagerUpdates is
+    /// off; the official repository when ManagerReleaseRepo is empty; null with <paramref name="error"/> when the stored
+    /// repository name is invalid.
     /// </summary>
-    public async Task<ReleaseInfo?> GetManagerLatestAsync(bool force = false, CancellationToken ct = default)
+    private string? ResolveManagerRepo(BinarySettings settings, out string? error)
     {
-        string? repo;
-        try { repo = NormalizeReleaseRepo(store.GetSettings<BinarySettings>().ManagerReleaseRepo); }
+        error = null;
+        if (!settings.CheckManagerUpdates) return null;
+        try { return NormalizeReleaseRepo(settings.ManagerReleaseRepo) ?? DefaultManagerReleaseRepo; }
         catch (ArgumentException ex)
         {
-            logger.LogWarning("Manager update check skipped: {Error}", ex.Message);
+            error = ex.Message;
             return null;
         }
-        if (repo is null) return null;
-        if (!force && _managerRepo == repo && _managerLatest is not null && DateTime.UtcNow - _managerFetchedAt < LatestCacheTtl) return _managerLatest;
+    }
+
+    /// <summary>
+    /// Stable releases of <paramref name="repo"/>, newest first (one request to /releases?per_page=30), cached for an hour.
+    /// Without <paramref name="force"/> failures are logged, remembered and the cached list returned (after a failure or while
+    /// GitHub rate-limits this server no request is made for a while). With <paramref name="force"/> GitHub is always asked and
+    /// a failure is remembered and thrown.
+    /// </summary>
+    private async Task<ManagerReleaseCache> GetManagerReleasesAsync(string repo, bool force, CancellationToken ct)
+    {
+        var cache = _manager;
+        if (!force && cache?.Repo == repo && cache.Releases is not null && DateTime.UtcNow - cache.FetchedAt < LatestCacheTtl) return cache;
         await _managerGate.WaitAsync(ct);
         try
         {
-            if (_managerRepo != repo)
-            {
-                _managerRepo = repo;
-                _managerLatest = null;
-                _managerFetchedAt = _managerFailedAt = default;
-            }
+            cache = _manager;
+            if (cache?.Repo != repo) cache = new ManagerReleaseCache(repo, null, default, default, null, null);
             if (!force)
             {
-                if (_managerLatest is not null && DateTime.UtcNow - _managerFetchedAt < LatestCacheTtl) return _managerLatest;
-                if (DateTime.UtcNow - _managerFailedAt < LatestFailureBackoff || _rateLimitResetAt > DateTime.UtcNow) return _managerLatest;
+                if (cache.Releases is not null && DateTime.UtcNow - cache.FetchedAt < LatestCacheTtl) return _manager = cache;
+                if (DateTime.UtcNow - cache.FailedAt < LatestFailureBackoff) return _manager = cache;
+                if (_rateLimitResetAt is { } reset && reset > DateTime.UtcNow)
+                    return _manager = cache.Releases is null && cache.Error is null
+                        ? cache with { Error = $"Not checked yet: the GitHub API rate limit for this server resets at {reset:yyyy-MM-dd HH:mm} UTC." }
+                        : cache;
             }
             try
             {
-                var latest = await FetchGitHubReleaseAsync($"https://api.github.com/repos/{repo}/releases/latest", $"the latest release of {repo}", repo, ct);
-                _managerLatest = latest with { Version = latest.Version.TrimStart('v', 'V') };
-                _managerFetchedAt = DateTime.UtcNow;
-                return _managerLatest;
+                var releases = await FetchGitHubAsync(
+                    $"https://api.github.com/repos/{repo}/releases?per_page={ManagerReleasesPerPage}", $"the releases of {repo}", repo,
+                    body => CaddyOutputParser.ParseGitHubReleaseList(body), ct);
+                if (releases.Count == 0)
+                    throw new InvalidOperationException(
+                        $"The GitHub repository {repo} has no published release (drafts and pre-releases are not counted).");
+                var now = DateTime.UtcNow;
+                _rateLimitResetAt = null;
+                return _manager = cache with
+                {
+                    Releases = SortNewestFirst(releases.Select(r => r with { Version = TrimV(r.Version) })),
+                    FetchedAt = now, FailedAt = default, CheckedAt = now, Error = null,
+                };
             }
-            catch (Exception ex) when (!force && !ct.IsCancellationRequested)
+            catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                _managerFailedAt = DateTime.UtcNow;
+                _manager = cache with { FailedAt = DateTime.UtcNow, Error = ex.Message };
+                if (force) throw;
                 logger.LogWarning("Checking GitHub ({Repo}) for a new Caddy Proxy Manager release failed: {Error}", repo, ex.Message);
-                return _managerLatest;
-            }
-            catch (Exception) when (force && !ct.IsCancellationRequested)
-            {
-                _managerFailedAt = DateTime.UtcNow;
-                throw;
+                return _manager;
             }
         }
         finally
         {
             _managerGate.Release();
         }
+    }
+
+    private static string TrimV(string version) =>
+        version.StartsWith('v') || version.StartsWith('V') ? version[1..] : version;
+
+    /// <summary>Newest version first; tags that are not versions go last (in GitHub's order, which is newest first).</summary>
+    private static List<ReleaseInfo> SortNewestFirst(IEnumerable<ReleaseInfo> releases) =>
+        releases.Select((r, i) => (Release: r, Index: i, Ok: CaddyVersion.TryParse(r.Version, out var v), V: v))
+            .OrderByDescending(x => x.Ok)
+            .ThenByDescending(x => x.V)
+            .ThenBy(x => x.Index)
+            .Select(x => x.Release)
+            .ToList();
+
+    /// <summary>
+    /// Newest stable release of the manager itself (null when checks are off, the repository setting is invalid or GitHub
+    /// has not answered yet). Cached like the Caddy check; without <paramref name="force"/> failures are logged and the cached
+    /// value returned; with it they are thrown.
+    /// </summary>
+    public async Task<ReleaseInfo?> GetManagerLatestAsync(bool force = false, CancellationToken ct = default)
+    {
+        var repo = ResolveManagerRepo(store.GetSettings<BinarySettings>(), out var error);
+        if (error is not null) logger.LogWarning("Manager update check skipped: {Error}", error);
+        if (repo is null) return null;
+        return (await GetManagerReleasesAsync(repo, force, ct)).Releases?.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// GET /api/system/manager-update: newest stable release and the changelog since the installed version. Never throws for
+    /// GitHub failures: they are reported in <see cref="ManagerUpdateInfo.Error"/> together with the last successful answer.
+    /// </summary>
+    public async Task<ManagerUpdateInfo> GetManagerUpdateAsync(bool force, CancellationToken ct = default)
+    {
+        var settings = store.GetSettings<BinarySettings>();
+        var current = TrimV(ManagerVersion);
+        if (!settings.CheckManagerUpdates)
+        {
+            string? configured = null;
+            try { configured = NormalizeReleaseRepo(settings.ManagerReleaseRepo) ?? DefaultManagerReleaseRepo; }
+            catch (ArgumentException) { /* reported once checks are switched on */ }
+            return new ManagerUpdateInfo
+            {
+                Enabled = false, Repo = configured, RepoIsDefault = string.Equals(configured, DefaultManagerReleaseRepo, StringComparison.OrdinalIgnoreCase),
+                ReleasesUrl = configured is null ? null : $"https://github.com/{configured}/releases", CurrentVersion = current,
+            };
+        }
+        var repo = ResolveManagerRepo(settings, out var error);
+        if (repo is null) return new ManagerUpdateInfo { Enabled = true, CurrentVersion = current, Error = error };
+
+        ManagerReleaseCache cache;
+        try
+        {
+            cache = await GetManagerReleasesAsync(repo, force, ct);
+        }
+        catch (Exception) when (force && !ct.IsCancellationRequested)
+        {
+            cache = _manager is { } c && c.Repo == repo ? c : new ManagerReleaseCache(repo, null, default, default, null, "The check failed.");
+        }
+        var releases = cache.Releases ?? [];
+        var newer = releases.Where(r => CaddyVersion.IsNewer(r.Version, current)).Take(MaxNewerReleases).ToList();
+        return new ManagerUpdateInfo
+        {
+            Enabled = true,
+            Repo = repo,
+            RepoIsDefault = string.Equals(repo, DefaultManagerReleaseRepo, StringComparison.OrdinalIgnoreCase),
+            ReleasesUrl = $"https://github.com/{repo}/releases",
+            CurrentVersion = current,
+            UpdateAvailable = newer.Count > 0,
+            Latest = releases.FirstOrDefault(),
+            NewerReleases = newer,
+            CheckedAt = cache.CheckedAt,
+            Error = cache.Error,
+        };
     }
 
     // ------------------------------------------------------------------ overview

@@ -90,6 +90,8 @@ export interface MockState {
   jobs: MockJob[];
   restartingUntil: number;
   startedAt: number;
+  /** When the manager last asked GitHub for new manager releases (mock/manager-update.ts). */
+  managerCheckedAt: string;
 }
 
 const baseHost = (kind: SiteHostFields['kind']): SiteHostFields => ({
@@ -640,7 +642,8 @@ export function createState(): MockState {
       latestKnownVersion: 'v2.11.4',
       proxyCaddyTraffic: false,
       noProxy: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local',
-      managerReleaseRepo: 'contoso/caddy-proxy-manager',
+      checkManagerUpdates: true,
+      managerReleaseRepo: null,
     },
     notificationSettings: {
       smtpEnabled: true,
@@ -748,6 +751,7 @@ export function createState(): MockState {
     jobs: [],
     restartingUntil: 0,
     startedAt: now() - 6 * DAY - 3 * HOUR,
+    managerCheckedAt: iso(38 * MIN),
   };
 }
 
