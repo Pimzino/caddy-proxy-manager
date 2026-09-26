@@ -39,6 +39,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { useFeedback } from '@/components/feedback';
+import { DnsName } from '@/pages/hosts/DelegationRecords';
 import { formatBytes, formatDateTime, formatDuration, formatRelative } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
 import { useServerActions } from './ServerDialogs';
@@ -231,7 +232,7 @@ function FactsCard({ s, local, now }: { s: ServerSummary; local?: ServerSummary;
               ),
             },
             { label: 'Data folder', value: info.dataDir, mono: true },
-            { label: 'Management URL', value: s.url ?? '—', mono: true, hidden: s.isLocal },
+            { label: 'Management URL', value: s.url ? <DnsName name={s.url} /> : '—', mono: true, hidden: s.isLocal },
             { label: 'Pinned certificate', value: <span className="break-all">{s.fingerprint}</span>, mono: true, hidden: !s.fingerprint },
             { label: 'Join token issued', value: formatDateTime(s.tokenIssuedAt), hidden: !s.tokenIssuedAt },
             { label: 'Added', value: formatDateTime(s.addedAt), hidden: !s.addedAt },
