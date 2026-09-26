@@ -1,3 +1,6 @@
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using CaddyManager.Telemetry.Traffic;
 
@@ -19,6 +22,11 @@ namespace CaddyManager.Telemetry.Tests;
 ///  8. The log file does not exist yet, or is missing between rename and re-create → exception.
 ///  9. CRLF endings leave '\r' in lines; empty lines are delivered; an over-long line exhausts memory.
 /// 10. Older backups (rotated before the saved file) are read again after a restart.
+/// 11. The log path exists but cannot be opened for a moment (a third-party tool's sharing mode, access denied): taken as a
+///     rotation, the live file is read again from offset 0 (double counting); at a restart, the saved file is declared
+///     lost and reading starts over (TEL-3).
+/// 12. The line handler throws: the rest of the 64 KB chunk is skipped and the offset no longer matches what was delivered,
+///     so a restart resumes mid-line or re-delivers lines (TEL-7).
 /// </summary>
 public sealed class LogTailerTests : IDisposable
 {
@@ -236,6 +244,103 @@ public sealed class LogTailerTests : IDisposable
         Poll(t);
         AssertSequence(2);
         Assert.Equal(1, t.OversizedLines);
+        Assert.Equal(new FileInfo(_path).Length, t.Offset);
+    }
+
+    /// <summary>
+    /// Makes the file exist but not be openable for reading — as a tool holding it without read sharing, or an ACL, would.
+    /// Windows: a deny-read ACE for the current user; elsewhere: mode 000. Handles opened before keep working.
+    /// </summary>
+    private static void Unopenable(string path, bool on)
+    {
+        if (OperatingSystem.IsWindows()) DenyRead(path, on);
+        else File.SetUnixFileMode(path, on ? UnixFileMode.None : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (on) Assert.ThrowsAny<UnauthorizedAccessException>(() => FileIdentity.OpenShared(path).Dispose());
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void DenyRead(string path, bool deny)
+    {
+        var file = new FileInfo(path);
+        var acl = file.GetAccessControl();
+        var rule = new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, FileSystemRights.ReadData, AccessControlType.Deny);
+        if (deny) acl.AddAccessRule(rule);
+        else acl.RemoveAccessRule(rule);
+        file.SetAccessControl(acl);
+    }
+
+    [Fact]
+    public void PathTemporarilyUnopenable_IsNotARotation_NothingReadTwice()
+    {
+        using var t = new LogTailer(_path, null);
+        Lines(0, 10);
+        Poll(t);
+        Lines(10, 15);
+        Unopenable(_path, true);
+        try
+        {
+            Poll(t); // the open handle still delivers the new lines; the path is not "gone"
+            Poll(t);
+            AssertSequence(15);
+            Assert.Equal(0, t.FilesCompleted);
+        }
+        finally { Unopenable(_path, false); }
+        Lines(15, 20);
+        Poll(t);
+        AssertSequence(20);
+        Assert.Equal(new FileInfo(_path).Length, t.Offset);
+    }
+
+    [Fact]
+    public void ResumeWhileTheFileIsUnopenable_WaitsInsteadOfDeclaringItLost()
+    {
+        TrafficCursorDoc saved;
+        using (var t = new LogTailer(_path, null))
+        {
+            Lines(0, 10);
+            Poll(t);
+            saved = Cursor(t);
+        }
+        Lines(10, 15);
+        using var t2 = new LogTailer(_path, saved);
+        Unopenable(_path, true);
+        try
+        {
+            Assert.Equal(0, Poll(t2));
+            Assert.Equal(0, t2.FilesMissed);
+        }
+        finally { Unopenable(_path, false); }
+        Poll(t2);
+        AssertSequence(15);
+        Assert.Equal(0, t2.FilesMissed);
+    }
+
+    [Fact]
+    public void HandlerFailure_RewindsToThatLine_NoLineSkippedOrRepeated()
+    {
+        const int total = 20_000; // ~190 KB: several 64 KB chunks
+        Lines(0, total);
+        var failures = 1;
+        using var t = new LogTailer(_path, null);
+        LineHandler handler = l =>
+        {
+            var s = Encoding.UTF8.GetString(l);
+            if (s == "line-7000" && failures-- > 0) throw new InvalidOperationException("handler failed");
+            _got.Add(s);
+        };
+        Assert.Throws<InvalidOperationException>(() => t.Poll(handler));
+        AssertSequence(7000);
+        // The position is exactly the start of the failed line: a restart from it continues with that line.
+        var saved = Cursor(t);
+        using (var restarted = new LogTailer(_path, saved))
+        {
+            var after = new List<string>();
+            restarted.Poll(l => after.Add(Encoding.UTF8.GetString(l)));
+            Assert.Equal(Enumerable.Range(7000, total - 7000).Select(i => $"line-{i}"), after);
+        }
+        // The same tailer retries the line and continues.
+        t.Poll(handler);
+        AssertSequence(total);
         Assert.Equal(new FileInfo(_path).Length, t.Offset);
     }
 }

@@ -141,12 +141,25 @@ public sealed class TempEnv : IDisposable
         Store = new LiteStore(Paths);
     }
 
-    public TrafficIngestion NewIngestion(TimeSpan? flushInterval = null) => new(Paths, new TrafficStore(Store),
-        Options.Create(new TelemetryOptions { FlushInterval = flushInterval ?? TimeSpan.FromSeconds(1) }), TimeProvider.System,
-        NullLogger<TrafficIngestion>.Instance);
+    private TrafficStore? _traffic;
+
+    /// <summary>
+    /// The telemetry database (db/telemetry.db). One instance per environment, shared by <see cref="NewIngestion"/> and
+    /// <see cref="Services"/>: LiteDB opens the file exclusively, like the single instance of the product.
+    /// </summary>
+    public TrafficStore Traffic => _traffic ??= new TrafficStore(Paths, Store);
+
+    public TrafficIngestion NewIngestion(TimeSpan? flushInterval = null, Action<TelemetryOptions>? configure = null)
+    {
+        var options = new TelemetryOptions { FlushInterval = flushInterval ?? TimeSpan.FromSeconds(1) };
+        configure?.Invoke(options);
+        return new TrafficIngestion(Paths, Traffic, Store, new SecretProtector(Paths), Options.Create(options), TimeProvider.System,
+            NullLogger<TrafficIngestion>.Instance);
+    }
 
     /// <summary>Core + Telemetry services (background services off unless enabled) with optional Platform fakes.</summary>
-    public ServiceProvider Services(Action<TelemetryOptions>? configure = null, ICaddyHost? host = null, ICaddyBinaryManager? binaries = null)
+    public ServiceProvider Services(Action<TelemetryOptions>? configure = null, ICaddyHost? host = null, ICaddyBinaryManager? binaries = null,
+        Action<IServiceCollection>? extra = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
@@ -157,13 +170,16 @@ public sealed class TempEnv : IDisposable
             o.EnableBackgroundServices = false;
             configure?.Invoke(o);
         });
+        services.AddSingleton(Traffic); // replaces the module's own instance (same file)
         if (host is not null) services.AddSingleton(host);
         if (binaries is not null) services.AddSingleton(binaries);
+        extra?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
     public void Dispose()
     {
+        _traffic?.Dispose();
         Store.Dispose();
         try { System.IO.Directory.Delete(Dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
@@ -304,6 +320,13 @@ public static class GeneratedConfig
         (JsonObject)config["logging"]!["logs"]![CaddyConfigGenerator.StatsLogName]!;
 }
 
+/// <summary>IConfigChangeFeed of the Config module, raised by the test (a configuration apply happened).</summary>
+public sealed class FakeConfigChangeFeed : IConfigChangeFeed
+{
+    public event Action<ApplyResult, string>? Applied;
+    public void RaiseApplied(string reason = "test") => Applied?.Invoke(new ApplyResult(), reason);
+}
+
 public sealed class FakeCaddyHost : ICaddyHost
 {
     public CaddyStatus Status { get; set; } = new() { State = CaddyRunState.Stopped };
@@ -325,4 +348,30 @@ public sealed class FakeBinaryManager(InstalledBinary? installed) : ICaddyBinary
     public Task<(int ExitCode, string Output)> RunCaddyAsync(IEnumerable<string> args, string? stdin = null, CancellationToken ct = default) =>
         throw new NotSupportedException();
     public Task<List<PluginPackage>> GetPluginCatalogAsync(string? query = null, CancellationToken ct = default) => Task.FromResult(new List<PluginPackage>());
+}
+
+public static class TestKeys
+{
+    /// <summary>A fixed 32-byte client-hash key (bytes 1..32) for repeatable estimates.</summary>
+    public static byte[] Fixed => Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+}
+
+/// <summary>Stats log lines in the exact shape the generated cpm_stats sink writes (Caddy v2.11.4, filter encoder).</summary>
+public static class StatsLines
+{
+    public static string Line(DateTime at, string host, string client, int status = 200, long size = 2, long bytesRead = 0)
+    {
+        var ts = (at - DateTime.UnixEpoch).TotalSeconds.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+        return "{\"level\":\"info\",\"ts\":" + ts + ",\"logger\":\"http.log.access\",\"msg\":\"handled request\"," +
+            "\"request\":{\"remote_ip\":\"127.0.0.1\",\"remote_port\":\"50000\",\"client_ip\":\"" + client + "\"," +
+            "\"proto\":\"HTTP/1.1\",\"method\":\"GET\",\"host\":\"" + host + "\",\"uri\":\"/\"},\"bytes_read\":" + bytesRead +
+            ",\"user_id\":\"\",\"duration\":0.0001,\"size\":" + size + ",\"status\":" + status + "}\n";
+    }
+
+    public static void Append(AppPaths paths, IEnumerable<string> lines)
+    {
+        using var fs = new FileStream(paths.StatsLogFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        using var w = new StreamWriter(fs, new UTF8Encoding(false));
+        foreach (var l in lines) w.Write(l);
+    }
 }

@@ -51,12 +51,19 @@ public sealed class ServerTelemetry(
 
     public Task<TrafficReport> GetTrafficAsync(TrafficQuery query, CancellationToken ct = default)
     {
-        // Include what was read since the last periodic flush.
-        ingestion.Flush();
-        var enabled = true;
-        try { enabled = store.GetSettings<CaddySettings>().TrafficStatsEnabled; }
+        // Include what was read since the last periodic save (rate limited: viewers poll this).
+        ingestion.FlushForReport();
+        string? disabled = null;
+        try
+        {
+            var s = store.GetSettings<CaddySettings>();
+            // The stats sink is part of the generated (managed) configuration only.
+            if (!s.TrafficStatsEnabled) disabled = TrafficReports.DisabledNote;
+            else if (s.Mode != ConfigMode.Managed) disabled = TrafficReports.CaddyfileNote;
+        }
         catch (Exception ex) { logger.LogWarning(ex, "Could not read Caddy settings for traffic statistics"); }
-        var report = new TrafficReports(trafficStore).Build(query, time.GetUtcNow().UtcDateTime, enabled,
+        var host = string.IsNullOrWhiteSpace(query.Host) ? null : ingestion.ResolveHostFilter(AccessLogParser.NormalizeHost(query.Host));
+        var report = new TrafficReports(trafficStore, ingestion.PendingBlobs).Build(query, host, time.GetUtcNow().UtcDateTime, disabled,
             ingestion.LastIngestAt, ingestion.MalformedLines, ingestion.FilesMissed);
         return Task.FromResult(report);
     }

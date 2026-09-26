@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using CaddyManager.Core;
 using CaddyManager.Core.Contracts;
+using CaddyManager.Core.Infrastructure;
 using CaddyManager.Core.Models;
 using CaddyManager.Telemetry.Traffic;
 using Microsoft.AspNetCore.Builder;
@@ -106,12 +107,13 @@ public sealed class TrafficIngestE2ETests
             await Task.Delay(500);
             phases.Add(new JsonObject { ["phase"] = "B: no ingester", ["files"] = Files(env), ["ms"] = sw.ElapsedMilliseconds });
 
-            // Phase 3: new instance resumes from the stored cursor (file now a backup), flushes once, keeps reading while
-            // traffic flows, then "crashes": un-flushed counters and cursor are lost with the process.
-            var ingB = env.NewIngestion(flushInterval: TimeSpan.FromHours(1));
-            ingB.PollOnce();
-            ingB.Flush();
-            var traffic = SendAsync(http, plan, 8000, Requests);
+            // Phase 3: new instance resumes from the stored cursors (file now a backup) and keeps reading while traffic
+            // flows. Counters and their cursor are saved every 100 ms, the sketches and top clients (blobs) never (their
+            // interval is an hour), so the blob cursor stays where phase A left it, rotations behind the counter cursor.
+            // Then the instance "crashes": whatever was not saved is lost with the process.
+            var ingB = env.NewIngestion(flushInterval: TimeSpan.FromMilliseconds(100), o => o.BlobFlushInterval = TimeSpan.FromHours(1));
+            var blobCursorBefore = env.Traffic.LoadBlobCursor();
+            var traffic = SendAsync(http, plan, 8000, 11_000);
             var crashAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (DateTime.UtcNow < crashAt && !traffic.IsCompleted)
             {
@@ -119,14 +121,30 @@ public sealed class TrafficIngestE2ETests
                 await Task.Delay(100);
             }
             ingB.PollOnce();
-            phases.Add(Phase("C: resumed, flushed once, then crashed without flushing", ingB, env, sw));
+            phases.Add(Phase("C: resumed, counters saved often, sketches never, then crashed", ingB, env, sw));
             ingB.Dispose();
+            var counterCursorAtCrash = env.Traffic.LoadCursor()!;
+            var blobCursorAtCrash = env.Traffic.LoadBlobCursor()!;
+            report["cursorsAtCrash"] = new JsonObject
+            {
+                ["counters"] = $"{counterCursorAtCrash.FileId}@{counterCursorAtCrash.Offset}",
+                ["blobs"] = $"{blobCursorAtCrash.FileId}@{blobCursorAtCrash.Offset}",
+                ["linesInCounters"] = counterCursorAtCrash.LinesIngested,
+            };
+            // The replay after the crash must span rotated files: the blob cursor did not move, the counters did.
+            Assert.Equal(blobCursorBefore!.FileId, blobCursorAtCrash.FileId);
+            Assert.Equal(blobCursorBefore.Offset, blobCursorAtCrash.Offset);
+            Assert.NotEqual(blobCursorAtCrash.FileId, counterCursorAtCrash.FileId);
 
-            // Phase 4: a third instance resumes from the last stored cursor and reads to the end.
+            // Phase 4: a third instance resumes from the stored cursors — replaying the sketches from the blob cursor up to
+            // the counter cursor, across the rotated files — while the last requests arrive, and reads to the end.
             await traffic;
             var sp2 = env.Services(o => o.FlushInterval = TimeSpan.FromSeconds(1));
             var ingC = sp2.GetRequiredService<TrafficIngestion>();
             var telemetry = sp2.GetRequiredService<IServerTelemetry>();
+            ingC.PollOnce();
+            var replayedWithoutNewLines = ingC.LinesIngested == counterCursorAtCrash.LinesIngested;
+            await SendAsync(http, plan, 11_000, Requests);
             TrafficReport day = null!;
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
             while (DateTime.UtcNow < deadline)
@@ -167,6 +185,7 @@ public sealed class TrafficIngestE2ETests
                 ["linesIngested"] = ingC.LinesIngested,
                 ["malformedLines"] = ingC.MalformedLines,
                 ["filesMissed"] = ingC.FilesMissed,
+                ["firstPollAfterCrashAddedNoLines"] = replayedWithoutNewLines,
                 ["seriesPoints"] = new JsonObject { ["hour"] = hour.Series.Count, ["day"] = day.Series.Count, ["month"] = month.Series.Count },
             };
             await sp2.DisposeAsync();
@@ -226,6 +245,9 @@ public sealed class TrafficIngestE2ETests
         const int clients = 50_000;
         const int lines = 100_000;
         using var env = new TempEnv();
+        // The installation key decides which registers the clients land in: a fixed key makes the estimate (and this
+        // artifact) the same on every run. A random key gives a different estimate each time, ±1.6 % typical.
+        ClientHasher.SaveKey(env.Paths, new SecretProtector(env.Paths), TestKeys.Fixed);
         var baseTs = Math.Floor(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 60.0) * 60 - 600; // 10 minutes ago, minute aligned
         await using (var w = new StreamWriter(env.Paths.StatsLogFile, false, new UTF8Encoding(false)))
         {
@@ -271,6 +293,8 @@ public sealed class TrafficIngestE2ETests
         var off = await telemetry.GetTrafficAsync(new TrafficQuery { Range = TrafficRange.Day });
         result["disabledReport"] = new JsonObject { ["enabled"] = off.Enabled, ["requests"] = off.Totals.Requests, ["points"] = off.Series.Count };
         await sp.DisposeAsync();
+        // Also on its own, before the assertions, so a failing run leaves the numbers behind.
+        E2EArtifacts.Write("traffic-ingest-cardinality.json", result);
 
         Assert.False(off.Enabled);
         Assert.Equal(0, off.Totals.Requests);

@@ -22,8 +22,11 @@ public static class TelemetryModule
         services.AddOptions<TelemetryOptions>();
         services.TryAddSingleton(TimeProvider.System);
 
-        services.AddSingleton<TrafficStore>();
+        // Own database file (db\telemetry.db): statistics must not load the configuration database or its backups.
+        services.AddSingleton(sp => new TrafficStore(sp.GetRequiredService<AppPaths>(), sp.GetRequiredService<IStore>(),
+            sp.GetRequiredService<ILogger<TrafficStore>>()));
         services.AddSingleton(sp => new TrafficIngestion(sp.GetRequiredService<AppPaths>(), sp.GetRequiredService<TrafficStore>(),
+            sp.GetRequiredService<IStore>(), sp.GetRequiredService<ISecretProtector>(),
             sp.GetRequiredService<IOptions<TelemetryOptions>>(), sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<TrafficIngestion>>(), sp));
         services.AddSingleton<StatsIngesterService>();

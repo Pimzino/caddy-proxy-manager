@@ -22,6 +22,15 @@ public sealed class TelemetryOptions
     public TimeSpan IngestInterval { get; set; } = TimeSpan.FromSeconds(1);
     /// <summary>Maximum time aggregated counters stay in memory before a batched write (SPEC: ≤ 5 s).</summary>
     public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// Maximum time unique-client sketches and top clients (the large part of the statistics) stay unsaved. Counters are
+    /// saved every <see cref="FlushInterval"/>; after a crash the sketches are rebuilt from the log (nothing is lost).
+    /// </summary>
+    public TimeSpan BlobFlushInterval { get; set; } = TimeSpan.FromMinutes(1);
+    /// <summary>A report saves pending counters first unless the last save is younger than this.</summary>
+    public TimeSpan ReportFlushMinAge { get; set; } = TimeSpan.FromSeconds(2);
+    /// <summary>The configured host names (host keys of the statistics) are re-read at least this often, and after every apply.</summary>
+    public TimeSpan HostListRefreshInterval { get; set; } = TimeSpan.FromSeconds(30);
     /// <summary>How often expired buckets are deleted.</summary>
     public TimeSpan RetentionInterval { get; set; } = TimeSpan.FromHours(1);
 }

@@ -1,13 +1,13 @@
 using System.Buffers.Binary;
 using System.Numerics;
-using System.Text;
 
 namespace CaddyManager.Telemetry.Traffic;
 
 /// <summary>
 /// Distinct-client counter of one bucket: an exact set of 64-bit client hashes up to <see cref="ExactLimit"/> entries,
 /// then a HyperLogLog sketch (p = 12, 4096 registers, standard error 1.04/√4096 ≈ 1.6 %). Sketches are mergeable (union),
-/// so unique clients over a range = cardinality of the merged bucket sketches. Only hashes are kept — never IPs.
+/// so unique clients over a range = cardinality of the merged bucket sketches. Only keyed hashes are kept — never IPs
+/// (<see cref="ClientHasher"/>).
 /// </summary>
 internal sealed class ClientSketch
 {
@@ -22,17 +22,16 @@ internal sealed class ClientSketch
 
     public bool IsExact => _exact is not null;
 
-    public void Add(string client) => AddHash(Hash(client));
-
-    public void AddHash(ulong hash)
+    /// <summary>Adds a client hash; true when the sketch changed (a new client, or a register raised).</summary>
+    public bool AddHash(ulong hash)
     {
         if (_exact is not null)
         {
-            if (!_exact.Add(hash) || _exact.Count <= ExactLimit) return;
-            ToHll();
-            return;
+            if (!_exact.Add(hash)) return false;
+            if (_exact.Count > ExactLimit) ToHll();
+            return true;
         }
-        AddToRegisters(_registers!, hash);
+        return AddToRegisters(_registers!, hash);
     }
 
     /// <summary>Union with another sketch (this instance changes).</summary>
@@ -60,13 +59,15 @@ internal sealed class ClientSketch
         _exact = null;
     }
 
-    private static void AddToRegisters(byte[] regs, ulong hash)
+    private static bool AddToRegisters(byte[] regs, ulong hash)
     {
         var index = (int)(hash >> (64 - Precision));
         // Rank = position of the first 1-bit in the remaining 52 bits (1-based); all zero → q + 1.
         var rest = hash << Precision;
         var rank = rest == 0 ? MaxRank : BitOperations.LeadingZeroCount(rest) + 1;
-        if (rank > regs[index]) regs[index] = (byte)rank;
+        if (rank <= regs[index]) return false;
+        regs[index] = (byte)rank;
+        return true;
     }
 
     /// <summary>
@@ -114,32 +115,6 @@ internal sealed class ClientSketch
             z -= (1 - x) * (1 - x) * y;
         } while (previous != z);
         return z / 3;
-    }
-
-    // ------------------------------------------------------------------ hashing
-
-    /// <summary>
-    /// 64-bit hash of a client address: FNV-1a over the UTF-8 bytes, then the MurmurHash3 fmix64 finaliser so every
-    /// input bit affects every output bit (HyperLogLog needs uniformly distributed high bits).
-    /// </summary>
-    public static ulong Hash(string client)
-    {
-        Span<byte> buffer = stackalloc byte[128];
-        var bytes = Encoding.UTF8.GetByteCount(client) <= buffer.Length
-            ? buffer[..Encoding.UTF8.GetBytes(client, buffer)]
-            : Encoding.UTF8.GetBytes(client);
-        var h = 14695981039346656037UL;
-        foreach (var b in bytes)
-        {
-            h ^= b;
-            h *= 1099511628211UL;
-        }
-        h ^= h >> 33;
-        h *= 0xff51afd7ed558ccdUL;
-        h ^= h >> 33;
-        h *= 0xc4ceb9fe1a85ec53UL;
-        h ^= h >> 33;
-        return h;
     }
 
     // ------------------------------------------------------------------ persistence

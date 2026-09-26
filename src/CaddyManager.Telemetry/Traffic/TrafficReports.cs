@@ -7,8 +7,11 @@ namespace CaddyManager.Telemetry.Traffic;
 /// Builds <see cref="TrafficReport"/>s from the stored buckets (SPEC "Reports"): hour → 60 minute points, day → 24 hourly,
 /// week → 168 hourly, month → 30 daily; oldest first, zero-filled. The window ends with the bucket that contains "now"
 /// (so the newest point is still filling). Unique clients over the window = cardinality of the union of the bucket sketches.
+/// Sketches and top clients come from the store, overlaid with the ingester's unsaved ones (<paramref name="pending"/>),
+/// so a report is current although those are saved only once a minute.
 /// </summary>
-internal sealed class TrafficReports(TrafficStore store)
+internal sealed class TrafficReports(TrafficStore store,
+    Func<BucketScale, DateTime, DateTime, IReadOnlyDictionary<string, TrafficBlobDoc>>? pending = null)
 {
     public const int MaxRows = 20;
 
@@ -20,38 +23,53 @@ internal sealed class TrafficReports(TrafficStore store)
         _ => (BucketScale.Hour, TimeSpan.FromHours(1), 24, "hour"),
     };
 
-    public TrafficReport Build(TrafficQuery query, DateTime now, bool enabled, DateTime? lastIngestAt, long malformedLines, long filesMissed)
+    public const string DisabledNote =
+        "Traffic statistics are turned off (Settings > Caddy). Caddy does not write the statistics log while they are off.";
+    public const string CaddyfileNote =
+        "Traffic statistics are not collected in Caddyfile mode: the statistics log is part of the managed configuration. " +
+        "Switch back to managed mode to collect them.";
+
+    /// <param name="host">Host key to report on (already resolved by the caller), null = all hosts.</param>
+    /// <param name="disabledNote">Non-null = statistics are not being collected; the report is empty with this note.</param>
+    public TrafficReport Build(TrafficQuery query, string? host, DateTime now, string? disabledNote, DateTime? lastIngestAt,
+        long malformedLines, long filesMissed)
     {
         var (scale, step, points, name) = Shape(query.Range);
-        var host = string.IsNullOrWhiteSpace(query.Host) ? null : AccessLogParser.NormalizeHost(query.Host);
         var end = new DateTime(now.Ticks - now.Ticks % step.Ticks, DateTimeKind.Utc) + step;
         var from = end - step * points;
 
-        if (!enabled)
+        if (disabledNote is not null)
         {
             return new TrafficReport
             {
                 Range = query.Range, From = from, To = now, BucketSize = name, Host = host, Enabled = false, LastIngestAt = lastIngestAt,
-                Notes = ["Traffic statistics are turned off (Settings > Caddy). Caddy does not write the statistics log while they are off."],
+                Notes = [disabledNote],
             };
         }
 
-        var buckets = store.Query(scale, from, end, host);
-        var byStart = buckets.ToDictionary(b => b.Start);
+        var blobs = Blobs(scale, from, end, host);
+        // One point per bucket start. There is one document per start; grouping (instead of a dictionary that throws on a
+        // duplicate) keeps a report working should an older build have written two.
+        var byStart = store.Query(scale, from, end, host).GroupBy(b => b.Start).ToDictionary(g => g.Key, g => g.ToList());
+        var buckets = byStart.Values.SelectMany(g => g).ToList();
         var series = new List<TrafficPoint>(points);
         for (var i = 0; i < points; i++)
         {
             var at = from + step * i;
-            series.Add(byStart.TryGetValue(at, out var b)
-                ? new TrafficPoint
-                {
-                    At = at, Requests = b.Requests, BytesIn = b.BytesIn, BytesOut = b.BytesOut,
-                    UniqueClients = ClientSketch.Deserialize(b.Clients).Count, Status4xx = b.Status4xx, Status5xx = b.Status5xx,
-                }
-                : new TrafficPoint { At = at });
+            if (!byStart.TryGetValue(at, out var group))
+            {
+                series.Add(new TrafficPoint { At = at });
+                continue;
+            }
+            var t = Sum(group, blobs);
+            series.Add(new TrafficPoint
+            {
+                At = at, Requests = t.Requests, BytesIn = t.BytesIn, BytesOut = t.BytesOut, UniqueClients = t.UniqueClients,
+                Status4xx = t.Status4xx, Status5xx = t.Status5xx,
+            });
         }
 
-        var totals = Sum(buckets);
+        var totals = Sum(buckets, blobs);
         var codes = new Dictionary<int, long>();
         foreach (var b in buckets)
             foreach (var (code, count) in b.StatusCodes)
@@ -75,7 +93,22 @@ internal sealed class TrafficReports(TrafficStore store)
         };
     }
 
-    private static TrafficTotals Sum(IReadOnlyCollection<TrafficBucketDoc> buckets)
+    private readonly Dictionary<(BucketScale, DateTime, DateTime), IReadOnlyDictionary<string, TrafficBlobDoc>> _pending = new();
+
+    /// <summary>Stored blobs of one host (null = server total) in the window, overlaid with the unsaved ones.</summary>
+    private Dictionary<string, TrafficBlobDoc> Blobs(BucketScale scale, DateTime from, DateTime end, string? host)
+    {
+        var result = store.QueryBlobs(scale, from, end, host);
+        if (pending is null) return result;
+        if (!_pending.TryGetValue((scale, from, end), out var unsaved))
+            _pending[(scale, from, end)] = unsaved = pending(scale, from, end);
+        var h = host ?? TrafficBucketDoc.Total;
+        foreach (var (id, blob) in unsaved)
+            if (blob.Host == h) result[id] = blob;
+        return result;
+    }
+
+    private static TrafficTotals Sum(IReadOnlyCollection<TrafficBucketDoc> buckets, IReadOnlyDictionary<string, TrafficBlobDoc> blobs)
     {
         var sketch = new ClientSketch();
         long requests = 0, bytesIn = 0, bytesOut = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, other = 0;
@@ -91,7 +124,7 @@ internal sealed class TrafficReports(TrafficStore store)
             s5 += b.Status5xx;
             other += b.StatusOther;
             duration += b.DurationSeconds;
-            sketch.Merge(ClientSketch.Deserialize(b.Clients));
+            if (blobs.TryGetValue(b.Id, out var blob)) sketch.Merge(ClientSketch.Deserialize(blob.Clients));
         }
         return new TrafficTotals
         {
@@ -101,21 +134,28 @@ internal sealed class TrafficReports(TrafficStore store)
         };
     }
 
+    /// <summary>
+    /// Ranks hosts by the small counter documents only, then reads the sketches of the (at most 20) hosts shown. Host keys
+    /// are the configured names, their wildcards and "(other)", so the number of hosts is bounded by the configuration.
+    /// </summary>
     private List<TrafficHostRow> TopHosts(BucketScale scale, DateTime from, DateTime end, string? host)
     {
-        var rows = store.QueryHosts(scale, from, end)
+        var top = store.QueryHosts(scale, from, end)
             .Where(b => host is null || b.Host == host)
             .GroupBy(b => b.Host)
-            .Select(g =>
+            .Select(g => (Host: g.Key, Buckets: g.ToList(), Requests: g.Sum(b => b.Requests)))
+            .OrderByDescending(x => x.Requests).ThenBy(x => x.Host, StringComparer.Ordinal)
+            .Take(MaxRows)
+            .ToList();
+        return top.Select(x =>
+        {
+            var t = Sum(x.Buckets, Blobs(scale, from, end, x.Host));
+            return new TrafficHostRow
             {
-                var t = Sum(g.ToList());
-                return new TrafficHostRow
-                {
-                    Host = g.Key, Requests = t.Requests, BytesIn = t.BytesIn, BytesOut = t.BytesOut,
-                    UniqueClients = t.UniqueClients, Status4xx = t.Status4xx, Status5xx = t.Status5xx,
-                };
-            });
-        return rows.OrderByDescending(r => r.Requests).ThenBy(r => r.Host, StringComparer.Ordinal).Take(MaxRows).ToList();
+                Host = x.Host, Requests = t.Requests, BytesIn = t.BytesIn, BytesOut = t.BytesOut,
+                UniqueClients = t.UniqueClients, Status4xx = t.Status4xx, Status5xx = t.Status5xx,
+            };
+        }).ToList();
     }
 
     /// <summary>Merges the day buckets' Space-Saving summaries of every UTC day overlapping the window.</summary>
@@ -123,7 +163,7 @@ internal sealed class TrafficReports(TrafficStore store)
     {
         var dayFrom = new DateTime(from.Ticks - from.Ticks % TimeSpan.TicksPerDay, DateTimeKind.Utc);
         var merged = new TopClients();
-        foreach (var day in store.Query(BucketScale.Day, dayFrom, end, host))
+        foreach (var day in Blobs(BucketScale.Day, dayFrom, end, host).Values.OrderBy(b => b.Start))
         {
             var counters = day.TopClients ?? [];
             merged.Merge(counters, counters.Count >= TopClients.DefaultCapacity);
@@ -141,6 +181,8 @@ internal sealed class TrafficReports(TrafficStore store)
             "Counts every HTTP request Caddy handled and logged, including redirects to HTTPS and ACME HTTP-01 challenges. " +
             "Layer-4 streams and connections rejected before an HTTP request was parsed (TLS handshake failures, malformed " +
             "requests, HTTP/2 or HTTP/3 protocol errors) are not counted.",
+            "Hosts are the names configured on enabled hosts (a wildcard host is one row). Requests for any other name, " +
+            "and requests without a Host, are counted under \"(other)\".",
             "Data in/out are request and response body bytes (after compression); headers and TLS overhead are not included.",
             "Unique clients are distinct client IP addresses (after trusted proxies): exact up to 1,024 per bucket, " +
             "estimated above that (typical error ±1.6 %).",

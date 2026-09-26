@@ -10,7 +10,8 @@ namespace CaddyManager.Telemetry.Tests;
 ///  2. The exact → HLL switch loses the clients already in the exact set (count drops) or double-inserts them.
 ///  3. Bias: the raw HLL estimate is badly biased in the small/intermediate range (a few thousand for p = 12) if the
 ///     small-range correction is missing or wrong, or at large cardinalities if the rank computation is off by one.
-///  4. Poor hashing: similar inputs (sequential IPs) cluster into few registers → big underestimates.
+///  4. Poor hashing: similar inputs (sequential IPs) cluster into few registers → big underestimates (the keyed
+///     HMAC-SHA256 hash must spread them like the old unkeyed hash did).
 ///  5. Merge is not a union: exact+exact above the limit, exact+HLL, HLL+exact and HLL+HLL must equal the sketch of all
 ///     inputs; merging must be idempotent (A∪A = A) and order independent.
 ///  6. Serialization drops state (register array truncated, exact hashes lost) or throws on an empty/corrupt blob.
@@ -25,6 +26,12 @@ namespace CaddyManager.Telemetry.Tests;
 /// </summary>
 public sealed class SketchTests
 {
+    /// <summary>
+    /// A fixed key, so every run hashes the same way and the statistical assertions are repeatable (the product uses the
+    /// installation's random key, see ClientHasher; any key spreads inputs uniformly).
+    /// </summary>
+    internal static readonly ClientHasher Hasher = ClientHasher.FromKey(TestKeys.Fixed);
+
     private static string Ip(int i) => $"10.{i >> 16 & 255}.{i >> 8 & 255}.{i & 255}";
 
     [Fact]
@@ -182,4 +189,10 @@ public sealed class SketchTests
         var oneA = Assert.Single(merged.Counters, c => c.Ip == "one-a");
         Assert.True(oneA.Count >= 300);
     }
+}
+
+internal static class SketchTestExtensions
+{
+    /// <summary>Adds a client the way the aggregator does: its keyed hash.</summary>
+    public static void Add(this ClientSketch sketch, string client) => sketch.AddHash(SketchTests.Hasher.Hash(client));
 }

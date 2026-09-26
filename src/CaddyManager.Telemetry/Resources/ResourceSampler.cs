@@ -32,7 +32,7 @@ public sealed class ResourceSampler : BackgroundService
     // Previous readings for rate calculations (touched only by the sampling thread).
     private DateTime _prevAt;
     private CpuTimes? _prevCpu;
-    private (long Rx, long Tx)? _prevNet;
+    private Dictionary<string, (long Rx, long Tx)>? _prevNet;
     private TimeSpan? _prevManagerCpu;
     private (int Pid, TimeSpan Cpu)? _prevCaddyCpu;
     private CaddyStatus? _caddyStatus;
@@ -152,13 +152,13 @@ public sealed class ResourceSampler : BackgroundService
     // ------------------------------------------------------------------ network
 
     /// <summary>
-    /// Sum of bytes over up, non-loopback interfaces. GetIPStatistics is supported on Windows in .NET 10
+    /// Bytes per second over up, non-loopback interfaces. GetIPStatistics is supported on Windows in .NET 10
     /// (only Android is excluded: https://learn.microsoft.com/dotnet/api/system.net.networkinformation.networkinterface.getipstatistics);
     /// GetIPv4Statistics is the fallback should a platform throw PlatformNotSupportedException.
     /// </summary>
     private (double Rx, double Tx) NetworkRates(double elapsed)
     {
-        long rx = 0, tx = 0;
+        var current = new Dictionary<string, (long Rx, long Tx)>(StringComparer.Ordinal);
         try
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
@@ -171,12 +171,10 @@ public sealed class ResourceSampler : BackgroundService
                     catch (PlatformNotSupportedException)
                     {
                         var v4 = nic.GetIPv4Statistics();
-                        rx += v4.BytesReceived;
-                        tx += v4.BytesSent;
+                        current[nic.Id] = (v4.BytesReceived, v4.BytesSent);
                         continue;
                     }
-                    rx += s.BytesReceived;
-                    tx += s.BytesSent;
+                    current[nic.Id] = (s.BytesReceived, s.BytesSent);
                 }
                 catch (Exception ex) when (ex is NetworkInformationException or PlatformNotSupportedException or InvalidOperationException) { }
             }
@@ -184,10 +182,27 @@ public sealed class ResourceSampler : BackgroundService
         catch (Exception ex) when (ex is NetworkInformationException or PlatformNotSupportedException) { return (0, 0); }
 
         var prev = _prevNet;
-        _prevNet = (rx, tx);
-        // Interfaces coming and going make the sum jump backwards: report 0 for that interval.
-        if (prev is not { } p || elapsed <= 0 || rx < p.Rx || tx < p.Tx) return (0, 0);
-        return (Math.Round((rx - p.Rx) / elapsed, 1), Math.Round((tx - p.Tx) / elapsed, 1));
+        _prevNet = current;
+        return NetworkDelta(prev, current, elapsed);
+    }
+
+    /// <summary>
+    /// Rate from two readings of cumulative per-interface counters (keyed by NetworkInterface.Id). Only interfaces present
+    /// in both readings contribute: an interface that comes up (link regained, VPN connected, vEthernet re-created) brings
+    /// its whole since-boot count, which is not traffic of this interval; one whose counters went backwards (reset) adds 0.
+    /// </summary>
+    internal static (double Rx, double Tx) NetworkDelta(IReadOnlyDictionary<string, (long Rx, long Tx)>? previous,
+        IReadOnlyDictionary<string, (long Rx, long Tx)> current, double elapsed)
+    {
+        if (previous is null || elapsed <= 0) return (0, 0);
+        long rx = 0, tx = 0;
+        foreach (var (id, now) in current)
+        {
+            if (!previous.TryGetValue(id, out var before)) continue;
+            rx += Math.Max(0, now.Rx - before.Rx);
+            tx += Math.Max(0, now.Tx - before.Tx);
+        }
+        return (Math.Round(rx / elapsed, 1), Math.Round(tx / elapsed, 1));
     }
 
     // ------------------------------------------------------------------ processes
