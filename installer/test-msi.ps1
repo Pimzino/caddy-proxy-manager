@@ -68,13 +68,22 @@ function Query-Msi([string] $sql) {
     return , $rows
 }
 
-# The Finish page (ExitDialog) is not shown in a silent install, so evaluate the MSI's own conditions for its two texts
-# with Windows Installer against the real machine state: open the package, run its AppSearch (reads the manager's
-# SetupCompleted marker) and FindRelatedProducts (sets WIX_UPGRADE_DETECTED), then EvaluateCondition
-# (msiEvaluateCondition: 0 false, 1 true, 2 none, 3 error).
-function Get-FinishTextCase {
+# The Finish page is not shown in a silent install, so evaluate the MSI's own conditions for the CPM_OUTCOME actions
+# that choose its text with Windows Installer against the real machine state: open the package, run its AppSearch
+# (reads the manager's SetupCompleted marker) and FindRelatedProducts (sets WIX_UPGRADE_DETECTED), then
+# EvaluateCondition (msiEvaluateCondition: 0 false, 1 true, 2 none, 3 error). Outcome '' = none of them (maintenance:
+# Repair / Remove are set by the wizard's buttons).
+$outcomeActions = [ordered]@{
+    Fresh           = 'CPM_SetOutcomeFresh'
+    Reinstall       = 'CPM_SetOutcomeReinstall'
+    Upgrade         = 'CPM_SetOutcomeUpgrade'
+    UpgradeNotSetUp = 'CPM_SetOutcomeUpgradeNotSetUp'
+}
+function Get-FinishOutcome {
     $conds = @{}
     foreach ($r in (Query-Msi 'SELECT `Action`, `Condition` FROM `InstallUISequence`')) { $conds[$r[0]] = $r[1] }
+    $missing = @($outcomeActions.Values | Where-Object { -not $conds.ContainsKey($_) })
+    if ($missing.Count -gt 0) { throw "InstallUISequence lacks $($missing -join ', ')" }
     $installer = New-Object -ComObject WindowsInstaller.Installer
     $installer.GetType().InvokeMember('UILevel', 'SetProperty', $null, $installer, [object[]] @([int] 2)) | Out-Null
     $pkg = $installer.GetType().InvokeMember('OpenPackage', 'InvokeMethod', $null, $installer, [object[]] @([string] $Msi, [int] 0))
@@ -86,10 +95,12 @@ function Get-FinishTextCase {
         $props = foreach ($name in 'CPM_SETUP_DONE', 'WIX_UPGRADE_DETECTED', 'Installed') {
             "$name=" + $pkg.GetType().InvokeMember('Property', 'GetProperty', $null, $pkg, [object[]] @([string] $name))
         }
+        $matched = @($outcomeActions.Keys | Where-Object { (& $eval $conds[$outcomeActions[$_]]) -eq 1 })
+        $setupDone = [string] $pkg.GetType().InvokeMember('Property', 'GetProperty', $null, $pkg, [object[]] @('CPM_SETUP_DONE'))
         return [pscustomobject]@{
-            FirstRun = (& $eval $conds['CPM_SetExitDialogTextFirstRun']) -eq 1
-            Existing = (& $eval $conds['CPM_SetExitDialogTextExisting']) -eq 1
-            Props    = $props -join ' '
+            Outcome   = if ($matched.Count -eq 1) { $matched[0] } elseif ($matched.Count -eq 0) { '' } else { "ambiguous: $($matched -join '+')" }
+            SetupDone = $setupDone -ne ''
+            Props     = $props -join ' '
         }
     }
     finally {
@@ -99,10 +110,11 @@ function Get-FinishTextCase {
     }
 }
 
-function Check-FinishText([string] $when, [bool] $expectFirstRun) {
-    $case = Get-FinishTextCase
-    $want = if ($expectFirstRun) { 'first-run (setup token)' } else { 'existing installation (sign in)' }
-    Check ($case.FirstRun -eq $expectFirstRun -and $case.Existing -ne $expectFirstRun) "${when}: Finish page shows the $want text ($($case.Props))"
+function Check-FinishOutcome([string] $when, [string] $expected, [bool] $expectSetupDone) {
+    $case = Get-FinishOutcome
+    $label = if ($expected) { $expected } else { 'maintenance (Repair / Remove)' }
+    Check ($case.Outcome -eq $expected -and $case.SetupDone -eq $expectSetupDone) `
+        "${when}: Finish page outcome is $label, setup done=$expectSetupDone (got '$($case.Outcome)'; $($case.Props))"
 }
 
 function Service-Pid {
@@ -140,7 +152,7 @@ foreach ($name in 'CPM_ConfigureUi', 'CPM_ConfigureService', 'CPM_RemoveCaddySer
 }
 
 Write-Host '==> Finish-page text on a clean machine'
-Check-FinishText 'before the first install' $true
+Check-FinishOutcome 'before the first install' 'Fresh' $false
 
 Write-Host "==> Install (UI_PORT=$UiPort)"
 $installLog = Join-Path $LogDir 'cpm-install.log'
@@ -195,7 +207,7 @@ try {
     Check ($null -ne $session) 'first-run setup signed in an administrator'
     $marker = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Caddy Proxy Manager' -Name 'SetupCompleted' -ErrorAction SilentlyContinue
     Check ($marker -eq 1) "the manager recorded SetupCompleted=1 after first-run setup (found: $marker)"
-    Check-FinishText 'installed and set up (upgrade/repair)' $false
+    Check-FinishOutcome 'installed and set up (repair; an upgrade reads the same marker)' '' $true
     if ($null -ne $session) {
         $before = Service-Pid
         $r = Invoke-WebRequest -Uri "$base/api/system/restart" -Method Post -WebSession $session -Headers @{ 'X-CPM-Request' = '1' } -UseBasicParsing
@@ -226,7 +238,7 @@ finally {
     Check (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) 'firewall exception removed'
     Check (-not (Test-Path -LiteralPath $shortcut)) 'Start-menu shortcut removed'
     # The MSI keeps C:\ProgramData\CaddyProxyManager (and its administrator), so a reinstall must not ask for setup.
-    Check-FinishText 'after an uninstall that kept the data (reinstall)' $false
+    Check-FinishOutcome 'after an uninstall that kept the data (reinstall)' 'Reinstall' $true
 }
 
 # Verifiable artifact of this run (uploaded by the workflow next to the msiexec logs).
