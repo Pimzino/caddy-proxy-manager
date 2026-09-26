@@ -261,7 +261,7 @@ public enum TrafficRange { Hour, Day, Week, Month }
 public sealed record TrafficQuery
 {
     public TrafficRange Range { get; init; } = TrafficRange.Day;
-    /// <summary>Limit to one host name (lower case, no port); null = all.</summary>
+    /// <summary>Host key to limit to: a configured name, a configured wildcard ("*.example.com"; a name under it resolves to the wildcard) or "(other)"; null = all.</summary>
     public string? Host { get; init; }
 }
 
@@ -324,7 +324,7 @@ public sealed record TrafficReport
     /// <summary>"minute" | "hour" | "day"</summary>
     public string BucketSize { get; init; } = "hour";
     public string? Host { get; init; }
-    /// <summary>False when CaddySettings.TrafficStatsEnabled is off (the rest is empty).</summary>
+    /// <summary>False when CaddySettings.TrafficStatsEnabled is off or the configuration mode is Caddyfile (Notes explain; the rest is empty).</summary>
     public bool Enabled { get; init; } = true;
     public DateTime? LastIngestAt { get; init; }
     public TrafficTotals Totals { get; init; } = new();

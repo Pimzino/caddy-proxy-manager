@@ -338,7 +338,7 @@ function ProviderDetails({
         title={`The ${provider.label} module is not in the installed Caddy`}
       >
         Caddy needs the plugin <span className="mono text-fg">{provider.package}</span> to use this provider. Until Caddy is rebuilt with it,
-        certificates that use DNS-01 cannot be obtained (the settings can still be saved).
+        certificates that use DNS-01 cannot be obtained: settings and hosts that use the DNS challenge are refused until it is installed.
       </PluginRequirement>
 
       <div className="grid gap-4 md:grid-cols-2">

@@ -61,7 +61,6 @@ const PROVIDERS: Omit<DnsProviderInfo, 'package' | 'module' | 'docsUrl' | 'insta
       str('gcp_application_default', 'Service account JSON path', { placeholder: 'C:\\ProgramData\\gcp\\dns-sa.json', help: 'Leave empty to use application default credentials.' }),
     ],
   },
-  { name: 'hetzner', label: 'Hetzner', notes: 'Uses a Hetzner Cloud API token (Cloud DNS API).', fields: [secret('api_token', 'Cloud API token')] },
   {
     name: 'ovh',
     label: 'OVHcloud',
@@ -119,7 +118,7 @@ const PROVIDERS: Omit<DnsProviderInfo, 'package' | 'module' | 'docsUrl' | 'insta
   },
   {
     name: 'rfc2136',
-    label: 'RFC 2136 (BIND, Windows DNS with TSIG)',
+    label: 'RFC 2136 (BIND, Knot, PowerDNS, ...)',
     notes: 'Dynamic updates signed with a TSIG key. All four fields are needed.',
     fields: [
       str('server', 'Server', { required: true, placeholder: 'ns1.corp.local:53' }),
@@ -315,7 +314,9 @@ function effectiveDnsDomains(h: SiteHost, s: MockState): { domains: string[]; ta
 
 async function delegationCheck(body: unknown, s: MockState): Promise<DelegationCheckResult> {
   const { HttpError } = helpers!;
-  const b = (body ?? {}) as { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean };
+  const b = (body ?? {}) as { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean; systemResolvers?: boolean };
+  // Same order as the API: explicit public, explicit system, configured resolvers, else public DNS.
+  const usePublic = !!b.publicResolvers || (!b.systemResolvers && s.caddySettings.dnsResolvers.length === 0);
   let domains: string[];
   let target: string | null;
   if (b.hostId) {
@@ -343,9 +344,9 @@ async function delegationCheck(body: unknown, s: MockState): Promise<DelegationC
     const recordName = `_acme-challenge.${norm(domain).replace(/^\*\./, '')}`;
     if (seen.has(recordName)) continue;
     seen.add(recordName);
-    checks.push({ domain, recordName, expectedTarget: expected, ...lookupDelegation(recordName, expected, !!b.publicResolvers) });
+    checks.push({ domain, recordName, expectedTarget: expected, ...lookupDelegation(recordName, expected, usePublic) });
   }
-  const resolvers = b.publicResolvers ? ['1.1.1.1:53', '8.8.8.8:53'] : s.caddySettings.dnsResolvers.length ? s.caddySettings.dnsResolvers : ['system'];
+  const resolvers = usePublic ? ['1.1.1.1:53', '8.8.8.8:53'] : b.systemResolvers ? ['system'] : s.caddySettings.dnsResolvers;
   return { resolvers, checks, checkedAt: iso() };
 }
 

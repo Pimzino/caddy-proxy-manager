@@ -165,7 +165,8 @@ export function validateStorage(f: CaddySettingsInput, settings: CaddySettings):
     else if (!/^([A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)/.test(p)) e.storagePath = 'Use an absolute path such as D:\\CaddyStorage or a UNC share such as \\\\fs01\\caddy$. Mapped drive letters are not visible to services.';
   }
   if (f.storageBackend === 'redis') {
-    if (f.redisAddresses.length === 0) e.redisAddresses = 'Add at least one Redis server as host:port.';
+    if (f.redisAddresses.length === 0) e.redisAddresses = 'Add the Redis server as host:port.';
+    else if (f.redisAddresses.length > 1) e.redisAddresses = 'Enter one address: several addresses switch the plugin to Redis Cluster, which is not supported.';
     if (!(Number.isInteger(f.redisDb) && f.redisDb >= 0 && f.redisDb <= 15)) e.redisDb = 'Enter a database number, usually 0–15.';
     if (!/^[A-Za-z0-9._:-]*$/.test(f.redisKeyPrefix.trim())) e.redisKeyPrefix = 'Use letters, digits and . _ : - only.';
   }

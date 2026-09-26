@@ -379,6 +379,8 @@ export function useSaveCaddySettings() {
     onSuccess: (res) => qc.setQueryData(qk.settings('caddy'), res.item),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: qk.settings('caddy') });
+      // Storage backend and the cluster warnings derived from it are part of GET /api/cluster.
+      void qc.invalidateQueries({ queryKey: qk.cluster });
       invalidateConfigState(qc);
     },
   });
@@ -904,8 +906,11 @@ export function useUpdateServer() {
 }
 
 export function useRegenerateServerToken() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.post<RegenerateTokenResult>(`/api/servers/${encodeURIComponent(id)}/token`),
+    // keyRotationPending changes with the rotation result.
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.servers }),
   });
 }
 
@@ -954,7 +959,7 @@ export function useServerJob(serverId: string, jobId: string | null) {
 
 export function useDelegationCheck() {
   return useMutation({
-    mutationFn: (input: { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean }) =>
+    mutationFn: (input: { hostId?: string; domains?: string[]; target?: string; publicResolvers?: boolean; systemResolvers?: boolean }) =>
       api.post<DelegationCheckResult>('/api/dns/delegation-check', input),
   });
 }

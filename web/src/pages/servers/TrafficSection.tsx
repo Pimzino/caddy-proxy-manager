@@ -149,7 +149,7 @@ export function TrafficSection({
             <option value="">All hosts</option>
             {hostOptions.map((h) => (
               <option key={h} value={h}>
-                {h}
+                {hostLabel(h)}
               </option>
             ))}
           </Select>
@@ -422,9 +422,9 @@ function TrafficBody({
                         type="button"
                         onClick={() => onHostChange(h.host === host ? '' : h.host)}
                         className="mono block max-w-full truncate text-left text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-                        title={h.host === host ? 'Show all hosts' : `Show only ${h.host}`}
+                        title={h.host === host ? 'Show all hosts' : `Show only ${hostLabel(h.host)}`}
                       >
-                        {h.host}
+                        {hostLabel(h.host)}
                       </button>
                     </TD>
                     <TD className="text-right tabular-nums">
@@ -549,4 +549,11 @@ function ErrorCount({ count, total, severe }: { count: number; total: number; se
       {formatNumber(count)}
     </span>
   );
+}
+
+/** Statistics keep rows only for configured site names; every other Host header (probes, IPs, typos) is "(other)". */
+const OTHER_HOSTS = '(other)';
+
+function hostLabel(host: string): string {
+  return host === OTHER_HOSTS ? 'Other hosts (not configured)' : host;
 }

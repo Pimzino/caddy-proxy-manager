@@ -526,3 +526,34 @@ credentials only need access to a separate validation zone (e.g. a Cloudflare to
   explanation, a table of the CNAME records every DNS-challenge host needs with copy buttons, and "Check DNS"). Host editor TLS
   tab (DNS challenge): Delegation select (Use default / Off / Custom name), the records for this host with copy buttons and
   "Check DNS" showing per-domain status. Help text points to scoped tokens on a separate zone as the recommended setup.
+
+### Round 3c: behaviour after the adversarial review (supersedes the sections above where they differ)
+- **Providers**: 23 (Hetzner removed: only the retired dns.hetzner.com v1 module is buildable at caddyserver.com). RFC 2136 is
+  for BIND/Knot/PowerDNS; Windows DNS accepts only GSS-TSIG → use CNAME delegation. A selected provider plus
+  `acmeIssuerJson.challenges.dns.provider` → 400 (`acmeIssuerJson`); stored legacy data: the generator drops the legacy provider
+  from DNS policies with a warning. A provider whose module is missing from a known binary → 400 (`dnsProvider` /
+  `acmeChallenge`) as soon as anything uses the DNS challenge. IP names always stay in the HTTP policy.
+- **Delegation check resolvers**: explicit `publicResolvers` → explicit `systemResolvers` (new input) → configured
+  `DnsResolvers` → public (1.1.1.1:53, 8.8.8.8:53) by default, because Caddy on Windows also falls back to public DNS.
+- **Storage**: Redis takes exactly one address (several would switch the plugin to Redis Cluster). The server option `logs`
+  is merged (logger_names/skip_unmapped_hosts stay managed).
+- **Static roots**: the generator answers 403 (and warns) for static roots on this server's protected folders (data folder,
+  Caddy storage, certificate store, shared storage, program/Windows folders) — covers replicated hosts. PUT settings → 400 when
+  a new storage folder or certificate store would sit inside an enabled static root.
+- **Secret scrubbing**: `ISecretScrubber` (Config; raw, JSON-escaped, percent/query/form-encoded and hex forms of every configured
+  or recently rotated secret, plus credential-like query parameters) is applied to /api/logs/caddy (filters must match the
+  scrubbed line too), certificate alert details, and Caddy start/status errors.
+- **Telemetry**: host key = the configured name of an enabled SiteHost the request's Host matches exactly, else the configured
+  wildcard it matches (one label), else `"(other)"` (also for no Host). Own LiteDB file `db/telemetry.db` (not in backups);
+  counters flushed ≤ 5 s, sketches/top clients ≤ 1 min with replay from the log after a restart; client hashes are
+  HMAC-SHA256 with a per-install protected key (`db/telemetry.key`). `Enabled=false` with a note in Caddyfile mode too.
+  `TrafficQuery.Host` accepts a configured name, a configured wildcard (a name under it resolves to the wildcard) or `(other)`.
+- **Cluster**: `POST /api/servers/{id}/token` sends a `rekey` RPC under the old key and returns `RegenerateTokenResult`
+  (`rotated` false = pending, retried on every contact; `ServerSummary.keyRotationPending`). Every request carries the primary's
+  `primaryId`, pinned by the node at its first RPC after join (other ids → `primaryConflict`). A node may re-join its own primary
+  (`POST /api/cluster/join` / CLI) with a new token; a token from another primary → 409 "Leave that cluster first". Envelopes
+  signed before the node process started → 401; bodies > 64 MB → 413 (Kestrel limit raised for the RPC route); 30 rejected
+  envelopes per minute per address → 429 with throttled logging. Node sync and bundle building run under `IConfigMutationLock`
+  (committed state only). Bundle fields `certificates[].materialUnavailable` (node keeps its copy), `customAcmeRootPem`
+  (written to `<DataDir>\caddy\cluster-acme-root.pem` on the node). Removing a server raises `server-removed:<nodeId>`; an
+  unreachable removed node keeps trusting its key until `cluster leave` runs on it.

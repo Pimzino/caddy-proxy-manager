@@ -8,7 +8,7 @@ import { formatTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { checkKey, recordKey, zoneLine, type DelegationRecord } from './dnsDelegation';
 
-/** One POST /api/dns/delegation-check body (publicResolvers is added by the panel). */
+/** One POST /api/dns/delegation-check body (systemResolvers is added by the panel). */
 export type DelegationCheckRequest = { hostId: string } | { domains: string[]; target: string };
 
 export interface DelegationRow extends DelegationRecord {
@@ -51,14 +51,14 @@ export function DelegationRecordsPanel({
   toolbarNote?: ReactNode;
 }) {
   const check = useDelegationCheck();
-  const [publicDns, setPublicDns] = useState(false);
+  const [systemDns, setSystemDns] = useState(false);
   const [running, setRunning] = useState(false);
   const [state, setState] = useState<CheckState>(EMPTY);
 
   const run = async () => {
     setRunning(true);
     try {
-      const res = await Promise.all(requests().map((r) => check.mutateAsync({ ...r, publicResolvers: publicDns })));
+      const res = await Promise.all(requests().map((r) => check.mutateAsync({ ...r, systemResolvers: systemDns || undefined })));
       const results = new Map<string, DelegationCheck>();
       for (const c of res.flatMap((x) => x.checks)) results.set(checkKey(c), c);
       setState({
@@ -88,13 +88,13 @@ export function DelegationRecordsPanel({
         {toolbarNote}
       </div>
       <Checkbox
-        checked={publicDns}
+        checked={systemDns}
         onChange={(v) => {
-          setPublicDns(v);
+          setSystemDns(v);
           setState(EMPTY);
         }}
-        label="Check with public DNS (what the certificate authority sees)"
-        description="Asks 1.1.1.1 and 8.8.8.8 instead of this server’s DNS. Use it when internal DNS answers differently for your domains."
+        label="Check with this server’s DNS instead"
+        description="By default the check asks the DNS resolvers set under Advanced, or public DNS (1.1.1.1, 8.8.8.8) — what the certificate authority sees. Tick this to ask the DNS servers this server uses (e.g. Active Directory DNS)."
       />
 
       <Table className="rounded-md border border-border">
@@ -208,5 +208,6 @@ function summary(counts: Partial<Record<DelegationStatus, number>>, checked: num
 function resolverLabel(resolvers: string[]): string {
   const list = resolvers.filter((r) => r !== 'system');
   if (!list.length) return 'this server’s DNS';
-  return resolvers.includes('system') ? `this server’s DNS, ${list.join(', ')}` : list.join(', ');
+  const named = list.join(', ') === '1.1.1.1:53, 8.8.8.8:53' ? 'public DNS (1.1.1.1, 8.8.8.8)' : list.join(', ');
+  return resolvers.includes('system') ? `this server’s DNS, ${named}` : named;
 }

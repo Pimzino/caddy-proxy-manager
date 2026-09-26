@@ -369,8 +369,11 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
             // ---- proxied telemetry and remote Caddy control
             await Step("server details, samples, traffic, Caddy restart and jobs are proxied to the node (the node's real telemetry)", async () =>
             {
-                // Requests only the node's Caddy receives, for a name no host serves (the default site answers 404).
+                // Requests only the node's Caddy receives, for a name no host serves (the default site answers 404). Traffic
+                // statistics keep per-host rows only for configured names, so these are counted under "(other)".
                 const string probeHost = "telemetry-probe.cluster.test";
+                const string otherHosts = "(other)";
+                var otherQuery = Uri.EscapeDataString(otherHosts);
                 const int probes = 7;
                 var nodePort = await NodeHttpPort(N);
                 for (var i = 0; i < probes; i++) Assert.Equal(404, (await HttpGet(nodePort, probeHost, "/probe/" + i)).Code);
@@ -403,14 +406,14 @@ public sealed class ClusterE2ETests(ITestOutputHelper output)
                 // Traffic comes from the node's stats log: exactly the probes, which the primary's Caddy never saw.
                 var remote = await Wait.ForValueAsync(async () =>
                 {
-                    var t = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/traffic?range=hour&host={probeHost}");
+                    var t = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/traffic?range=hour&host={otherQuery}");
                     return (t.GetProperty("totals").GetProperty("requests").GetInt64() == probes, t);
                 }, TimeSpan.FromSeconds(30), () => $"{probes} probe requests in the node's traffic");
                 Assert.Equal(probes, remote.GetProperty("totals").GetProperty("status4xx").GetInt64());
-                Assert.Equal(probeHost, remote.GetProperty("host").GetString());
-                var nodeView = await N.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={probeHost}");
+                Assert.Equal(otherHosts, remote.GetProperty("host").GetString());
+                var nodeView = await N.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={otherQuery}");
                 Assert.Equal(nodeView.GetProperty("totals").GetRawText(), remote.GetProperty("totals").GetRawText());
-                var primaryOwn = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={probeHost}");
+                var primaryOwn = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/local/traffic?range=hour&host={otherQuery}");
                 Assert.Equal(0, primaryOwn.GetProperty("totals").GetProperty("requests").GetInt64());
                 var traffic = await P.Api.GetFromJsonAsync<JsonElement>($"api/servers/{nodeId}/traffic?range=week");
                 Assert.Equal("week", traffic.GetProperty("range").GetString());

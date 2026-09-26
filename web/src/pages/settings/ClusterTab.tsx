@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { qk, useBinaryOverview, useCaddySettings, useCluster, useIsManagedNode, useJoinCluster, useLeaveCluster, useSaveCaddySettings } from '@/api/hooks';
 import type { CaddySettings, CaddySettingsInput, ClusterRole, ClusterStatus, StorageBackend } from '@/api/types';
 import { useAuth } from '@/auth';
+import { cn } from '@/lib/cn';
 import { useFeedback } from '@/components/feedback';
 import { SecretInput } from '@/components/SecretInput';
 import { SecretJsonInput } from '@/components/SecretJsonInput';
@@ -186,6 +187,14 @@ function MembershipCard({ cluster }: { cluster: ReturnType<typeof useCluster> })
           ]}
         />
         {c.role === 'standalone' && (isAdmin ? <JoinForm /> : <p className="text-sm text-fg-subtle">An administrator can join this server to a cluster.</p>)}
+        {c.role === 'node' && isAdmin && (
+          <details className="group border-t border-border pt-4">
+            <summary className="cursor-pointer text-sm font-medium text-fg select-none">Join again with a new token</summary>
+            <div className="mt-3">
+              <JoinForm rejoinPrimary={c.primaryName ?? 'the primary'} />
+            </div>
+          </details>
+        )}
       </CardBody>
     </Card>
   );
@@ -213,7 +222,8 @@ function tokenPrimary(token: string): string | null {
   }
 }
 
-function JoinForm() {
+/** Join form. With rejoinPrimary this node joins its own primary again (e.g. after the server was removed and added there). */
+function JoinForm({ rejoinPrimary }: { rejoinPrimary?: string }) {
   const join = useJoinCluster();
   const confirm = useConfirm();
   const feedback = useFeedback();
@@ -229,8 +239,12 @@ function JoinForm() {
       return;
     }
     const primary = tokenPrimary(t);
+    if (rejoinPrimary && primary && primary !== rejoinPrimary) {
+      setError(`This token comes from ${primary}. This server is managed by ${rejoinPrimary}: leave that cluster first.`);
+      return;
+    }
     const ok = await confirm({
-      title: `Join the cluster of ${primary ?? 'this primary'}?`,
+      title: rejoinPrimary ? `Join ${rejoinPrimary} again with the new token?` : `Join the cluster of ${primary ?? 'this primary'}?`,
       message: (
         <>
           On the first sync, the hosts, streams, access lists, certificates, Caddy settings and plugins of this server are replaced by the
@@ -255,14 +269,16 @@ function JoinForm() {
   };
 
   return (
-    <form onSubmit={(e) => void submit(e)} noValidate className="flex flex-col gap-3 border-t border-border pt-4">
+    <form onSubmit={(e) => void submit(e)} noValidate className={cn('flex flex-col gap-3', !rejoinPrimary && 'border-t border-border pt-4')}>
       <Field
-        label="Join a cluster"
+        label={rejoinPrimary ? 'New join token' : 'Join a cluster'}
         error={error}
         hint={
           <>
-            Paste the token shown on the primary when this server was added on its Servers page. The primary then connects to this server’s
-            management port, so allow it through the firewall. Command-line alternative, in an elevated PowerShell:{' '}
+            {rejoinPrimary
+              ? `Use this when ${rejoinPrimary} shows a new token for this server (for example after it was removed and added again). Tokens from another primary are refused. `
+              : 'Paste the token shown on the primary when this server was added on its Servers page. The primary then connects to this server’s management port, so allow it through the firewall. '}
+            Command-line alternative, in an elevated PowerShell:{' '}
             <span className="mono">net stop CaddyProxyManager</span>, then{' '}
             <span className="mono">&amp; &apos;C:\Program Files\Caddy Proxy Manager\CaddyManager.exe&apos; cluster join &apos;&lt;token&gt;&apos;</span>, then{' '}
             <span className="mono">net start CaddyProxyManager</span>.
@@ -284,7 +300,7 @@ function JoinForm() {
       </Field>
       <div>
         <Button type="submit" variant="primary" icon={<LogIn size={14} />} loading={join.isPending} disabled={!token.trim()}>
-          Join cluster
+          {rejoinPrimary ? 'Join again' : 'Join cluster'}
         </Button>
       </div>
     </form>
@@ -419,7 +435,7 @@ function StorageForm({ settings, role }: { settings: CaddySettings; role?: Clust
                   <span className="mono">caddy.storage.redis</span>). The settings cannot be saved until Caddy includes it. Nodes install the primary’s
                   plugins automatically.
                 </PluginRequirement>
-                <Field label="Servers" required error={fieldError(errors, 'redisAddresses')} hint="host:port of the Redis server (several for a replicated setup).">
+                <Field label="Servers" required error={fieldError(errors, 'redisAddresses')} hint="host:port of the Redis server — one address (Redis Cluster and Sentinel are not supported).">
                   <ChipInput
                     value={form.redisAddresses}
                     onChange={(v) => set('redisAddresses', v)}

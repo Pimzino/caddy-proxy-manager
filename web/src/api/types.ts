@@ -927,7 +927,7 @@ export interface ClusterStatus {
 
 export interface AddServerResult {
   server: ServerSummary;
-  /** Shown once: paste on the node (Settings > Cluster > Join) or run `CaddyManager.exe cluster join <token>`. */
+  /** Shown once: paste on the node (Settings > Cluster > Join) or run CaddyManager.exe cluster join <token> there with the service stopped (docs/cli.md). */
   joinToken: string;
   /** SHA-256 fingerprint of the node's HTTPS certificate when pinned. */
   fingerprint?: string | null;

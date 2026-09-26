@@ -75,7 +75,7 @@ Configure it on the primary under **Settings → Cluster → Shared storage** (i
 | Backend | Use when | Notes |
 |---|---|---|
 | **File system** | A Windows file share (UNC path) or a local path mounted everywhere | Built into Caddy. See the share guidance below. |
-| **Redis** | You already run Redis (ideally replicated) | Plugin `github.com/pberkel/caddy-storage-redis` (added to the desired plugins; nodes rebuild automatically). Optional TLS and value encryption. |
+| **Redis** | You already run a standalone Redis server | Plugin `github.com/pberkel/caddy-storage-redis` (added to the desired plugins; nodes rebuild automatically). One address (Redis Cluster and Sentinel are not supported). Optional TLS and value encryption. |
 | **Custom** | Consul, S3, Postgres, ... | Paste the storage JSON (`{"module":"...", ...}`) and add the module's plugin. |
 
 Switching from Local to File system copies the existing `certificates/`, `acme/`, `pki/` and `ocsp/` folders to the new

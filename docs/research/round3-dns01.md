@@ -30,7 +30,7 @@ Docs: https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acm
 | gandi | `bearer_token` S (req) |
 | duckdns | `api_token` S (req), `override_domain`, `resolver` |
 | godaddy | `api_token` S (req) — format "<key>:<secret>" |
-| hetzner | `api_token` S (req) — v2 module targets Hetzner Cloud DNS API (Cloud API token). Never build together with caddy-dns/he (duplicate module id). |
+| hetzner | REMOVED from the catalog (2026-09-26): caddyserver.com only builds github.com/caddy-dns/hetzner v1 (retired dns.hetzner.com API); v2 is not offered. |
 | ovh | `endpoint` (e.g. ovh-eu), `application_key`, `application_secret` S, `consumer_key` S (all req) |
 | porkbun | `api_key` S, `api_secret_key` S (both req) |
 | namecheap | `api_key` S (req), `user` (req), `api_endpoint`, `client_ip` |
