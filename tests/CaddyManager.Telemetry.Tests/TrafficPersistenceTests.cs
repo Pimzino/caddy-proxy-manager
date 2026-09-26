@@ -183,7 +183,10 @@ public sealed class TrafficPersistenceTests
         Assert.Equal(200, (await DayReport(env)).Totals.Requests);
 
         // Two documents for one bucket start (as an older build could leave behind) are summed, not an error.
-        var hour = env.Traffic.Col(BucketScale.Hour).FindById(TrafficBucketDoc.MakeId(TrafficBucketDoc.Total, Base))!;
+        var hourId = TrafficBucketDoc.MakeId(TrafficBucketDoc.Total, Base);
+        var hour = env.Traffic.Col(BucketScale.Hour).FindById(hourId);
+        Assert.True(hour is not null, $"No hour bucket {hourId}; hour buckets: " + string.Join(", ",
+            env.Traffic.Col(BucketScale.Hour).FindAll().Select(d => $"{d.Id} (start {d.Start:O}, {d.Requests} requests)")));
         hour.Id = TrafficBucketDoc.Total + "|legacy";
         env.Traffic.Col(BucketScale.Hour).Insert(hour);
         var day = await DayReport(env);
