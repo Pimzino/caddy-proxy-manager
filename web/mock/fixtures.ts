@@ -584,6 +584,7 @@ export function createState(): MockState {
     audit.push({ id: newId(), createdAt: iso(i * 5 * HOUR + 11 * MIN), updatedAt: iso(i * 5 * HOUR), userId: u.id, userName: u.name, action, objectType: type, objectName: name, objectId: newId(), details: action === 'updated' && type === 'host' ? 'Changed: upstreams, tls' : undefined, remoteIp: i % 4 === 0 ? '10.0.5.23' : '10.0.5.41' });
   }
 
+  const dnsOnly = process.env.MOCK_DNS_ONLY === '1';
   return {
     needsSetup: process.env.MOCK_SETUP === '1',
     sessionUserId: process.env.MOCK_SETUP === '1' || process.env.MOCK_ANON === '1' ? null : process.env.MOCK_ROLE === 'viewer' ? users[2].id : process.env.MOCK_ROLE === 'operator' ? users[1].id : users[0].id,
@@ -605,8 +606,9 @@ export function createState(): MockState {
       hasEabMacKey: false,
       hasAcmeIssuerJson: false,
       tlsConnectionPolicyJson: '{\n  "protocol_min": "tls1.2"\n}',
-      disableHttpChallenge: false,
-      disableTlsAlpnChallenge: false,
+      // MOCK_DNS_ONLY=1: a DNS-only server (DNS-01 by default, no inbound 80/443 challenges), as a primary may replicate it.
+      disableHttpChallenge: dnsOnly,
+      disableTlsAlpnChallenge: dnsOnly,
       httpPort: 80,
       httpsPort: 443,
       enableHttp3: false,
@@ -615,7 +617,7 @@ export function createState(): MockState {
       trustedProxies: [],
       logLevel: 'info',
       adminListen: '127.0.0.1:2019',
-      defaultAcmeChallenge: 'http',
+      defaultAcmeChallenge: dnsOnly ? 'dns' : 'http',
       dnsProvider: 'cloudflare',
       dnsProviderOptions: {},
       dnsProviderSecretFields: ['api_token'],

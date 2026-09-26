@@ -384,7 +384,7 @@ let helpers: MockHelpers | null = null;
 
 const REPLICATED = [/^\/api\/hosts(\/|$)/, /^\/api\/streams(\/|$)/, /^\/api\/access-lists(\/|$)/, /^\/api\/certificates(\/|$)/, /^\/api\/config\/caddyfile\/import(\/|$)/];
 /** CaddySettings.NodeLocalProperties (Core Models/Settings.cs). */
-const NODE_LOCAL = ['httpPort', 'httpsPort', 'publicHttpsPort', 'bindAddresses', 'adminListen', 'certificateStorePath'];
+const NODE_LOCAL = ['httpPort', 'httpsPort', 'publicHttpsPort', 'bindAddresses', 'adminListen', 'certificateStorePath', 'customAcmeRootPath'];
 
 /**
  * On a managed node, mutations of replicated resources answer 409 (ApiResults.ManagedByPrimary). PUT /api/settings/caddy

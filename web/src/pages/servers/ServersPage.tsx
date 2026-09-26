@@ -65,10 +65,16 @@ export default function ServersPage() {
         </Callout>
       )}
 
+      {servers.isError && servers.data && (
+        <Callout tone="warning" className="mb-4" title="Could not refresh the server list">
+          {errorMessage(servers.error)} Showing the last loaded values; retrying automatically.
+        </Callout>
+      )}
+
       <Card>
         {servers.isPending ? (
           <TableSkeleton rows={3} cols={7} />
-        ) : servers.isError ? (
+        ) : servers.isError && !servers.data ? (
           <div className="p-4">
             <Callout tone="danger" title="Could not load servers">
               {errorMessage(servers.error)}
@@ -152,6 +158,11 @@ function ServerRow({
             {s.name}
           </Link>
           {s.isLocal && <Badge tone="accent">This server</Badge>}
+          {s.keyRotationPending && (
+            <Badge tone="warning" title="The node could not be reached when its key was rotated: it still trusts its previous key. Retried on every contact.">
+              Key rotation pending
+            </Badge>
+          )}
         </div>
         {s.url && (
           <p className="mono truncate text-xs text-fg-subtle" title={s.url}>

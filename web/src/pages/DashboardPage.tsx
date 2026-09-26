@@ -17,7 +17,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { errorMessage } from '@/api/client';
-import { useCaddyAction, useCluster, useDashboard, useRunReadiness, useServers, useTraffic } from '@/api/hooks';
+import { useCaddyAction, useCluster, useDashboard, useIsManagedNode, useRunReadiness, useServers, useTraffic } from '@/api/hooks';
 import type { Dashboard } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
@@ -33,6 +33,8 @@ import { SeverityBadge } from './EventsPage';
 export default function DashboardPage() {
   const dash = useDashboard();
   const { canOperate } = useAuth();
+  // Hosts are replicated from the primary on a managed node (read-only there), so no "Add proxy host" shortcut.
+  const { managed } = useIsManagedNode();
   const navigate = useNavigate();
   const readiness = useRunReadiness();
   const feedback = useFeedback();
@@ -61,9 +63,11 @@ export default function DashboardPage() {
               >
                 Run readiness checks
               </Button>
-              <Button variant="primary" icon={<Plus size={14} />} onClick={() => navigate('/hosts/proxy?new=1')}>
-                Add proxy host
-              </Button>
+              {!managed && (
+                <Button variant="primary" icon={<Plus size={14} />} onClick={() => navigate('/hosts/proxy?new=1')}>
+                  Add proxy host
+                </Button>
+              )}
             </>
           )
         }
@@ -394,10 +398,14 @@ function ServersCard() {
   const cluster = useCluster();
   const list = servers.data ?? [];
   const nodes = list.filter((s) => !s.isLocal);
+  // Only servers that answer count as online: a node that has not joined yet ("pending") is neither online nor in sync.
+  const online = list.filter((s) => s.isLocal || s.status === 'online');
   const down = list.filter((s) => s.status === 'offline' || s.status === 'error');
+  const pending = nodes.filter((s) => s.status === 'pending');
   const outOfSync = nodes.filter((s) => s.status === 'online' && s.sync && !s.sync.inSync);
+  const rotation = nodes.filter((s) => s.keyRotationPending);
   const isNode = cluster.data?.role === 'node';
-  const tone: Tone = down.length ? 'danger' : outOfSync.length ? 'warning' : nodes.length ? 'success' : 'neutral';
+  const tone: Tone = down.length ? 'danger' : pending.length || outOfSync.length || rotation.length ? 'warning' : nodes.length ? 'success' : 'neutral';
   return (
     <StatCard icon={<Network size={15} />} title="Servers" to="/servers" tone={tone}>
       {servers.isPending ? (
@@ -420,13 +428,19 @@ function ServersCard() {
       ) : (
         <>
           <p className="text-lg font-semibold text-fg tabular-nums">
-            {list.length - down.length}/{list.length} <span className="text-sm font-normal text-fg-subtle">online</span>
+            {online.length}/{list.length} <span className="text-sm font-normal text-fg-subtle">online</span>
           </p>
           <p className="mt-1 truncate text-sm">
             {down.length > 0 ? (
               <span className="font-medium text-danger">{down.map((s) => s.name).join(', ')} not responding</span>
+            ) : pending.length > 0 ? (
+              <span className="font-medium text-warning">
+                {pending.map((s) => s.name).join(', ')} waiting to join
+              </span>
             ) : outOfSync.length > 0 ? (
               <span className="font-medium text-warning">{pluralize(outOfSync.length, 'node')} out of sync</span>
+            ) : rotation.length > 0 ? (
+              <span className="font-medium text-warning">Key rotation pending on {rotation.map((s) => s.name).join(', ')}</span>
             ) : (
               <span className="text-fg-subtle">Primary with {pluralize(nodes.length, 'node')}, all in sync</span>
             )}

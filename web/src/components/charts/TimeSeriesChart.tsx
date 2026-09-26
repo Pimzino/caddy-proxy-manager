@@ -15,6 +15,10 @@ export interface TimeSeriesChartProps {
   yMax?: number;
   /** Byte quantities: ticks on binary-unit boundaries. */
   bytes?: boolean;
+  /** Whole-number quantities (counts): value ticks are integers, so rounded labels never repeat or mislead. */
+  integer?: boolean;
+  /** The time axis is aligned to and labelled in UTC (data bucketed by UTC day); default: the browser's time zone. */
+  utc?: boolean;
   /** Draw a 10% wash under each line. */
   area?: boolean;
   /** Visible x range; defaults to the first and last timestamps. */
@@ -43,6 +47,8 @@ export function TimeSeriesChart({
   height = 180,
   yMax,
   bytes,
+  integer,
+  utc,
   area = true,
   xDomain,
   formatValue,
@@ -65,7 +71,7 @@ export function TimeSeriesChart({
   let dataMax = 0;
   for (const s of series) for (const v of s.values) if (v != null && v > dataMax) dataMax = v;
   const axisMax = yMax ?? dataMax;
-  const nice = bytes ? byteTicks(axisMax, 4) : valueTicks(axisMax, 4);
+  const nice = bytes ? byteTicks(axisMax, 4) : valueTicks(axisMax, 4, integer);
   // yMax is a hard ceiling (100 %, total memory): end the axis exactly there instead of at the next round number.
   const yTicks = yMax && yMax > 0 && nice.top > yMax ? [...nice.ticks.filter((t) => t < yMax * 0.9), yMax] : nice.ticks;
   const top = yMax && yMax > 0 && nice.top > yMax ? yMax : nice.top;
@@ -94,7 +100,7 @@ export function TimeSeriesChart({
   const plotW = Math.max(10, width - left - right);
   const [x0, x1] = xDomain ?? [x[0] ?? 0, x[x.length - 1] ?? 1];
   const xScale = linearScale([x0, x1 === x0 ? x0 + 1 : x1], [left, left + plotW]);
-  const { ticks: xTicks, step } = timeTicks(x0, x1, plotW);
+  const { ticks: xTicks, step } = timeTicks(x0, x1, plotW, undefined, utc);
 
   const hasData = x.length > 0 && series.some((s) => s.values.some((v) => v != null));
 
@@ -193,7 +199,7 @@ export function TimeSeriesChart({
             if (px < left - 0.5 || px > left + plotW + 0.5) return null;
             return (
               <text key={t} x={px} y={MARGIN_TOP + plotH + 15} textAnchor="middle" className="viz-tick">
-                {formatTimeTick(t, step)}
+                {formatTimeTick(t, step, utc)}
               </text>
             );
           })}

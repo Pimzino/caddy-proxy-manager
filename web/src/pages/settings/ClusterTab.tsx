@@ -2,7 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { LogIn, LogOut, Network } from 'lucide-react';
 import { errorMessage } from '@/api/client';
-import { useBinaryOverview, useCaddySettings, useCluster, useIsManagedNode, useJoinCluster, useLeaveCluster, useSaveCaddySettings } from '@/api/hooks';
+import { useQueryClient } from '@tanstack/react-query';
+import { qk, useBinaryOverview, useCaddySettings, useCluster, useIsManagedNode, useJoinCluster, useLeaveCluster, useSaveCaddySettings } from '@/api/hooks';
 import type { CaddySettings, CaddySettingsInput, ClusterRole, ClusterStatus, StorageBackend } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
@@ -261,8 +262,10 @@ function JoinForm() {
         hint={
           <>
             Paste the token shown on the primary when this server was added on its Servers page. The primary then connects to this server’s
-            management port, so allow it through the firewall. Command-line alternative (service stopped):{' '}
-            <span className="mono">CaddyManager.exe cluster join &lt;token&gt;</span>.
+            management port, so allow it through the firewall. Command-line alternative, in an elevated PowerShell:{' '}
+            <span className="mono">net stop CaddyProxyManager</span>, then{' '}
+            <span className="mono">&amp; &apos;C:\Program Files\Caddy Proxy Manager\CaddyManager.exe&apos; cluster join &apos;&lt;token&gt;&apos;</span>, then{' '}
+            <span className="mono">net start CaddyProxyManager</span>.
           </>
         }
       >
@@ -302,6 +305,7 @@ function StorageForm({ settings, role }: { settings: CaddySettings; role?: Clust
   const [submitted, setSubmitted] = useState(false);
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const save = useSaveCaddySettings();
+  const qc = useQueryClient();
   const feedback = useFeedback();
   const errors = { ...serverErrors, ...(submitted ? validateStorage(form, settings) : {}) };
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
@@ -321,6 +325,10 @@ function StorageForm({ settings, role }: { settings: CaddySettings; role?: Clust
       feedback.applied(res.apply, 'Storage settings saved and applied');
     } catch (err) {
       feedback.failed(err, { onFieldErrors: setServerErrors });
+    } finally {
+      // The membership card above shows the storage backend and its warnings from GET /api/cluster (useSaveCaddySettings
+      // refreshes the settings, not the cluster status).
+      void qc.invalidateQueries({ queryKey: qk.cluster });
     }
   };
 

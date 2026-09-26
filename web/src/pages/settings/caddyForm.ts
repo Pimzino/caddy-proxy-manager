@@ -3,6 +3,7 @@ import type { CaddySettings, CaddySettingsInput, DnsProviderInfo } from '@/api/t
 import { secretPayload } from '@/components/SecretInput';
 import { isIpv4, isIpv6, type FieldErrors } from '@/lib/validation';
 import { isDelegationName } from '../hosts/dnsDelegation';
+import { parseObject } from './pluginExamples';
 
 // Round 3 helpers shared by the Caddy tab (ACME challenge / DNS) and the Cluster tab (shared storage): both edit the
 // one CaddySettings document through PUT /api/settings/caddy.
@@ -131,6 +132,28 @@ export function validateDns(f: CaddySettingsInput, settings: CaddySettings, prov
   const od = f.dnsOverrideDomain?.trim();
   if (od && !isDelegationName(od)) e.dnsOverrideDomain = 'Enter a DNS name such as _acme-challenge.validation.example.net (no wildcard).';
   return e;
+}
+
+/** CaddySettings.NodeLocalProperties (Core Models/Settings.cs): what a managed cluster node keeps editable. */
+export const NODE_LOCAL_FIELDS = ['httpPort', 'httpsPort', 'publicHttpsPort', 'bindAddresses', 'adminListen', 'certificateStorePath', 'customAcmeRootPath'] as const;
+
+/** Only the errors of node-local fields (a managed node cannot change, and so cannot fix, the replicated ones). */
+export function nodeLocalErrors(e: FieldErrors): FieldErrors {
+  return Object.fromEntries(Object.entries(e).filter(([k]) => (NODE_LOCAL_FIELDS as readonly string[]).includes(k)));
+}
+
+/**
+ * Whether certificates can be obtained without HTTP-01 and TLS-ALPN-01 (ModelValidation: both challenges may be
+ * disabled then): DNS-01 is the default challenge with a DNS provider, or the ACME issuer JSON configures challenges.dns.
+ * null = unknown: a stored issuer JSON is write-only, so the form cannot see it (the server decides).
+ */
+export function dnsChallengeAvailable(f: CaddySettingsInput, settings: CaddySettings): boolean | null {
+  if (f.defaultAcmeChallenge === 'dns' && !!f.dnsProvider) return true;
+  const issuer = secretPayload(f.acmeIssuerJson);
+  if (issuer === undefined) return settings.hasAcmeIssuerJson ? null : false;
+  const challenges = parseObject(issuer)?.challenges;
+  const dns = challenges && typeof challenges === 'object' ? (challenges as Record<string, unknown>).dns : undefined;
+  return !!dns && typeof dns === 'object' && !Array.isArray(dns);
 }
 
 /** Client-side checks for the shared storage fields. */

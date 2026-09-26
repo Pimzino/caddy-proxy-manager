@@ -3,7 +3,9 @@
 //
 // Environment switches: MOCK_SETUP=1 (first-run setup flow), MOCK_ANON=1 (start signed out),
 // MOCK_ROLE=viewer|operator (start as a lower role), MOCK_LATENCY=ms (default 180),
-// MOCK_CLUSTER_ROLE=standalone|primary|node (default primary; see round3-settings.ts).
+// MOCK_CLUSTER_ROLE=standalone|primary|node (default primary; see round3-settings.ts),
+// MOCK_DNS_ONLY=1 (DNS-01 is the default challenge; HTTP-01 and TLS-ALPN-01 are disabled).
+// End-to-end checks of the UI against this mock: mock/e2e/run.ts.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import type {
@@ -286,9 +288,11 @@ function validateHost(s: MockState, h: SiteHostFields, id?: string) {
   if (h.tls === 'custom' && !s.certificates.some((c) => c.id === h.certificateId)) add('CertificateId', 'Certificate not found.');
   if (h.tls === 'acme' && h.acmeChallenge === 'dns' && !s.caddySettings.dnsProvider)
     add('AcmeChallenge', 'The DNS challenge needs a DNS provider. Configure one in Settings › Caddy first.');
-  // Round 3b: delegation only on hosts whose effective challenge is DNS; a custom delegation needs a valid name.
+  // Round 3b: delegation only on hosts that use the DNS challenge for at least one name (CaddyConfigGenerator.UsesDnsChallenge:
+  // effective challenge DNS, or a wildcard name with a DNS provider configured); a custom delegation needs a valid name.
   const challenge = h.acmeChallenge === 'default' ? s.caddySettings.defaultAcmeChallenge : h.acmeChallenge;
-  if ((h.dnsDelegation ?? 'default') !== 'default' && !(h.tls === 'acme' && challenge === 'dns'))
+  const usesDns = h.tls === 'acme' && (challenge === 'dns' || (!!s.caddySettings.dnsProvider && (h.domains ?? []).some((d) => d.startsWith('*.'))));
+  if ((h.dnsDelegation ?? 'default') !== 'default' && !usesDns)
     add('DnsDelegation', 'Challenge delegation applies only to hosts that use the DNS challenge.');
   if (h.dnsDelegation === 'custom') {
     const name = h.dnsOverrideDomain?.trim() ?? '';
@@ -958,6 +962,19 @@ const routes: [string, string, Handler][] = [
         errors[k] = [`Invalid JSON: ${(e as Error).message}`];
       }
     }
+    // ModelValidation: HTTP-01 and TLS-ALPN-01 may both be off only when DNS-01 can validate (default DNS challenge with a
+    // provider, or challenges.dns in the ACME issuer JSON).
+    const issuerText = acmeIssuerJson === undefined || acmeIssuerJson === null ? (s.caddySettings as { acmeIssuerJson?: string }).acmeIssuerJson : acmeIssuerJson;
+    let issuerDns: boolean;
+    try {
+      const dns = issuerText ? (JSON.parse(issuerText) as { challenges?: { dns?: unknown } }).challenges?.dns : undefined;
+      issuerDns = !!dns && typeof dns === 'object' && !Array.isArray(dns);
+    } catch {
+      issuerDns = false; // invalid JSON is reported above
+    }
+    const dnsDefault = (rest.defaultAcmeChallenge ?? s.caddySettings.defaultAcmeChallenge) === 'dns' && !!(rest.dnsProvider === undefined ? s.caddySettings.dnsProvider : rest.dnsProvider);
+    if (rest.disableHttpChallenge && rest.disableTlsAlpnChallenge && !issuerDns && !dnsDefault)
+      errors.DisableTlsAlpnChallenge = ['At least one ACME challenge (HTTP or TLS-ALPN) must stay enabled unless the DNS challenge is the default (Settings > Caddy > ACME challenge) or configured in the ACME issuer JSON.'];
     if (Object.keys(errors).length) throw new HttpError(400, 'Invalid request', 'One or more fields are invalid.', errors);
     const provider = acmeIssuerJson ? (/"name"\s*:\s*"([^"]+)"/.exec(acmeIssuerJson)?.[1] ?? null) : null;
     if (provider && !(s.binary.installed?.modules ?? []).includes(`dns.providers.${provider}`))

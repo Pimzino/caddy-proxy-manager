@@ -12,6 +12,7 @@ import type {
   CaddyStatus,
   DiskUsage,
   JobInfo,
+  RegenerateTokenResult,
   ResourceSample,
   ServerInfo,
   ServerSummary,
@@ -73,6 +74,9 @@ interface MockServer {
   fingerprint?: string;
   /** Pending servers "join" after this time. */
   joinAtMs?: number;
+  tokenIssuedMs?: number;
+  /** A key rotation did not reach the node (it was not online); cleared when it is online again. */
+  keyRotationPending?: boolean;
   hostname: string;
   fqdn: string;
   os: string;
@@ -266,9 +270,8 @@ function bucketRequests(srv: MockServer, start: number, bucket: number): number 
 
 function trafficReport(s: MockState, srv: MockServer, range: TrafficRange, host: string | null, now: number): TrafficReport {
   const { bucket, count, bucketSize } = RANGES[range];
-  // Buckets align to local time for day buckets (like the backend's day buckets) and to UTC multiples otherwise.
-  const tz = new Date(now).getTimezoneOffset() * MIN;
-  const currentStart = bucket === DAY ? Math.floor((now - tz) / DAY) * DAY + tz : Math.floor(now / bucket) * bucket;
+  // Buckets are UTC multiples of their size, like the backend's (TrafficReports.Build): day buckets start at 00:00 UTC.
+  const currentStart = Math.floor(now / bucket) * bucket;
   const firstStart = currentStart - (count - 1) * bucket;
   const enabled = s.caddySettings.trafficStatsEnabled !== false;
   const hosts = hostWeights(s);
@@ -431,6 +434,8 @@ export function round3ServersRoutes(h: MockHelpers): MockRoute[] {
         srv.lastSyncMs = now;
       }
       if (srv.status === 'online') srv.lastSeenMs = srv.id === 'local' ? now : now - (Math.floor(now / 1000) % 15) * SEC;
+      // The primary retries a pending key rotation on every contact: it succeeds once the node answers.
+      if (srv.status === 'online' && srv.keyRotationPending) srv.keyRotationPending = false;
     }
   };
 
@@ -490,6 +495,9 @@ export function round3ServersRoutes(h: MockHelpers): MockRoute[] {
               warnings: srv.syncWarnings,
             },
       addedAt: srv.addedAt,
+      fingerprint: srv.fingerprint,
+      tokenIssuedAt: srv.id === 'local' ? undefined : new Date(srv.tokenIssuedMs ?? Date.parse(srv.addedAt ?? new Date(now).toISOString())).toISOString(),
+      keyRotationPending: srv.keyRotationPending || undefined,
     };
   };
 
@@ -623,8 +631,23 @@ export function round3ServersRoutes(h: MockHelpers): MockRoute[] {
       requireRole(s, 'admin');
       const srv = find(c.params.id);
       if (srv.id === 'local') throw new HttpError(400, 'Invalid request', 'Join tokens belong to nodes.');
-      audit(s, 'server.token', srv.name, 'Join token regenerated (the previous one no longer works)');
-      return ok({ joinToken: makeToken(servers[0].name, srv.id) });
+      // Like the server (SEC-3): a node that has not joined only gets a new token; a joined node is re-keyed over the
+      // cluster channel. It acknowledges when online (rotated); otherwise the rotation stays pending and is retried.
+      const rotated = srv.status === 'pending' || srv.status === 'online';
+      srv.keyRotationPending = !rotated;
+      srv.tokenIssuedMs = Date.now();
+      audit(
+        s,
+        'server.token',
+        srv.name,
+        srv.status === 'pending'
+          ? 'Join token regenerated (the previous one no longer works)'
+          : rotated
+            ? 'Key rotated: the node confirmed the new key (the previous key and token no longer work)'
+            : 'Key rotation pending: the node was not reachable and still trusts its previous key (retried on every contact)',
+      );
+      const result: RegenerateTokenResult = { joinToken: makeToken(servers[0].name, srv.id), rotated };
+      return ok(result);
     }],
 
     ['DELETE', '/api/servers/:id', (c, s) => {

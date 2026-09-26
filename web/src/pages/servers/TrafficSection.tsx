@@ -23,7 +23,7 @@ import { Button, Callout, Card, CardHeader, EmptyState, Select, Skeleton, Table,
 import { cn } from '@/lib/cn';
 import { formatBytes, formatDateTime, formatNumber, formatRelative } from '@/lib/format';
 import { useNow } from '@/lib/useNow';
-import { formatBucket } from './shared';
+import { bucketClockNote, formatBucket } from './shared';
 
 export const RANGE_OPTIONS: { value: TrafficRange; label: string; long: string }[] = [
   { value: 'hour', label: '1 h', long: 'the last hour' },
@@ -154,9 +154,10 @@ export function TrafficSection({
             ))}
           </Select>
         </div>
-        {d?.enabled && d.lastIngestAt && (
-          <span className="ml-auto text-xs text-fg-subtle" title={formatDateTime(d.lastIngestAt)}>
-            Updated {formatRelative(d.lastIngestAt, now)}
+        {d?.enabled && (
+          <span className="ml-auto flex flex-wrap items-center gap-x-3 text-xs text-fg-subtle">
+            <span>{bucketClockNote(d.bucketSize)}</span>
+            {d.lastIngestAt && <span title={formatDateTime(d.lastIngestAt)}>Updated {formatRelative(d.lastIngestAt, now)}</span>}
           </span>
         )}
       </div>
@@ -232,11 +233,13 @@ function TrafficBody({
   const [hover, setHover] = useState<number | null>(null);
   const x = d.series.map((p) => Date.parse(p.at));
   const fmtX = (ms: number) => formatBucket(ms, d.bucketSize);
+  // Day buckets start at 00:00 UTC: their axis is aligned to and labelled in UTC (minute/hour buckets: local time).
+  const utc = d.bucketSize === 'day';
   const t = d.totals;
   const errors = t.status4xx + t.status5xx;
   const rangeText = RANGE_OPTIONS.find((o) => o.value === range)?.long ?? '';
   const scope = host ? ` for ${host}` : '';
-  const perBucket = d.bucketSize === 'minute' ? 'per minute' : d.bucketSize === 'hour' ? 'per hour' : 'per day';
+  const perBucket = d.bucketSize === 'minute' ? 'per minute' : d.bucketSize === 'hour' ? 'per hour' : 'per UTC day';
   const xDomain: [number, number] = [Date.parse(d.from), Date.parse(d.to)];
 
   const requests: ChartSeries = { id: 'requests', label: 'Requests', color: 'var(--viz-1)', values: d.series.map((p) => p.requests) };
@@ -302,6 +305,8 @@ function TrafficBody({
             x={x}
             series={[requests]}
             xDomain={xDomain}
+            integer
+            utc={utc}
             formatValue={formatCount}
             formatX={fmtX}
             ariaLabel={`Requests ${perBucket} over ${rangeText}${scope}`}
@@ -319,6 +324,8 @@ function TrafficBody({
             x={x}
             series={[clients]}
             xDomain={xDomain}
+            integer
+            utc={utc}
             formatValue={formatCount}
             formatX={fmtX}
             ariaLabel={`Unique clients ${perBucket} over ${rangeText}${scope}`}
@@ -338,6 +345,7 @@ function TrafficBody({
             series={bytes}
             xDomain={xDomain}
             bytes
+            utc={utc}
             formatValue={formatBytesShort}
             formatX={fmtX}
             ariaLabel={`Data in and out ${perBucket} over ${rangeText}${scope}`}
@@ -355,6 +363,8 @@ function TrafficBody({
           <StackedColumnChart
             x={x}
             series={classes}
+            integer
+            utc={utc}
             formatValue={formatCount}
             formatX={fmtX}
             ariaLabel={`Responses by status class ${perBucket} over ${rangeText}${scope}`}

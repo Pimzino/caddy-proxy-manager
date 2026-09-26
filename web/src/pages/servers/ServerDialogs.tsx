@@ -2,9 +2,10 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { ExternalLink, KeyRound, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/api/client';
-import { useAddServer, useRegenerateServerToken, useRemoveServer, useSyncServer, useUpdateServer } from '@/api/hooks';
-import type { AddServerResult, ServerSummary } from '@/api/types';
+import { qk, useAddServer, useRegenerateServerToken, useRemoveServer, useSyncServer, useUpdateServer } from '@/api/hooks';
+import type { AddServerResult, RegenerateTokenResult, ServerSummary } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
 import { Button, Callout, Checkbox, Dialog, Field, Input, useConfirm, useToast, type MenuItem } from '@/components/ui';
@@ -260,6 +261,23 @@ function EditServerDialog({ server, onClose }: { server: ServerSummary; onClose:
   );
 }
 
+/** Result of rotating the key of a node that already joined (RegenerateTokenResult.rotated). */
+function KeyRotationOutcome({ name, rotated }: { name: string; rotated: boolean }) {
+  const node = <strong className="font-medium text-fg">{name}</strong>;
+  return rotated ? (
+    <Callout tone="success" title={`${name} now uses the new key`}>
+      {node} confirmed the switch: its previous key and the previous join token no longer work. Nothing needs to be done on {node}.
+      Keep the token below only in case it has to join again.
+    </Callout>
+  ) : (
+    <Callout tone="warning" title={`Key rotation pending — ${name} could not be reached`}>
+      Until this server reaches {node}, it still trusts its previous key, so the previous join token keeps working there. The switch is
+      retried automatically on every contact, and the Servers page shows “Key rotation pending” until it succeeds. If {node} will not be
+      reachable soon, join it again with the token below, or remove it and run <span className="mono text-fg">cluster leave</span> on it.
+    </Callout>
+  );
+}
+
 /**
  * Actions on a server (row menu on the Servers page, header menu on the detail page) and the dialogs
  * they open. Role gating: Sync now = operator; Regenerate token, Edit, Remove = admin.
@@ -274,7 +292,8 @@ export function useServerActions(opts: { onRemoved?: () => void } = {}) {
   const regen = useRegenerateServerToken();
   const remove = useRemoveServer();
   const [editing, setEditing] = useState<ServerSummary | null>(null);
-  const [token, setToken] = useState<{ server: ServerSummary; token: string } | null>(null);
+  const [token, setToken] = useState<{ server: ServerSummary; result: RegenerateTokenResult; joined: boolean } | null>(null);
+  const qc = useQueryClient();
 
   const syncNow = (s: ServerSummary) =>
     sync.mutate(s.id, {
@@ -286,26 +305,38 @@ export function useServerActions(opts: { onRemoved?: () => void } = {}) {
     });
 
   const regenerate = async (s: ServerSummary) => {
+    const joined = s.status !== 'pending';
     const ok = await confirm({
-      title: 'Create a new join token?',
-      message: `The current join token of ${s.name} stops working. A node that already joined keeps working only if it is re-joined with the new token.`,
-      confirmLabel: 'Create new token',
+      title: joined ? `Rotate the key of ${s.name}?` : 'Create a new join token?',
+      message: joined
+        ? `This creates a new join token and switches ${s.name} to the new key. Its current key and the previous join token stop working as soon as ${s.name} confirms the switch; if it cannot be reached now, the switch is retried on every contact.`
+        : `The current join token of ${s.name} stops working. Use the new token to join it.`,
+      confirmLabel: joined ? 'Rotate key' : 'Create new token',
       danger: true,
     });
     if (!ok) return;
     regen.mutate(s.id, {
-      onSuccess: (r) => setToken({ server: s, token: r.joinToken }),
-      onError: (err) => feedback.failed(err, { title: 'Could not create a join token' }),
+      onSuccess: (r) => setToken({ server: s, result: r, joined }),
+      onError: (err) => feedback.failed(err, { title: joined ? `Could not rotate the key of ${s.name}` : 'Could not create a join token' }),
+      // keyRotationPending of the server changes with the result.
+      onSettled: () => void qc.invalidateQueries({ queryKey: qk.servers }),
     });
   };
 
   const removeServer = async (s: ServerSummary) => {
+    const unreachable = s.status === 'offline' || s.status === 'error';
     const ok = await confirm({
       title: `Remove ${s.name}?`,
       message: (
         <>
           This server stops managing <strong className="font-medium text-fg">{s.name}</strong> and asks it to leave the cluster. The
           node keeps serving its last configuration as a standalone server. Its statistics are no longer shown here.
+          {unreachable && (
+            <span className="mt-2 block">
+              {s.name} is not reachable now, so it cannot be told to leave: it keeps trusting this cluster’s key until you run{' '}
+              <span className="mono text-fg">CaddyManager.exe cluster leave</span> on it (service stopped).
+            </span>
+          )}
         </>
       ),
       confirmLabel: 'Remove server',
@@ -326,7 +357,7 @@ export function useServerActions(opts: { onRemoved?: () => void } = {}) {
     return [
       { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => navigate(`/servers/${encodeURIComponent(s.id)}`), hidden: !includeOpen },
       { label: 'Sync now', icon: <RefreshCw size={14} />, onSelect: () => syncNow(s), hidden: !node || !canOperate, disabled: s.status === 'pending' },
-      { label: 'Regenerate join token', icon: <KeyRound size={14} />, onSelect: () => void regenerate(s), hidden: !node || !isAdmin },
+      { label: s.status === 'pending' ? 'Regenerate join token' : 'Rotate key (new join token)', icon: <KeyRound size={14} />, onSelect: () => void regenerate(s), hidden: !node || !isAdmin },
       { label: 'Edit', icon: <Pencil size={14} />, onSelect: () => setEditing(s), hidden: !node || !isAdmin },
       ...(node && isAdmin ? (['separator'] as MenuItem[]) : []),
       { label: 'Remove', icon: <Trash2 size={14} />, danger: true, onSelect: () => void removeServer(s), hidden: !node || !isAdmin },
@@ -341,14 +372,17 @@ export function useServerActions(opts: { onRemoved?: () => void } = {}) {
           open
           onClose={() => setToken(null)}
           size="lg"
-          title={`New join token for ${token.server.name}`}
+          title={token.joined ? `New key for ${token.server.name}` : `New join token for ${token.server.name}`}
           footer={
             <Button variant="primary" onClick={() => setToken(null)}>
               Done
             </Button>
           }
         >
-          <JoinTokenPanel serverName={token.server.name} token={token.token} />
+          <div className="flex flex-col gap-4">
+            {token.joined && <KeyRotationOutcome name={token.server.name} rotated={token.result.rotated} />}
+            <JoinTokenPanel serverName={token.server.name} token={token.result.joinToken} fingerprint={token.joined ? undefined : token.server.fingerprint} rejoin={token.joined} />
+          </div>
         </Dialog>
       )}
     </>

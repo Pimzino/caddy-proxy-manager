@@ -832,7 +832,7 @@ function DnsDelegationField({
   const s = settings.data;
   if (!s) return null;
   const dns = usesDnsChallenge(form, s);
-  // Wildcard names of an HTTP-01 host switch to DNS-01 on their own and use the default delegation.
+  // Wildcard names of an HTTP-01 host switch to DNS-01 on their own; the host's delegation applies to them.
   const wildcardsOnly = !dns && dnsChallengeDomains(form, s).length > 0;
   if (!dns && !wildcardsOnly) return null;
 
@@ -850,49 +850,45 @@ function DnsDelegationField({
 
   return (
     <div className="flex flex-col gap-4 rounded-md border border-border p-4">
-      {dns ? (
-        <>
-          <Field label="Challenge delegation (CNAME)" error={errors.dnsDelegation} hint={DELEGATION_HINT[form.dnsDelegation]}>
-            <Select
-              value={form.dnsDelegation}
-              disabled={locked}
-              className="max-w-md"
-              onChange={(e) => {
-                const v = e.target.value as SiteHostFields['dnsDelegation'];
-                set('dnsDelegation', v);
-                if (v === 'custom' && !form.dnsOverrideDomain) set('dnsOverrideDomain', defaultName ?? '');
-              }}
-            >
-              <option value="default">Use default ({defaultName ?? 'none set'})</option>
-              <option value="off">Off — use each domain’s own zone</option>
-              <option value="custom">Custom name</option>
-            </Select>
-          </Field>
-          {form.dnsDelegation === 'custom' && (
-            <Field
-              label="Delegation name"
-              required
-              error={errors.dnsOverrideDomain}
-              hint="A name in a zone the DNS provider token can edit, for example _acme-challenge.shop.validation.example.net."
-            >
-              <Input
-                mono
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="_acme-challenge.shop.validation.example.net"
-                value={form.dnsOverrideDomain ?? ''}
-                onChange={(e) => set('dnsOverrideDomain', e.target.value)}
-                disabled={locked}
-              />
-            </Field>
-          )}
-        </>
-      ) : (
+      {wildcardsOnly && (
         <p className="text-sm text-fg-muted">
-          Wildcard names use DNS-01{defaultName ? ' with the default delegation name' : ''}. The other names keep HTTP-01 / TLS-ALPN-01.
+          Wildcard names use DNS-01; choose their delegation below. The other names keep HTTP-01 / TLS-ALPN-01.
         </p>
       )}
-
+      <Field label="Challenge delegation (CNAME)" error={errors.dnsDelegation} hint={DELEGATION_HINT[form.dnsDelegation]}>
+        <Select
+          value={form.dnsDelegation}
+          disabled={locked}
+          className="max-w-md"
+          onChange={(e) => {
+            const v = e.target.value as SiteHostFields['dnsDelegation'];
+            set('dnsDelegation', v);
+            if (v === 'custom' && !form.dnsOverrideDomain) set('dnsOverrideDomain', defaultName ?? '');
+          }}
+        >
+          <option value="default">Use default ({defaultName ?? 'none set'})</option>
+          <option value="off">Off — use each domain’s own zone</option>
+          <option value="custom">Custom name</option>
+        </Select>
+      </Field>
+      {form.dnsDelegation === 'custom' && (
+        <Field
+          label="Delegation name"
+          required
+          error={errors.dnsOverrideDomain}
+          hint="A name in a zone the DNS provider token can edit, for example _acme-challenge.shop.validation.example.net."
+        >
+          <Input
+            mono
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="_acme-challenge.shop.validation.example.net"
+            value={form.dnsOverrideDomain ?? ''}
+            onChange={(e) => set('dnsOverrideDomain', e.target.value)}
+            disabled={locked}
+          />
+        </Field>
+      )}
       {records.length > 0 ? (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-fg-muted">

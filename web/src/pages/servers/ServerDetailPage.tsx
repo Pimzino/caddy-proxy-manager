@@ -60,7 +60,9 @@ export default function ServerDetailPage() {
   const navigate = useNavigate();
 
   if (server.isPending) return <LoadingBlock label="Loading server…" />;
-  if (server.isError)
+  // A failed background refresh keeps the last data (TanStack Query keeps `data` on error): the page, its live charts and
+  // an open job dialog stay; only a first load that fails (unknown id, no access) replaces the page.
+  if (server.isError && !server.data)
     return (
       <>
         <BackLink />
@@ -72,7 +74,7 @@ export default function ServerDetailPage() {
         />
       </>
     );
-  return <ServerDetail key={id} s={server.data} />;
+  return <ServerDetail key={id} s={server.data} refreshError={server.isError ? server.error : null} />;
 }
 
 function BackLink() {
@@ -83,7 +85,7 @@ function BackLink() {
   );
 }
 
-function ServerDetail({ s }: { s: ServerSummary }) {
+function ServerDetail({ s, refreshError }: { s: ServerSummary; refreshError: unknown }) {
   const navigate = useNavigate();
   const now = useNow(10_000);
   const { canOperate } = useAuth();
@@ -132,6 +134,18 @@ function ServerDetail({ s }: { s: ServerSummary }) {
       />
 
       <div className="flex flex-col gap-4">
+        {refreshError != null && (
+          <Callout tone="warning" title="Could not refresh this server">
+            {errorMessage(refreshError)} Showing the last loaded data; retrying automatically.
+          </Callout>
+        )}
+        {s.keyRotationPending && (
+          <Callout tone="warning" title="Key rotation pending">
+            {s.name} could not be reached when its key was rotated, so it still trusts its previous key (and the previous join token). The
+            switch is retried on every contact. If {s.name} will not be reachable soon, join it again with a new token (menu above), or
+            remove it and run <span className="mono text-fg">cluster leave</span> on it.
+          </Callout>
+        )}
         {s.status === 'offline' && (
           <Callout tone="danger" title={`${s.name} is not responding`}>
             {s.lastError ?? 'The primary could not reach it.'} Last seen {s.lastSeenAt ? formatRelative(s.lastSeenAt, now) : 'never'}. It keeps serving
@@ -145,8 +159,8 @@ function ServerDetail({ s }: { s: ServerSummary }) {
         )}
         {s.status === 'pending' && (
           <Callout tone="info" title="Waiting for the node to join">
-            Run the join command on {s.name} (or paste the token in its Settings › Cluster). Lost the token? Create a new one from the menu
-            above.
+            Paste the join token in {s.name}’s Settings › Cluster, or run the join commands on it in an elevated PowerShell or Command
+            Prompt (they stop the service, join and start it again). Lost the token? Create a new one from the menu above.
           </Callout>
         )}
 
@@ -323,7 +337,7 @@ function LiveSection({ s }: { s: ServerSummary }) {
             <TimeSeriesChart {...common} series={[rps]} formatValue={formatRate} ariaLabel={`Requests per second on ${s.name}, ${span}`} />
           </ChartCard>
           <ChartCard title="Active connections" description={`established on the HTTP/HTTPS ports · ${span}`} table={seriesTable(x, [conns], formatSampleTime, formatCount)}>
-            <TimeSeriesChart {...common} series={[conns]} formatValue={formatCount} ariaLabel={`Active connections on ${s.name}, ${span}`} emptyText="Not available while Caddy is stopped" />
+            <TimeSeriesChart {...common} series={[conns]} integer formatValue={formatCount} ariaLabel={`Active connections on ${s.name}, ${span}`} emptyText="Not available while Caddy is stopped" />
           </ChartCard>
           <ChartCard
             title="Process memory"

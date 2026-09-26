@@ -64,6 +64,11 @@ over-long Host headers cannot create new entries or make the statistics database
 Buckets are UTC. The newest point is the bucket that is still filling, so "24 hours" covers the current hour and the
 23 before it. Buckets without traffic show as zero.
 
+How the charts show the time: minute and hour buckets in the browser's time zone (named next to the range selector,
+e.g. *Times in your time zone (Europe/London, UTC+01:00)*); day buckets as **UTC calendar days** — each 30-day point
+covers 00:00–24:00 UTC and is labelled with its UTC date, e.g. *Fri, Sep 25 (UTC)*, and the 30-day axis ticks are at
+UTC midnight. West of UTC a day bucket therefore starts on the previous local evening (00:00 UTC = 20:00 EDT).
+
 ## Accuracy
 
 - Requests, data in/out, status counts and durations are **exact**.

@@ -138,20 +138,25 @@ export function toFields(h: SiteHost): SiteHostFields {
   };
 }
 
+const isWildcard = (d: string) => d.trim().startsWith('*.');
+
 /**
- * True when delegation settings apply to the host: ACME with the DNS challenge as its effective challenge. Unknown settings
- * (not loaded) count a "default" challenge as DNS so nothing is dropped.
+ * True when the host may choose a delegation, mirroring CaddyConfigGenerator.UsesDnsChallenge: ACME, and either its
+ * effective challenge is DNS, or it has a wildcard name and a DNS provider is configured (wildcards always use DNS-01
+ * then, so an HTTP-01 host keeps the delegation of its wildcard names). Unknown settings (not loaded) count a "default"
+ * challenge and any wildcard as DNS, so nothing is dropped.
  */
-export function delegationApplies(h: Pick<SiteHostFields, 'tls' | 'acmeChallenge'>, settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>): boolean {
+export function delegationApplies(h: Pick<SiteHostFields, 'tls' | 'acmeChallenge' | 'domains'>, settings?: DelegationSettings): boolean {
   if (h.tls !== 'acme') return false;
-  return settings ? effectiveChallenge(h, settings) === 'dns' : h.acmeChallenge !== 'http';
+  if (!settings) return h.acmeChallenge !== 'http' || h.domains.some(isWildcard);
+  return effectiveChallenge(h, settings) === 'dns' || (!!settings.dnsProvider && h.domains.some(isWildcard));
 }
 
 /**
  * Normalises the form before sending (trims, empty strings → null for optional values). With the Caddy settings, delegation
- * is reset on hosts whose effective challenge is not DNS (the server rejects it there).
+ * is reset on hosts that use no DNS challenge at all (the server rejects it there).
  */
-export function toPayload(h: SiteHostFields, settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>): SiteHostFields {
+export function toPayload(h: SiteHostFields, settings?: DelegationSettings): SiteHostFields {
   const delegation = delegationApplies(h, settings);
   const trimOrNull = (s: string | null | undefined) => (s && s.trim() ? s.trim() : null);
   const cleanUpstreams = (list: Upstream[]) =>
@@ -207,7 +212,7 @@ export interface HostValidationContext {
   /** Settings › Caddy has a DNS provider (false = not configured; undefined = settings not loaded yet). */
   dnsProviderConfigured?: boolean;
   /** Settings › Caddy (undefined = not loaded yet): decides whether the delegation fields apply. */
-  settings?: Pick<DelegationSettings, 'defaultAcmeChallenge'>;
+  settings?: DelegationSettings;
 }
 
 export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {}): FieldErrors {

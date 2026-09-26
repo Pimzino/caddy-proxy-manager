@@ -41,7 +41,7 @@ import { formatDateTime, formatDuration } from '@/lib/format';
 import { isAbsoluteHttpUrl, isIpv4, isIpv6, isValidCidr, isValidEmail, isValidPort, jsonObjectError, type FieldErrors } from '@/lib/validation';
 import { AcmeChallengeSection, DNS_FIELDS } from './AcmeChallengeSection';
 import { BackupTab } from './BackupTab';
-import { caddyFormInput, round3Payload, validateDns } from './caddyForm';
+import { caddyFormInput, dnsChallengeAvailable, nodeLocalErrors, round3Payload, validateDns } from './caddyForm';
 import { ClusterTab } from './ClusterTab';
 import { LdapTab } from './LdapTab';
 import { HiddenValue, PLUGIN_FIELDS, PluginsAdvancedSection, validatePluginFields } from './PluginsAdvancedSection';
@@ -131,7 +131,15 @@ function isValidBindAddress(v: string) {
   return isIpv4(v) || isIpv6(v.replace(/^\[(.*)\]$/, '$1'));
 }
 
-function validateCaddy(f: CaddySettingsInput): FieldErrors {
+const NO_CHALLENGE_TEXT =
+  'Keep HTTP-01 or TLS-ALPN-01 enabled, or make DNS-01 (with a DNS provider) the default challenge under ACME challenge below.';
+
+/** Both HTTP-01 and TLS-ALPN-01 are off and nothing else can validate certificates (mirrors ModelValidation). */
+function noChallengeLeft(f: CaddySettingsInput, settings: CaddySettings): boolean {
+  return f.disableHttpChallenge && f.disableTlsAlpnChallenge && dnsChallengeAvailable(f, settings) === false;
+}
+
+function validateCaddy(f: CaddySettingsInput, settings: CaddySettings): FieldErrors {
   const e: FieldErrors = {};
   if (f.acmeEmail && !isValidEmail(f.acmeEmail)) e.acmeEmail = 'Enter a valid e-mail address or leave empty.';
   if (f.acmeCa === 'custom' && !isAbsoluteHttpUrl(f.customAcmeDirectory ?? '')) e.customAcmeDirectory = 'Enter the ACME directory URL, e.g. https://ca.corp.local/acme/acme/directory.';
@@ -143,8 +151,7 @@ function validateCaddy(f: CaddySettingsInput): FieldErrors {
   if (!/^(\[[0-9a-f:]+\]|[a-z0-9.-]+):\d{1,5}$/i.test(f.adminListen.trim())) e.adminListen = 'Use host:port, e.g. 127.0.0.1:2019.';
   const jsonErr = jsonObjectError(f.serverOptionsJson);
   if (jsonErr) e.serverOptionsJson = jsonErr;
-  if (f.disableHttpChallenge && f.disableTlsAlpnChallenge)
-    e.disableTlsAlpnChallenge = 'Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.';
+  if (noChallengeLeft(f, settings)) e.disableTlsAlpnChallenge = NO_CHALLENGE_TEXT;
   if (!!f.eabKeyId?.trim() && f.eabMacKey === '') e.eabKeyId = 'External account binding needs both the key ID and the HMAC key.';
   return { ...e, ...validatePluginFields(f) };
 }
@@ -168,7 +175,7 @@ function Replicated({ locked, children }: { locked: boolean; children: ReactNode
 
 function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   const { isAdmin } = useAuth();
-  // On a managed cluster node only CaddySettings.NodeLocalProperties (listeners, bind addresses, admin API address,
+  // On a managed cluster node only CaddySettings.NodeLocalProperties (listeners, bind addresses, admin API address, custom CA root path,
   // certificate store path) are editable; everything else is replicated from the primary.
   const { managed, primaryName } = useIsManagedNode();
   const providers = useDnsProviders();
@@ -178,7 +185,10 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const save = useSaveCaddySettings();
   const feedback = useFeedback();
-  const validate = (f: CaddySettingsInput): FieldErrors => ({ ...validateCaddy(f), ...(managed ? {} : validateDns(f, settings, providers.data)) });
+  // A managed node only checks its node-local fields: the replicated ones come from the primary, which validated them, and
+  // could not be corrected here anyway.
+  const validate = (f: CaddySettingsInput): FieldErrors =>
+    managed ? nodeLocalErrors(validateCaddy(f, settings)) : { ...validateCaddy(f, settings), ...validateDns(f, settings, providers.data) };
   const errors = { ...serverErrors, ...(submitted ? validate(form) : {}) };
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const set = <K extends keyof CaddySettingsInput>(k: K, v: CaddySettingsInput[K]) => {
@@ -205,6 +215,7 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
           bindAddresses: form.bindAddresses,
           adminListen: form.adminListen.trim(),
           certificateStorePath: form.certificateStorePath?.trim() || null,
+          customAcmeRootPath: form.customAcmeRootPath?.trim() || null,
         });
         feedback.applied(res.apply, 'Settings saved and applied');
         return;
@@ -241,8 +252,8 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
           <UnplacedErrors errors={errors} fields={CADDY_FIELDS} />
           {managed && (
             <Callout tone="info" className="mb-5" title={`Read-only on this node — managed by ${primaryName || 'the cluster primary'}`}>
-              Caddy settings are replicated from the primary; change them there. Ports, bind addresses, the admin API address and the certificate
-              store path belong to this server and stay editable.
+              Caddy settings are replicated from the primary; change them there. Ports, bind addresses, the admin API address, the certificate
+              store path and the custom CA’s root certificate path belong to this server and stay editable.
             </Callout>
           )}
           <FormSection
@@ -263,15 +274,22 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 </Select>
               </Field>
               {form.acmeCa === 'custom' && (
-                <>
-                  <Field label="ACME directory URL" required error={errors.customAcmeDirectory}>
-                    <Input mono type="url" value={form.customAcmeDirectory ?? ''} onChange={(e) => set('customAcmeDirectory', e.target.value)} />
-                  </Field>
-                  <Field label="CA root certificate (path)" error={errors.customAcmeRootPath} hint="PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.">
-                    <Input mono placeholder="C:\ProgramData\pki\root.pem" value={form.customAcmeRootPath ?? ''} onChange={(e) => set('customAcmeRootPath', e.target.value)} />
-                  </Field>
-                </>
+                <Field label="ACME directory URL" required error={errors.customAcmeDirectory}>
+                  <Input mono type="url" value={form.customAcmeDirectory ?? ''} onChange={(e) => set('customAcmeDirectory', e.target.value)} />
+                </Field>
               )}
+            </Replicated>
+            {/* A local file path: node-local (CaddySettings.NodeLocalProperties), editable on a managed node. */}
+            {form.acmeCa === 'custom' && (
+              <Field
+                label="CA root certificate (path)"
+                error={errors.customAcmeRootPath}
+                hint={`PEM file used to trust the custom CA’s HTTPS endpoint, if it is not publicly trusted.${managed ? ' Belongs to this server.' : ''}`}
+              >
+                <Input mono placeholder="C:\ProgramData\pki\root.pem" value={form.customAcmeRootPath ?? ''} onChange={(e) => set('customAcmeRootPath', e.target.value)} />
+              </Field>
+            )}
+            <Replicated locked={managed}>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="EAB key ID" error={errors.eabKeyId} hint="External account binding (ZeroSSL, some commercial and private CAs).">
                   <Input mono autoComplete="off" value={form.eabKeyId ?? ''} onChange={(e) => set('eabKeyId', e.target.value)} />
@@ -282,10 +300,8 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
               </div>
               <SwitchField label="Disable HTTP-01 challenge" description="Use when port 80 is not reachable from the Internet." checked={form.disableHttpChallenge} onChange={(v) => set('disableHttpChallenge', v)} />
               <SwitchField label="Disable TLS-ALPN-01 challenge" description="Use when port 443 is behind a TLS-terminating load balancer." checked={form.disableTlsAlpnChallenge} onChange={(v) => set('disableTlsAlpnChallenge', v)} />
-              {form.disableHttpChallenge && form.disableTlsAlpnChallenge && (
-                <Callout tone={errors.disableTlsAlpnChallenge ? 'danger' : 'warning'}>
-                  Keep at least one challenge enabled: Caddy needs HTTP-01 or TLS-ALPN-01 to obtain ACME certificates.
-                </Callout>
+              {!managed && noChallengeLeft(form, settings) && (
+                <Callout tone={errors.disableTlsAlpnChallenge ? 'danger' : 'warning'}>{NO_CHALLENGE_TEXT}</Callout>
               )}
             </Replicated>
           </FormSection>

@@ -14,6 +14,8 @@ export function StackedColumnChart({
   series,
   height = 180,
   bucketMs,
+  integer,
+  utc,
   formatValue,
   formatX,
   ariaLabel,
@@ -27,6 +29,10 @@ export function StackedColumnChart({
   height?: number;
   /** Bucket width in ms (defaults to the spacing of `x`). */
   bucketMs?: number;
+  /** Whole-number values (counts): value ticks are integers, so rounded labels never repeat or mislead. */
+  integer?: boolean;
+  /** The time axis is aligned to and labelled in UTC (buckets of UTC days); default: the browser's time zone. */
+  utc?: boolean;
   formatValue: (v: number) => string;
   formatX: (ms: number) => string;
   ariaLabel: string;
@@ -38,7 +44,7 @@ export function StackedColumnChart({
 
   const n = x.length;
   const totals = x.map((_, i) => series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));
-  const { ticks, top } = valueTicks(Math.max(0, ...totals), 4);
+  const { ticks, top } = valueTicks(Math.max(0, ...totals), 4, integer);
   const left = Math.max(28, ...ticks.map((t) => labelWidth(formatValue(t)))) + 8;
   const right = 10;
   const plotW = Math.max(10, width - left - right);
@@ -51,7 +57,7 @@ export function StackedColumnChart({
   const barW = Math.max(1, Math.min(24, band * 0.72, band - GAP));
   const colX = (i: number) => left + i * band + (band - barW) / 2;
   const xScale = linearScale([x0, x1], [left, left + plotW]);
-  const { ticks: xTicks, step } = timeTicks(x0, x1, plotW);
+  const { ticks: xTicks, step } = timeTicks(x0, x1, plotW, undefined, utc);
   const hasData = totals.some((t) => t > 0);
 
   const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
@@ -110,7 +116,7 @@ export function StackedColumnChart({
             if (px < left - 0.5 || px > left + plotW + 0.5) return null;
             return (
               <text key={t} x={px} y={MARGIN_TOP + plotH + 15} textAnchor="middle" className="viz-tick">
-                {formatTimeTick(t, step)}
+                {formatTimeTick(t, step, utc)}
               </text>
             );
           })}
