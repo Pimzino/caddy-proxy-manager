@@ -35,6 +35,8 @@ public static class PlatformCli
                 case "install": return await InstallAsync(rest);
                 case "uninstall": return await UninstallAsync(rest);
                 case "service-status": return await ServiceStatusAsync();
+                case "caddy": return await ServiceVerbAsync("caddy", rest);
+                case "manager": return await ServiceVerbAsync("manager", rest);
                 case "uninstall-caddy-service": return await UninstallCaddyServiceAsync();
                 case "configure-service": return await ConfigureServiceAsync();
                 case "configure": return Configure(rest);
@@ -76,6 +78,14 @@ public static class PlatformCli
                                     --purge also deletes all data in %ProgramData%\CaddyProxyManager (database,
                                     certificates, Caddy storage, logs).
               service-status        Show the state of both services.
+              caddy start|stop|restart [--message-file PATH]
+                                    Start, stop or restart Caddy. Goes through the running manager (audited under your
+                                    Windows name; a stop is respected by the Caddy watchdog), or straight to the
+                                    '{AppPaths.CaddyServiceName}' service when the manager is not running. Requires an elevated prompt.
+              manager start|stop|restart [--message-file PATH]
+                                    Start, stop or restart the manager service '{AppPaths.ManagerServiceName}' (the web UI). Caddy
+                                    keeps serving while the manager is stopped. Requires an elevated prompt.
+                                    --message-file writes the one-line result there (used by the tray companion).
               reset-password        Reset a UI user's password (handled by the Ops module).
               version               Print the version.
               help                  Show this help.
@@ -157,6 +167,7 @@ public static class PlatformCli
         {
             Console.WriteLine($"  Running from {installDir}; program files left in place");
         }
+        InstallTray(Path.GetDirectoryName(source)!, installDir);
 
         // 3. Data directory + settings (the database is opened directly while the service is stopped)
         var paths = new AppPaths();
@@ -479,6 +490,7 @@ public static class PlatformCli
         }
 
         if (!RemoveEventLogSource()) failures++;
+        RemoveTray();
 
         var paths = new AppPaths();
         if (purge)
@@ -653,6 +665,118 @@ public static class PlatformCli
             Console.WriteLine("Caddy binary:   not installed");
         }
         return allOk ? 0 : 3;
+    }
+
+    // ------------------------------------------------------------------ tray companion (zip installs; the MSI does its own)
+
+    private const string RunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+
+    /// <summary>Copies CaddyManagerTray.exe (when it ships next to this exe) and starts it for every user at sign-in.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void InstallTray(string sourceDir, string installDir)
+    {
+        var source = Path.Combine(sourceDir, AppPaths.TrayExeName);
+        var target = Path.Combine(installDir, AppPaths.TrayExeName);
+        if (!File.Exists(source) && !File.Exists(target)) return;
+        if (File.Exists(source) && !string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+        {
+            StopTrayProcesses(); // a running tray locks its exe
+            File.Copy(source, target, overwrite: true);
+        }
+        using var run = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(RunKey);
+        run.SetValue(AppPaths.TrayRunValue, $"\"{target}\"", Microsoft.Win32.RegistryValueKind.String);
+        Console.WriteLine($"  Tray icon: {target}, starts at every sign-in (the next sign-in, or run it now)");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RemoveTray()
+    {
+        try
+        {
+            using var run = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(RunKey, writable: true);
+            if (run?.GetValue(AppPaths.TrayRunValue) is not null)
+            {
+                run.DeleteValue(AppPaths.TrayRunValue);
+                Console.WriteLine("Removed the tray icon from sign-in.");
+            }
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+        {
+            Console.Error.WriteLine($"ERROR removing the tray sign-in entry: {ex.Message}");
+        }
+        StopTrayProcesses();
+    }
+
+    /// <summary>Ends the tray in every session (it holds no state).</summary>
+    private static void StopTrayProcesses()
+    {
+        foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(AppPaths.TrayExeName)))
+        {
+            using (p)
+            {
+                try { p.Kill(); p.WaitForExit(5000); }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ caddy / manager start|stop|restart
+
+    private static async Task<int> ServiceVerbAsync(string target, string[] args)
+    {
+        string? action = null, messageFile = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i].Equals("--message-file", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) messageFile = args[++i];
+            else if (action is null && LocalControl.CaddyActions.Contains(args[i].ToLowerInvariant())) action = args[i].ToLowerInvariant();
+            else return Usage($"Usage: CaddyManager.exe {target} start|stop|restart [--message-file PATH]");
+        }
+        if (action is null) return Usage($"Usage: CaddyManager.exe {target} start|stop|restart [--message-file PATH]");
+
+        int Result(bool ok, string message)
+        {
+            (ok ? Console.Out : Console.Error).WriteLine(message);
+            if (messageFile is not null)
+            {
+                try { File.WriteAllText(messageFile, message); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+            return ok ? 0 : 1;
+        }
+
+        if (!OperatingSystem.IsWindows()) return Result(false, $"'{target}' is only available on Windows.");
+        if (!IsElevated()) return Result(false, $"'{target} {action}' must be run from an elevated prompt (Run as administrator).");
+
+        var past = action switch { "start" => "started", "stop" => "stopped", _ => "restarted" };
+        var timeout = TimeSpan.FromSeconds(90);
+        try
+        {
+            if (target == "caddy")
+            {
+                if (await LocalControlClient.TrySendAsync($"caddy {action}", TimeSpan.FromMinutes(4)) is { } reply)
+                    return reply.Ok ? Result(true, $"Caddy {past}.") : Result(false, reply.Message);
+                // The manager is not running: control the service directly (the manager starts Caddy again when it starts).
+                await ControlServiceAsync(AppPaths.CaddyServiceName, action, timeout);
+                return Result(true, $"Caddy {past} (the management service is not running, so the Caddy service was controlled directly).");
+            }
+            await ControlServiceAsync(AppPaths.ManagerServiceName, action, timeout);
+            return Result(true, action == "stop"
+                ? "Management service stopped. The web UI is offline; Caddy keeps serving."
+                : $"Management service {past}.");
+        }
+        catch (Exception ex)
+        {
+            // Any failure is reported through Result so the tray (--message-file) shows the reason, not just an exit code.
+            return Result(false, $"Could not {action} {(target == "caddy" ? "Caddy" : "the management service")}: {ex.Message}");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static async Task ControlServiceAsync(string name, string action, TimeSpan timeout)
+    {
+        if (ServiceNative.QueryStatus(name) is null) throw new InvalidOperationException($"The service '{name}' is not installed.");
+        if (action is "stop" or "restart") await WindowsServiceManager.StopAsync(name, timeout);
+        if (action is "start" or "restart") await WindowsServiceManager.StartAsync(name, timeout);
     }
 
     // ------------------------------------------------------------------ helpers

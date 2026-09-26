@@ -18,6 +18,21 @@ public sealed class AppPaths
     /// keeps the data folder); the MSI reads it to choose its finish-page text. Removed with the data by uninstall --purge.
     /// </summary>
     public const string SetupCompletedValue = "SetupCompleted";
+    /// <summary>
+    /// REG_SZ with the URL of the management UI as reachable on this server (written by the manager at every start),
+    /// for the tray companion, which runs as the signed-in user and cannot read the settings database.
+    /// </summary>
+    public const string UiUrlValue = "UiUrl";
+    /// <summary>The notification-area companion (per user, started at sign-in), installed next to CaddyManager.exe.</summary>
+    public const string TrayExeName = "CaddyManagerTray.exe";
+    /// <summary>HKLM ...\CurrentVersion\Run value that starts the tray companion at sign-in.</summary>
+    public const string TrayRunValue = "Caddy Proxy Manager";
+    /// <summary>
+    /// Local named pipe on which the manager accepts Caddy start/stop/restart from elevated administrators
+    /// (CaddyManager.exe caddy ..., used by the tray), so those go through the manager: audited, and respected by the
+    /// Caddy watchdog. Its DACL admits only SYSTEM and Administrators, and never network clients.
+    /// </summary>
+    public const string LocalControlPipe = "CaddyProxyManager.Control";
 
     /// <summary>Directory containing the manager executable (e.g. C:\Program Files\Caddy Proxy Manager).</summary>
     public string InstallDir { get; }

@@ -48,6 +48,8 @@ Modules only depend on Core. Cross-module calls go through the Core interfaces
 | Logs | `DataDir\logs\caddy\caddy.log` (Caddy process log, rolled), `DataDir\logs\access\<host>.log`, `DataDir\logs\manager\manager-yyyyMMdd.log` |
 | DB | `DataDir\db\manager.db` (LiteDB) |
 | Setup token | `DataDir\setup-token.txt` (first-run only) |
+| Tray icon | `C:\Program Files\Caddy Proxy Manager\CaddyManagerTray.exe`, per user at sign-in (HKLM `...\CurrentVersion\Run` value `Caddy Proxy Manager`); opens `HKLM\SOFTWARE\Caddy Proxy Manager\UiUrl` (written by the manager at each start); start/stop/restart via `CaddyManager.exe caddy\|manager ...` elevated (UAC) |
+| Local control pipe | `\\.\pipe\CaddyProxyManager.Control` (manager, Windows): DACL SYSTEM + Administrators, NETWORK denied, first instance; one line `caddy start\|stop\|restart` → `ok <state>` / `error <message>`; audited as `<DOMAIN\user> (Windows)` |
 
 In development (the macOS dev machine), `DataDir` = `./.devdata` (or `CM_DATA_DIR`), Caddy runs as a child
 process ("process" host mode) and the dev Caddy binary is at `.dev/bin/caddy` (copy it into
@@ -175,7 +177,7 @@ Validate: key matches certificate public key; cert not expired (warn only if exp
 
 ### Caddy service & binary (Platform)
 | GET /api/caddy/status (viewer) → CaddyStatus |
-| POST /api/caddy/start, /stop, /restart (operator) → CaddyStatus |
+| POST /api/caddy/start, /stop, /restart (operator) → CaddyStatus (the same actions for local Windows administrators: `CaddyManager.exe caddy start\|stop\|restart`, via the local control pipe) |
 | POST /api/caddy/service/install, /service/uninstall (admin) → CaddyStatus |
 | GET /api/caddy/binary (viewer) → BinaryOverview |
 | POST /api/caddy/binary/check (operator) → BinaryOverview (forces GitHub check) |

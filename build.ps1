@@ -144,11 +144,20 @@ Invoke-Step "Publish CaddyManager.exe ($Runtime, self-contained single file)" {
     dotnet publish (Join-Path $root 'src/CaddyManager/CaddyManager.csproj') -c $Configuration -r $Runtime -o $publishDir `
         "-p:Version=$Version" "-p:FileVersion=$numericVersion.0" "-p:InformationalVersion=$Version" --nologo
 }
+if ($Runtime -like 'win-*') {
+    Invoke-Step "Publish CaddyManagerTray.exe ($Runtime, self-contained trimmed single file)" {
+        dotnet publish (Join-Path $root 'src/CaddyManager.Tray/CaddyManager.Tray.csproj') -c $Configuration -r $Runtime -o $publishDir `
+            "-p:Version=$Version" "-p:FileVersion=$numericVersion.0" "-p:InformationalVersion=$Version" --nologo
+    }
+}
 Get-ChildItem -LiteralPath $publishDir -Filter '*.pdb' | Remove-Item -Force
 $exe = Join-Path $publishDir 'CaddyManager.exe'
+$trayExe = Join-Path $publishDir 'CaddyManagerTray.exe'
 if ($Runtime -like 'win-*' -and -not (Test-Path -LiteralPath $exe)) { throw "Publish did not produce $exe." }
-# Sign before packaging so the MSI and the zip carry the signed exe.
+if ($Runtime -like 'win-*' -and -not (Test-Path -LiteralPath $trayExe)) { throw "Publish did not produce $trayExe." }
+# Sign before packaging so the MSI and the zip carry the signed exes.
 if (Test-Path -LiteralPath $exe) { Invoke-Sign -File $exe -Description 'Caddy Proxy Manager' }
+if (Test-Path -LiteralPath $trayExe) { Invoke-Sign -File $trayExe -Description 'Caddy Proxy Manager tray' }
 
 # ------------------------------------------------------------------ 4. MSI
 $msiTarget = Join-Path $artifacts "CaddyProxyManager-$Version-x64.msi"
@@ -183,6 +192,8 @@ if (-not $SkipZip) {
         $zipExe = Join-Path $publishDir 'CaddyManager.exe'
         if (-not (Test-Path -LiteralPath $zipExe)) { throw "The zip needs $zipExe (publish for a win-* runtime)." }
         Copy-Item -LiteralPath $zipExe -Destination $staging
+        # install.ps1 / "CaddyManager.exe install" copy the tray companion when it sits next to CaddyManager.exe.
+        Copy-Item -LiteralPath (Join-Path $publishDir 'CaddyManagerTray.exe') -Destination $staging
         Copy-Item -LiteralPath (Join-Path $root 'installer/install.ps1') -Destination $staging
         Copy-Item -LiteralPath (Join-Path $root 'installer/uninstall.ps1') -Destination $staging
         foreach ($legal in 'LICENSE', 'THIRD-PARTY-NOTICES.md') {

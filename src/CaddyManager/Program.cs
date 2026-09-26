@@ -192,6 +192,21 @@ app.Logger.LogInformation("{Product} starting. Data: {Data}. UI: http://{Http}{H
     listener.Http, httpsNote, redirectToHttps ? " (HTTP redirects to HTTPS)" : "");
 if (ui.HttpsEnabled && ui.RedirectHttpToHttps && !redirectToHttps)
     app.Logger.LogWarning("Redirect to HTTPS is enabled but the HTTPS listener is not running; plain HTTP stays available.");
+// Where the tray companion's "Open management UI" goes (it cannot read the database). Best effort.
+if (OperatingSystem.IsWindows() && Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService())
+{
+    try
+    {
+        string fqdn;
+        try { fqdn = System.Net.Dns.GetHostEntry(Environment.MachineName).HostName; }
+        catch (System.Net.Sockets.SocketException) { fqdn = Environment.MachineName; }
+        LocalUiUrl.Publish(LocalUiUrl.For(listener.Http, redirectToHttps ? listener.Https : null, redirectToHttps, fqdn));
+    }
+    catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+    {
+        app.Logger.LogWarning(ex, "Could not record the UI address for the tray companion.");
+    }
+}
 foreach (var w in hostWarnings) app.Logger.LogWarning("Startup: {Warning}", w);
 if (startupWarnings.Count > 0)
 {

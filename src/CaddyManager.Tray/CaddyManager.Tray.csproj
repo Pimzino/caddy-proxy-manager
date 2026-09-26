@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    CaddyManagerTray.exe: the notification-area companion started at sign-in for each user (Windows only).
+    Plain Win32 through P/Invoke (no WinForms, no reference to the other projects), so the self-contained,
+    trimmed single file stays small. Actions that need rights run CaddyManager.exe elevated (UAC).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>CaddyManagerTray</AssemblyName>
+    <RootNamespace>CaddyManager.Tray</RootNamespace>
+    <!-- FileDescription: Windows shows it as the sender of the icon's notifications and in Task Manager. -->
+    <AssemblyTitle>Caddy Proxy Manager</AssemblyTitle>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon Condition="Exists('..\CaddyManager\app.ico')">..\CaddyManager\app.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <!-- Publish profile: dotnet publish src/CaddyManager.Tray -c Release -r win-x64 -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <PublishTrimmed Condition="'$(RuntimeIdentifier)' != ''">true</PublishTrimmed>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The same icon file as the exe and the installer; the tray picks the size that matches the display. -->
+    <EmbeddedResource Include="..\CaddyManager\app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+</Project>

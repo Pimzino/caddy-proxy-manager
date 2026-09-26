@@ -141,6 +141,11 @@ public interface ICurrentUser
 public interface IAuditLog
 {
     void Record(string action, string objectType, string? objectId = null, string? objectName = null, string? details = null);
+    /// <summary>
+    /// Record an action taken outside a web request by a known identity (e.g. a Windows administrator using the tray,
+    /// via the local control pipe), so it is not attributed to "system".
+    /// </summary>
+    void RecordAs(string userName, string action, string objectType, string? objectId = null, string? objectName = null, string? details = null);
 }
 
 /// <summary>Raise operational events. Handles persistence, cooldown and notification fan-out.</summary>

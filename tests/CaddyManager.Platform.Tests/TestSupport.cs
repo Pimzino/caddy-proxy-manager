@@ -195,6 +195,8 @@ public sealed class FakeAuditLog : IAuditLog
     public ConcurrentQueue<string> Entries { get; } = new();
     public void Record(string action, string objectType, string? objectId = null, string? objectName = null, string? details = null) =>
         Entries.Enqueue($"{action} {objectType} {objectId} {details}");
+    public void RecordAs(string userName, string action, string objectType, string? objectId = null, string? objectName = null, string? details = null) =>
+        Entries.Enqueue($"{userName}: {action} {objectType} {objectId} {details}");
 }
 
 /// <summary>Service provider wired like the real app (Core pieces + AddPlatformModule) with fakes for the other modules.</summary>

@@ -31,6 +31,7 @@ Take a checkpoint of every VM before starting so each section can start from a c
 | 1.4 | `icacls C:\ProgramData\CaddyProxyManager` | Only `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`, inheritance disabled. |
 | 1.5 | `Get-NetFirewallRule -Group 'Caddy Proxy Manager' \| Get-NetFirewallPortFilter` | UI rule on TCP 81. |
 | 1.6 | Start menu → *Caddy Proxy Manager* | Opens `http://localhost:81/`. |
+| 1.6b | Notification area: the *Caddy Proxy Manager* icon (cpm mark). Hover; left-click; right-click → *Stop Caddy* (accept UAC), then *Start Caddy*; *Stop management UI*, *Start management UI*. | Tooltip shows both states; left-click opens the UI; each action shows a notification and the menu state follows; the audit log lists *stopped/started caddy* by `WEB01\<you> (Windows)`; ~2 min after *Stop Caddy* it is still stopped (watchdog respects it). |
 | 1.7 | From the client, browse to `http://WEB01:81/`, paste the token from `C:\ProgramData\CaddyProxyManager\setup-token.txt`, create the admin. | Signed in; the token file is gone. |
 | 1.8 | On `CORE01`: `msiexec /i <msi> /qn UI_PORT=8081 /l*v C:\install.log` | Exit code 0; UI on 8081 from the client; `install.log` contains `WixQuietExec` lines for configure and configure-service. |
 | 1.9 | On `OLD01` (Server 2016): run the MSI. | Refused before anything is installed: "requires … Windows Server 2019 or later (this is build 14393)". |
@@ -122,7 +123,7 @@ Take a checkpoint of every VM before starting so each section can start from a c
 
 | # | Step | Expected result |
 |---|---|---|
-| 9.1 | *Settings › Apps › Caddy Proxy Manager › Uninstall* on `WEB01`. | Both services gone (`Get-Service CaddyProxyManager, Caddy` fails), firewall group *Caddy Proxy Manager* gone, Start-menu shortcut gone, event log source removed. |
+| 9.1 | *Settings › Apps › Caddy Proxy Manager › Uninstall* on `WEB01`. | Both services gone (`Get-Service CaddyProxyManager, Caddy` fails), firewall group *Caddy Proxy Manager* gone, Start-menu shortcut gone, event log source removed, tray icon closed without a *files in use* prompt and its sign-in entry gone (`HKLM\...\CurrentVersion\Run`). |
 | 9.2 | `Test-Path C:\ProgramData\CaddyProxyManager` | True: data is kept for a reinstall. |
 | 9.3 | GPO rules from 4.9 | Still present (domain policy is not touched by uninstall); remove the GPO manually if wanted. |
 | 9.4 | Reinstall the MSI. | Existing data and admin account are used; no new setup token needed. |

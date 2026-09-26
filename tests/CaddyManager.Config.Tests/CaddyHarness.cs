@@ -45,6 +45,9 @@ public sealed class RecordingAuditLog : IAuditLog
     {
         lock (Entries) Entries.Add((action, objectType, objectId));
     }
+
+    public void RecordAs(string userName, string action, string objectType, string? objectId = null, string? objectName = null, string? details = null) =>
+        Record(action, objectType, objectId, objectName, details);
 }
 
 /// <summary>Service provider with Core + Config wired against a temp data dir.</summary>

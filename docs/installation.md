@@ -34,7 +34,10 @@ msiexec /i CaddyProxyManager-1.0.0-x64.msi /qn UI_PORT=8081 BIND=10.0.0.15
 The MSI installs `CaddyManager.exe` into `C:\Program Files\Caddy Proxy Manager`, locks
 `C:\ProgramData\CaddyProxyManager` down to SYSTEM and Administrators, registers the `CaddyProxyManager` service
 (LocalSystem, automatic delayed start, restart on failure), adds a firewall exception for the UI port, adds a
-Start-menu shortcut to the UI and starts the service.
+Start-menu shortcut to the UI and starts the service. It also installs the **tray icon** (`CaddyManagerTray.exe`),
+which starts for every user at sign-in and, on the finish page, for you: open the UI, and start / stop / restart
+Caddy or the management UI from the notification area (see [cli.md](cli.md#tray-icon)). During an upgrade or
+removal the wizard closes it first, so Windows does not ask about files in use.
 
 ## Install from the zip
 
@@ -44,7 +47,9 @@ Extract the zip, then in an **elevated** PowerShell in that folder:
 .\install.ps1                  # or: .\install.ps1 -UiPort 8081 -Bind 10.0.0.15
 ```
 
-`install.ps1` wraps `CaddyManager.exe install` (see [cli.md](cli.md)). Re-running it upgrades in place.
+`install.ps1` wraps `CaddyManager.exe install` (see [cli.md](cli.md)). Re-running it upgrades in place. It also copies
+the tray icon and registers it to start at sign-in (it appears at the next sign-in; `CaddyManager.exe uninstall`
+removes it).
 
 ## First run
 

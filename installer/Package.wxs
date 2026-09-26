@@ -169,6 +169,16 @@
         <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="UiBind" Type="string" Value="[CPM_UI_BIND]" />
       </Component>
 
+      <!-- Tray companion: runs as each signed-in user (HKLM Run, started by Explorer at sign-in), shows the app icon with
+           "Open management UI" and start / stop / restart of Caddy and the management service (those elevate via UAC and
+           go through "CaddyManager.exe caddy|manager ..."). A running copy is closed by Restart Manager during an upgrade or
+           removal and registers itself to be restarted afterwards. -->
+      <Component Id="TrayCompanion">
+        <File Id="CaddyManagerTrayExe" Source="$(var.PublishDir)\CaddyManagerTray.exe" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="Caddy Proxy Manager" Type="string"
+                       Value="&quot;[#CaddyManagerTrayExe]&quot;" />
+      </Component>
+
       <!-- Start menu: "Caddy Proxy Manager" opens the web UI on this server. -->
       <Component Id="StartMenuShortcut">
         <RegistryValue Root="HKLM" Key="SOFTWARE\Caddy Proxy Manager" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
@@ -244,9 +254,18 @@
     <SetProperty Id="CPM_OUTCOME" Action="CPM_SetOutcomeUpgradeNotSetUp" Value="UpgradeNotSetUp" After="CPM_SetOutcomeUpgrade" Sequence="ui"
                  Condition="NOT Installed AND WIX_UPGRADE_DETECTED AND NOT CPM_SETUP_DONE" />
 
-    <!-- "Open the web UI in my browser now" (checked by default). WixShellExec runs in the wizard's client process, i.e. as
-         the signed-in user, not elevated. -->
+    <!-- "Open the web UI in my browser now" (checked by default), and starting the tray icon on Finish (the Run entry
+         covers every later sign-in). WixShellExec runs in the wizard's client process, i.e. as the signed-in user, not
+         elevated. -->
     <Property Id="CPM_OPEN_UI" Value="1" />
+
+    <!-- Close a running tray icon before its exe is replaced or removed, so Windows does not stop the wizard with a
+         "files in use" prompt. The util extension runs this before InstallFiles, which is after InstallValidate (where
+         that prompt comes from), so the wizard also runs it when the user moves on from the first page (below): the
+         wizard's own process is in the user's session and can reach the tray's window. WM_CLOSE only (no reboot prompt,
+         no termination) so it can run there; Finish starts the tray again. -->
+    <util:CloseApplication Id="CloseTray" Target="CaddyManagerTray.exe" CloseMessage="yes" RebootPrompt="no"
+                           Description="Caddy Proxy Manager tray icon" />
     <CustomAction Id="CPM_OpenWebUi" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
 
     <!-- Minimal wizard without a license page, built from the WixUI dialog library (WixToolset.UI.wixext):
@@ -282,7 +301,9 @@
         <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;Finish">
           <Publish Property="WixShellExecTarget" Value="http://[CPM_UI_HOST]:[CPM_FIREWALL_PORT]/" Order="1" Condition='CPM_OPEN_UI = 1 AND NOT (CPM_OUTCOME = "Remove")' />
           <Publish Event="DoAction" Value="CPM_OpenWebUi" Order="2" Condition='CPM_OPEN_UI = 1 AND NOT (CPM_OUTCOME = "Remove")' />
-          <Publish Event="EndDialog" Value="Return" Order="3" />
+          <Publish Property="WixShellExecTarget" Value="[#CaddyManagerTrayExe]" Order="3" Condition='NOT (CPM_OUTCOME = "Remove")' />
+          <Publish Event="DoAction" Value="CPM_OpenWebUi" Order="4" Condition='NOT (CPM_OUTCOME = "Remove")' />
+          <Publish Event="EndDialog" Value="Return" Order="5" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Disabled="yes" Text="Cancel" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Disabled="yes" Text="&lt; &amp;Back" />
@@ -350,7 +371,8 @@
         <Show Dialog="CPM_FinishDlg" OnExit="success" />
       </AdminUISequence>
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="DoAction" Value="Wix4CloseApplications_$(sys.BUILDARCHSHORT)" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
 
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="1" Condition="NOT Installed" />
@@ -358,10 +380,12 @@
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
 
       <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="CPM_OUTCOME" Value="Repair" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="CPM_OUTCOME" Value="Remove" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="CPM_OUTCOME" Value="Repair" Order="1" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="DoAction" Value="Wix4CloseApplications_$(sys.BUILDARCHSHORT)" Order="2" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="CPM_OUTCOME" Value="Remove" Order="1" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="DoAction" Value="Wix4CloseApplications_$(sys.BUILDARCHSHORT)" Order="2" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
     </UI>
     <UIRef Id="WixUI_Common" />

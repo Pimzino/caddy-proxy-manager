@@ -31,6 +31,8 @@ public static class PlatformModule
         services.AddHostedService(sp => sp.GetRequiredService<CaddyBootstrapper>());
         services.AddSingleton<UpdateChecker>();
         services.AddHostedService(sp => sp.GetRequiredService<UpdateChecker>());
+        // Caddy start/stop/restart for local administrators (tray, CaddyManager.exe caddy ...); Windows only.
+        if (OperatingSystem.IsWindows()) services.AddHostedService<LocalControlService>();
         return services;
     }
 

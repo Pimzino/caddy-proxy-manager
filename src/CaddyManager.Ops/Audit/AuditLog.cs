@@ -12,15 +12,21 @@ namespace CaddyManager.Ops.Audit;
 /// <summary>Persists who changed what (user + remote IP from the current request, "system" otherwise). Never throws.</summary>
 internal sealed class AuditLog(IStore store, ICurrentUser current, ILogger<AuditLog> logger) : IAuditLog
 {
-    public void Record(string action, string objectType, string? objectId = null, string? objectName = null, string? details = null)
+    public void Record(string action, string objectType, string? objectId = null, string? objectName = null, string? details = null) =>
+        Write(current.UserId, current.UserName, current.RemoteIp, action, objectType, objectId, objectName, details);
+
+    public void RecordAs(string userName, string action, string objectType, string? objectId = null, string? objectName = null, string? details = null) =>
+        Write(null, userName, "local", action, objectType, objectId, objectName, details);
+
+    private void Write(string? userId, string userName, string? remoteIp, string action, string objectType, string? objectId, string? objectName, string? details)
     {
         try
         {
             var entry = new AuditEntry
             {
-                UserId = current.UserId,
-                UserName = current.UserName,
-                RemoteIp = current.RemoteIp,
+                UserId = userId,
+                UserName = userName,
+                RemoteIp = remoteIp,
                 Action = action,
                 ObjectType = objectType,
                 ObjectId = objectId,
