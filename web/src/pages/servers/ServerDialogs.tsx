@@ -53,7 +53,7 @@ function ServerForm({
         label="Management URL"
         required
         error={errors.url}
-        hint="Where this server reaches the node’s management UI (its UI port). HTTPS with a self-signed certificate is pinned by fingerprint on first contact."
+        hint="Where this server reaches the node’s management UI (its UI port). An HTTPS certificate is pinned by its fingerprint: this server then accepts only that certificate, even if Windows trusts another one."
       >
         <Input value={url} onChange={(e) => onUrl(e.target.value)} mono autoComplete="off" spellCheck={false} placeholder="https://web-proxy02.corp.example.com:8443" />
       </Field>
@@ -251,8 +251,8 @@ function EditServerDialog({ server, onClose }: { server: ServerSummary; onClose:
             label="Trust the node’s current HTTPS certificate (re-pin)"
             description={
               urlChanged
-                ? 'A new URL is always pinned again on first contact.'
-                : 'Use this after the node’s certificate was replaced. The fingerprint is taken on the next contact; make sure nobody intercepts the connection.'
+                ? 'A new URL is always pinned again when you save.'
+                : 'Use this after the node’s certificate was replaced or renewed. The certificate the node presents when you save is pinned (at the next contact if the node cannot be reached); make sure nobody intercepts the connection.'
             }
           />
         )}

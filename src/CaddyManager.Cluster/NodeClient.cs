@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -24,15 +25,18 @@ public sealed class NodeRpcException(string message, bool unreachable = false, b
 
 /// <summary>
 /// Primary → node transport: encrypted envelopes POSTed to &lt;node url&gt;/api/cluster/rpc.
-/// Each node gets its own HTTP handler (never through the outbound proxy: node URLs are internal) whose TLS check accepts
-/// a valid chain OR a certificate whose SHA-256 fingerprint equals the one pinned for that node. A handler per node (rather
+/// Each node gets its own HTTP handler (never through the outbound proxy: node URLs are internal). Once a fingerprint is
+/// pinned for the node, its TLS check accepts only the certificate with that SHA-256 fingerprint, even one the machine
+/// trusts (a replaced or renewed certificate is re-pinned by an admin); only a node without a pin yet is checked against
+/// the trust store. A handler per node (rather
 /// than one shared handler) is needed because pooled connections are validated once per connection: a shared pool could
 /// reuse a connection validated against another node's pin.
 /// </summary>
 public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogger<NodeClient> logger) : IDisposable
 {
     public const string RpcPath = "api/cluster/rpc";
-    private sealed record Channel(string Url, string? Pin, HttpClient Client);
+    /// <summary><paramref name="Refused"/>: fingerprint of the last certificate refused for not matching the pin (error message).</summary>
+    private sealed record Channel(string Url, string? Pin, HttpClient Client, StrongBox<string?> Refused);
     private readonly ConcurrentDictionary<string, Channel> _channels = new();
 
     /// <summary>Calls <paramref name="op"/> on the node and returns the result node (null for a void result).</summary>
@@ -78,7 +82,7 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
         }
         catch (HttpRequestException ex)
         {
-            throw new NodeRpcException($"Cannot reach the node at {node.Url}: {Describe(ex)}", unreachable: true);
+            throw new NodeRpcException($"Cannot reach the node at {node.Url}: {Describe(ex, _channels.GetValueOrDefault(node.Id))}", unreachable: true);
         }
 
         using (resp)
@@ -161,17 +165,25 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
             AllowAutoRedirect = false,
             UseCookies = false,
         };
+        if (cluster.Options.NodeCertificateChainPolicy is { } policy) handler.SslOptions.CertificateChainPolicy = policy.Clone();
         var pinned = pin;
+        var refused = new StrongBox<string?>();
         handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, errors) =>
-            errors == SslPolicyErrors.None ||
-            (pinned is not null && cert is not null && ClusterCrypto.SameFingerprint(FingerprintOf(cert), pinned));
+        {
+            if (pinned is null) return errors == SslPolicyErrors.None;
+            // With a pin the chain and name do not matter: only the pinned certificate is accepted, also when it is trusted.
+            var presented = cert is null ? null : FingerprintOf(cert);
+            var ok = ClusterCrypto.SameFingerprint(presented, pinned);
+            refused.Value = ok ? null : presented ?? "(none)";
+            return ok;
+        };
         var client = new HttpClient(handler, disposeHandler: true)
         {
             BaseAddress = new Uri(node.Url.TrimEnd('/') + "/"),
             Timeout = Timeout.InfiniteTimeSpan,
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("CaddyProxyManager-Cluster/1.0");
-        var channel = new Channel(node.Url, pin, client);
+        var channel = new Channel(node.Url, pin, client, refused);
         _channels.AddOrUpdate(node.Id, channel, (_, old) =>
         {
             Retire(old.Client);
@@ -213,13 +225,16 @@ public sealed class NodeClient(ClusterService cluster, TimeProvider time, ILogge
         }
     }
 
-    private static string Describe(HttpRequestException ex)
+    private static string Describe(HttpRequestException ex, Channel? channel)
     {
         var inner = ex.InnerException;
         while (inner?.InnerException is not null && inner is not System.Security.Authentication.AuthenticationException) inner = inner.InnerException;
-        return inner is System.Security.Authentication.AuthenticationException
-            ? "its HTTPS certificate is not trusted and does not match the pinned fingerprint (re-pin it if the certificate was replaced)"
-            : ex.Message;
+        if (inner is not System.Security.Authentication.AuthenticationException) return ex.Message;
+        if (channel?.Pin is null) return "its HTTPS certificate is not trusted by this server";
+        return channel.Refused.Value is { } presented
+            ? $"its HTTPS certificate does not match the pinned fingerprint (it presents {presented}). If the node's certificate was " +
+              "replaced or renewed, check that this is the new certificate, then re-pin it with Edit on the Servers page"
+            : $"the HTTPS connection failed: {inner.Message}";
     }
 
     public void Dispose()

@@ -296,7 +296,7 @@ export function JoinTokenPanel({
         <div className="rounded-md border border-border bg-surface-2/60 px-3 py-2.5 text-sm">
           <p className="font-medium text-fg">Pinned HTTPS certificate</p>
           <p className="mt-0.5 text-xs text-fg-subtle">
-            SHA-256 fingerprint of the node’s certificate. The primary only talks to the node while it presents this certificate.
+            SHA-256 fingerprint of the node’s certificate. The primary only talks to the node while it presents this certificate, even if Windows trusts another one. After you replace or renew it, re-pin it with Edit.
           </p>
           <p className="mono mt-1.5 text-xs break-all text-fg">{fingerprint}</p>
         </div>

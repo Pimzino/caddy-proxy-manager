@@ -48,4 +48,10 @@ public sealed class ClusterOptions
     /// it reuses the last bundle built from committed configuration instead.
     /// </summary>
     public TimeSpan BundleLockTimeout { get; set; } = TimeSpan.FromMilliseconds(250);
+    /// <summary>
+    /// Chain policy for node HTTPS certificates. Null (default): the machine's trust store. It only decides for a node
+    /// without a pinned fingerprint; a pinned node is checked against its pin alone. Tests set a custom root so a node
+    /// certificate counts as trusted without changing the machine's store.
+    /// </summary>
+    public System.Security.Cryptography.X509Certificates.X509ChainPolicy? NodeCertificateChainPolicy { get; set; }
 }
