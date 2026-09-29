@@ -38,6 +38,8 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 builder.Host.UseWindowsService(o => o.ServiceName = AppPaths.ManagerServiceName);
 var fileLog = new FileLoggerProvider(paths.ManagerLogDir);
 builder.Logging.AddProvider(fileLog);
+// Lines only administrators may read (the setup token) go to the file alone: the Event Log below is readable by all users.
+builder.Services.AddSingleton<IManagerLogFile>(fileLog);
 // POST /api/system/restart ends the process with Environment.Exit (see PlatformEndpoints), which skips the host shutdown
 // but raises ProcessExit: flush the queued log lines there (Dispose is idempotent and waits at most 3 s).
 AppDomain.CurrentDomain.ProcessExit += (_, _) => fileLog.Dispose();

@@ -1,11 +1,13 @@
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Models;
 using LiteDB;
+using Microsoft.Extensions.Logging;
 
 namespace CaddyManager.Core;
 
 // Cross-module service contracts. Implementations:
 //   Core     : IStore, ISecretProtector, IJobRunner
+//   Host     : IManagerLogFile (src/CaddyManager FileLoggerProvider; CoreModule registers a no-op default)
 //   Config   : ICaddyConfigService, ICaddyAdminClient, ICertificateInventory
 //   Platform : ICaddyHost, ICaddyBinaryManager, IReadinessService
 //   Ops      : IAuditLog, IEventSink, INotifier, ICurrentUser
@@ -229,4 +231,14 @@ public interface IConfigMutationLock
     Task<IDisposable> AcquireAsync(CancellationToken ct = default);
     /// <summary>Returns null when the lock is not free within <paramref name="timeout"/>.</summary>
     Task<IDisposable?> TryAcquireAsync(TimeSpan timeout, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Writes only to the manager log files (DataDir\logs\manager, SYSTEM + Administrators). Loggers from ILogger&lt;T&gt; also
+/// reach the other providers: the Windows Application log (warnings and errors, readable by every local user) and the
+/// console. Use this for values only an administrator of the server may see, e.g. the first-run setup token.
+/// </summary>
+public interface IManagerLogFile
+{
+    ILogger CreateLogger(string categoryName);
 }

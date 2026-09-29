@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
+using CaddyManager.Core;
 
 namespace CaddyManager;
 
@@ -8,8 +9,10 @@ namespace CaddyManager;
 /// Minimal daily-rolling file logger: logs/manager/manager-yyyyMMdd.log (UTF-8 without BOM, so the files concatenate and
 /// grep cleanly), <see cref="RetentionDays"/> days kept — pruned at start-up and whenever the day rolls over.
 /// A single background thread owns the open file; the file is shared for reading (log viewer) and deletion.
+/// Also <see cref="IManagerLogFile"/>: loggers created directly from this provider bypass the logger factory, so their
+/// lines reach this file and no other provider (Windows Event Log, console).
 /// </summary>
-public sealed class FileLoggerProvider : ILoggerProvider
+public sealed class FileLoggerProvider : ILoggerProvider, IManagerLogFile
 {
     public const int RetentionDays = 14;
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);

@@ -117,6 +117,7 @@ jobs:
             'CaddyManager.Platform.Tests.GetCaddyScriptE2ETests.*'
             'CaddyManager.Platform.Tests.AssertE2eRanScriptE2ETests.*'
             'CaddyManager.Ops.Tests.WindowsOpsE2ETests.*'
+            'CaddyManager.Ops.Tests.SetupTokenEventLogE2ETests.*'
             'CaddyManager.Telemetry.Tests.TrafficIngestE2ETests.*'
             'CaddyManager.Telemetry.Tests.ResourceSamplerE2ETests.*'
             'CaddyManager.Cluster.Tests.ClusterE2ETests.*'
@@ -171,6 +172,7 @@ jobs:
             'traffic-write-load.json'
             'traffic-ingest-cardinality.json'
             'client-hash-keying.json'
+            'windows-setup-token-eventlog.json'
           )
 
       - name: Test summary

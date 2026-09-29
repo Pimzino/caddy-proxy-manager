@@ -11,10 +11,13 @@ namespace CaddyManager.Ops.Auth;
 /// <summary>
 /// First-run setup. While no user exists, a random token is written to AppPaths.SetupTokenFile
 /// (readable only by SYSTEM/Administrators on Windows) and must be presented to create the first admin.
+/// The token itself is logged only to the manager log file (same protected folder), never through <paramref name="logger"/>:
+/// its warnings also reach the Windows Application log, which every local user can read.
 /// </summary>
-internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupState> logger)
+internal sealed class SetupState(IStore store, AppPaths paths, IManagerLogFile logFile, ILogger<SetupState> logger)
 {
     private readonly object _lock = new();
+    private readonly ILogger _tokenLog = logFile.CreateLogger(typeof(SetupState).FullName!);
     private string? _token;
 
     /// <summary>Serialises the "check no users → create admin" critical section.</summary>
@@ -55,9 +58,13 @@ internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupStat
                 WriteTokenFile(_token);
             }
             if (log)
+            {
                 logger.LogWarning(
-                    "No administrator account exists yet. Open the web UI and complete setup with the token stored in {File}. Setup token: {Token}",
-                    paths.SetupTokenFile, _token);
+                    "No administrator account exists yet. Open the web UI and complete setup with the token stored in {File} " +
+                    "(also written to the manager log in {LogDir}). Both are readable by administrators only.",
+                    paths.SetupTokenFile, paths.ManagerLogDir);
+                _tokenLog.LogWarning("Setup token: {Token}", _token);
+            }
         }
     }
 
@@ -141,7 +148,8 @@ internal sealed class SetupState(IStore store, AppPaths paths, ILogger<SetupStat
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Could not write the setup token file {File}. Use the token from this log instead.", paths.SetupTokenFile);
+            logger.LogError(ex, "Could not write the setup token file {File}. Use the setup token from the manager log in {LogDir} instead.",
+                paths.SetupTokenFile, paths.ManagerLogDir);
         }
     }
 }
