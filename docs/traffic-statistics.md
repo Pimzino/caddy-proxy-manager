@@ -1,124 +1,186 @@
-# Traffic statistics and server telemetry
+# Traffic statistics
 
-**Traffic** (`/traffic`) and the server pages show what Caddy served and how the server is doing. Everything is
-collected on each server by the manager itself; no external monitoring system is needed.
+The **Traffic** page shows what Caddy served: requests, unique clients, data transferred, status codes, and the busiest hosts and clients. The manager builds these statistics on each server from Caddy's own log, so no external monitoring system is needed. Every role can view the page, including the **Viewer** role.
 
-## Where the numbers come from
+## Turn statistics on or off
 
-**Traffic statistics** are built from Caddy's own access log. With **Settings › Caddy › Traffic statistics** on (the
-default), the generated Caddy configuration adds a compact log (`cpm_stats`) that records one JSON line for every HTTP
-request any site handled — including hosts without their own access log — to
-`C:\ProgramData\CaddyProxyManager\logs\stats\requests.log`. Request and response headers and TLS details are removed
-from these lines. Caddy rotates the file at 10 MB and keeps 5 rotated files (uncompressed).
+Traffic statistics are controlled by **Settings › Caddy › Traffic statistics**. The setting is on by default.
 
-The manager reads the file every second, following rotations (it keeps reading a rotated file to its end before
-switching to the new one), and adds each request to per-minute, per-hour and per-day counters. The statistics have their
-own database, `C:\ProgramData\CaddyProxyManager\db\telemetry.db`, separate from the configuration database
-(`manager.db`), so they never slow down configuration changes and are not part of backups. The counters are saved at
-least every 5 seconds together with the exact read position; the unique-client data and top clients, which are larger,
-at least once a minute together with their own read position (reports always include what has not been saved yet).
-After a restart — also after a crash, and also when Caddy rotated the file in the meantime — the manager reads the log
-again from the older of the two positions and adds the lines in between to the unique-client data and top clients only,
-so requests, unique clients and top clients are neither lost nor counted twice. If saving fails (for example a full
-disk), the manager discards what it has not saved and reads it again from the log once saving works; an event is raised
-after three failed attempts.
+- **On:** Caddy writes one line per HTTP request to a local statistics log, and the manager counts it.
+- **Off:** Caddy stops writing that log and nothing new is counted. Statistics you already collected stay until they expire (see [Retention](#retention)).
 
-The statistics are only kept for the host names configured on enabled hosts. The Host header of a request is chosen by
-the client, so requests for any other name are all counted under one row, **(other)** — a client sending random or
-over-long Host headers cannot create new entries or make the statistics database grow.
+You do not need to turn on the per-host **Access log** option for a host to be counted. The statistics log records requests for every site.
 
-**Server resources** (CPU, memory, disks, network, Caddy and manager processes, connections) are sampled every
-2 seconds and kept in memory for the last 10 minutes. They are not stored.
+Statistics are collected only when the configuration is in managed mode. In Caddyfile mode, nothing is collected. On a cluster node the setting comes from the primary, so it cannot be changed there. See [Caddy settings](caddy-settings.md).
 
-## Definitions
+When statistics are not collected, the Traffic page shows **Traffic statistics are disabled** with an **Open Caddy settings** button.
+
+## Open the Traffic page
+
+1. Open **Overview › Traffic**. You can also select **Traffic** on the **Servers** page or on a server's details page.
+2. If you manage cluster nodes, choose the server in the server selector.
+3. Choose a time range: **1 h**, **24 h**, **7 d** or **30 d**. The default is **24 h**.
+4. Optionally choose a host in the host selector, or select a host name in **Top hosts**. Every chart and table then shows only that host. Select **Show all hosts** or choose **All hosts** to clear the filter.
+
+The server, range and host are kept in the page address, so you can bookmark or share a view.
+
+The page refreshes every 10 seconds for **1 h**, and every minute for the other ranges. **Updated** shows when the manager last read new lines from the log.
+
+## What the page shows
+
+![The Traffic page with summary tiles, charts, top hosts and top clients](images/traffic.webp)
+
+### Summary tiles
+
+| Tile | Description |
+|---|---|
+| Requests | HTTP requests in the chosen range. |
+| Unique clients | Distinct client IP addresses in the range. |
+| Data in | Request body bytes received. |
+| Data out | Response body bytes sent. |
+| Error rate | 4xx and 5xx responses as a share of all requests, with each class shown separately. |
+| Avg. duration | Average time until the last byte of the response was sent. |
+
+### Charts
+
+| Chart | Description |
+|---|---|
+| Requests | Requests per time bucket. |
+| Unique clients | Distinct client IPs within each bucket. |
+| Data transferred | **Data in** and **Data out** per bucket. |
+| Responses by status class | Requests per bucket, split into 4xx, 5xx and everything else. A bar underneath shows the share of 2xx, 3xx, 4xx, 5xx and **Other (aborted, 1xx)** over the whole range. |
+
+Each chart has a table view of its data.
+
+### Top hosts
+
+**Top hosts** lists up to 20 hosts, ordered by requests. For each host it shows **Requests**, **Clients**, **In**, **Out**, **4xx** and **5xx**.
+
+The error counts are highlighted when they are high for that host:
+
+- **4xx** from 5 % of the host's requests
+- **5xx** from 1 %
+
+### Top clients
+
+**Top clients** lists up to 20 client IP addresses, ordered by requests. For each address it shows **Requests**, **Out** and **Last seen**.
+
+### Status codes
+
+**Status codes** lists every status code with its name (or its class, for less common codes) and count. A dash with **Aborted by the client** means that no response was written.
+
+### About these numbers
+
+The **About these numbers** card repeats the main counting rules. It also reports log lines that could not be read, and log files that were lost before they were read.
+
+## Time ranges and time zones
+
+| Range | Points | Bucket size |
+|---|---|---|
+| 1 h | 60 | 1 minute |
+| 24 h | 24 | 1 hour |
+| 7 d | 168 | 1 hour |
+| 30 d | 30 | 1 day (UTC) |
+
+The newest point is the bucket that is still filling. For example, **24 h** covers the current hour and the 23 before it. Buckets without traffic show as zero.
+
+- **Minute and hour buckets** are shown in your browser's time zone. The zone is named next to the range selector, for example *Times in your time zone (Europe/London, UTC+01:00)*.
+- **Day buckets** are UTC calendar days, from 00:00 to 24:00 UTC. They are labelled with their UTC date, for example *Fri, Sep 25 (UTC)*.
+  - West of UTC, a day bucket therefore starts on the previous local evening.
+
+## What is counted
 
 | Number | Meaning |
 |---|---|
-| Requests | HTTP requests Caddy completed and logged (one per request, including redirects to HTTPS and ACME HTTP-01 challenge requests). |
-| Data in | Request **body** bytes Caddy read (Caddy's `bytes_read`). Headers are not included; a request whose body the handler never read counts 0. |
-| Data out | Response **body** bytes sent, after compression (Caddy's `size`). Headers and TLS overhead are not included. |
-| Status 2xx/3xx/4xx/5xx | By the final status code. **Other** = requests without a status (the client or Caddy aborted before a response was written; Caddy logs status 0) and 1xx. |
-| Status codes | Every individual code with its count (0 = aborted). |
-| Unique clients | Distinct client IP addresses. The client IP is Caddy's `client_ip`: the connecting address, or — when the connection comes from a configured **trusted proxy** — the address that proxy reported in `X-Forwarded-For`. |
-| Avg duration | Mean time from Caddy receiving the request to finishing the response (Caddy's `duration`), in milliseconds. |
-| Top hosts | Hosts by request count in the window (max 20). A host is a name configured on an enabled host, matched against the request's `Host` header (lower-case, without port) the way Caddy matches it: an exact name is its own row (`[::1]` for IPv6 literals); a wildcard host is one row under its wildcard name (`*.example.com` collects `a.example.com`, `b.example.com`, ... — as in Caddy, `*` is exactly one label). Every other name, and requests without a Host, are counted as **(other)**. Filtering on a name covered by a wildcard shows the wildcard's row. The configured names are re-read after every configuration change; a host added later counts from then on, a host removed keeps its old statistics. |
-| Top clients | The busiest client IPs (max 20) — see accuracy below. |
-| Requests/s (live) | Requests per second by the time Caddy logged them, averaged over the sample interval and lagging about 2 seconds behind real time (the log is read once a second). |
-| CPU | Whole-machine CPU use, 0–100 %. |
-| Memory used | Physical memory in use (total − available). |
-| Caddy / manager CPU | Share of the **whole machine** used by that process (so 100 % = every core busy). Caddy's values are empty while Caddy is not running. |
-| Caddy / manager memory | Working set of the process. |
-| Network in/out | Bytes per second over all connected, non-loopback network interfaces (all traffic, not only Caddy's), from each interface's own counters: an interface that comes up (link regained, VPN connected, virtual switch adapter re-created) counts from its second sample, so it does not show its whole since-boot total as one spike. Traffic that passes through a VPN or a Hyper-V virtual switch adapter and a physical adapter is counted on both. |
-| Connections | Established TCP connections to Caddy's HTTP and HTTPS ports (HTTP/3 over UDP is not included). |
-| Disks | The volume that holds the data folder and the system volume (one row when they are the same). |
+| Requests | Every HTTP request Caddy handled and logged. This includes redirects to HTTPS and ACME HTTP-01 challenge requests. |
+| Data in | Request body bytes. Headers are not included. |
+| Data out | Response body bytes after compression. Headers and TLS overhead are not included. |
+| Status classes | By the final status code. **Other** means a request without a status (aborted before a response was written) or a 1xx status. |
+| Unique clients | Distinct client IP addresses. When a request comes through a proxy listed in **Settings › Caddy › Trusted proxies**, the client is the address that proxy reports. Otherwise it is the connecting address. |
+| Avg. duration | Mean time from Caddy receiving the request to finishing the response, in milliseconds. |
 
-## Windows (time ranges)
+### Which host a request belongs to
 
-| Range | Points | Bucket |
-|---|---|---|
-| 1 hour | 60 | 1 minute |
-| 24 hours | 24 | 1 hour |
-| 7 days | 168 | 1 hour |
-| 30 days | 30 | 1 day |
+Statistics are kept only for the names configured on **enabled** hosts. The request's `Host` header is compared without its port and ignoring case, the same way Caddy matches it.
 
-Buckets are UTC. The newest point is the bucket that is still filling, so "24 hours" covers the current hour and the
-23 before it. Buckets without traffic show as zero.
+- An exact name has its own row.
+- A wildcard host is one row, for example `*.example.com`. As in Caddy, `*` matches exactly one label: `a.example.com`, but not `example.com` or `a.b.example.com`.
+- Requests for any other name, and requests without a `Host` header, are counted under **Other hosts (not configured)**.
+  - This means a client that sends random `Host` headers cannot create new rows or make the statistics grow.
+- When you add or remove hosts, the new host list is used from the next configuration change, or within 30 seconds.
+  - A new host is counted from then on.
+  - A removed host keeps its old statistics until they expire.
 
-How the charts show the time: minute and hour buckets in the browser's time zone (named next to the range selector,
-e.g. *Times in your time zone (Europe/London, UTC+01:00)*); day buckets as **UTC calendar days** — each 30-day point
-covers 00:00–24:00 UTC and is labelled with its UTC date, e.g. *Fri, Sep 25 (UTC)*, and the 30-day axis ticks are at
-UTC midnight. West of UTC a day bucket therefore starts on the previous local evening (00:00 UTC = 20:00 EDT).
+### What is not counted
+
+- Layer-4 [streams](streams.md) (TCP and UDP proxying), because they are not HTTP requests.
+- Connections that never became an HTTP request. These include TLS handshake failures, requests rejected before Caddy parsed them, and HTTP/2 or HTTP/3 protocol errors.
+- Requests while **Traffic statistics** is off, or while the configuration is in Caddyfile mode.
+- Log lines that cannot be read. They are skipped and reported in **About these numbers**.
 
 ## Accuracy
 
-- Requests, data in/out, status counts and durations are **exact**.
-- Unique clients are **exact up to 1,024 different IPs** per bucket. Above that a HyperLogLog sketch (4,096 registers)
-  estimates the count with a typical error of **±1.6 %** (within ±3.2 % for 95 % of buckets). Unique clients over a
-  window are computed by merging the buckets' sketches, so a client that appears in many buckets is still counted once;
-  the per-point values in a chart are unique clients *of that bucket*.
-- Top clients use a heavy-hitter summary of 200 clients per UTC day. Any client that made more than 1/200 of the day's
-  requests is guaranteed to be listed; its count can be over-estimated (never under-estimated) when many different
-  clients were seen. Over several days the daily summaries are merged. For the 1-hour view, top clients cover the whole
-  UTC day(s) of that hour.
-- The 1-hour view per host uses per-host minute buckets that are kept for 2 hours only.
+- **Exact:** requests, data in and out, status counts and durations.
+- **Unique clients** are exact up to 1,024 different addresses per bucket. Above that, the count is an estimate with a typical error of about ±1.6 %.
+  - For the whole range, the buckets are combined so that a client seen in many buckets is still counted once.
+  - Each point in the chart counts the unique clients of that bucket only.
+- **Top clients are approximate.** The manager keeps a summary of the 200 busiest clients per UTC day, for the server and for each host.
+  - Any client that made more than 1/200 of a day's requests is guaranteed to be in the summary.
+  - Its count can be too high, but never too low, when many different clients were seen.
+  - Ranges of several days combine the daily summaries.
+  - The **1 h** range shows the top clients of the whole UTC day or days that the hour falls in.
+
+## How collection works
+
+- **The statistics log.** Caddy writes the log to `C:\ProgramData\CaddyProxyManager\logs\stats\requests.log`.
+  - Request and response headers and TLS details are removed from these lines.
+  - Caddy starts a new file at 10 MB and keeps 5 old files, uncompressed.
+- **Reading the log.** The manager reads the log every second and follows Caddy's file rotation without losing or repeating lines.
+- **Where statistics are stored.** They are kept in a separate database, `C:\ProgramData\CaddyProxyManager\db\telemetry.db`, so they do not slow down configuration changes.
+  - Counters are saved at least every 5 seconds.
+  - Unique-client and top-client data are saved at least once a minute.
+  - The page always includes data that has not been saved yet.
+- **After a restart or crash,** the manager continues from its saved position in the log. Requests are neither lost nor counted twice.
+- **If saving fails** (for example because the disk is full), the manager drops what it has not saved and reads it again from the log once saving works.
+  - After three failed attempts it raises the event **Traffic statistics cannot be saved**.
+- **If the manager is stopped for a long time,** Caddy may delete old log files before they are read. With 5 files of 10 MB each, this happens after about 50 MB of log.
+  - Those requests are then missing, the page notes it, and the event **Some traffic statistics were lost** is raised.
 
 ## Retention
 
-| Bucket | Kept | Content |
+| Bucket | Server total | Per host |
 |---|---|---|
-| Minute | 48 hours (per host: 2 hours) | Server total; per host |
-| Hour | 35 days | Server total and per host |
-| Day | 400 days | Server total and per host, with the top-clients summary |
+| Minute | 48 hours | 2 hours |
+| Hour | 35 days | 35 days |
+| Day | 400 days | 400 days |
 
-Expired buckets are deleted every hour. The raw `requests.log` files are kept by Caddy (5 × 10 MB) and deleted by
-Caddy as it rotates.
-
-## What is not counted
-
-- **Layer-4 streams** (TCP/UDP proxying) — they are not HTTP requests.
-- Connections that never became an HTTP request: **TLS handshake failures**, malformed requests that Go rejects before
-  Caddy sees them (for example 400/431 for bad or huge headers), HTTP/2 and HTTP/3 protocol errors.
-- Requests handled while **Traffic statistics** was turned off (Caddy does not write the log then), and while the
-  configuration is in Caddyfile mode (the generated `cpm_stats` log is part of the managed configuration). In
-  Caddyfile mode the Traffic page says that statistics are not collected instead of showing zeros.
-- Log lines that cannot be read are skipped and counted; the report notes how many. If the manager is stopped long
-  enough for Caddy to rotate more than 5 files (50 MB of log), the oldest are deleted before they are read: the report
-  notes this and an event is raised.
+The manager deletes expired buckets every hour. Because per-host minute buckets are kept for 2 hours, the **1 h** range works for a single host too.
 
 ## Privacy
 
-Client IP addresses are personal data in many jurisdictions (for example under the GDPR).
+Client IP addresses are personal data in many jurisdictions, for example under the GDPR. Decide whether you may keep them before you leave traffic statistics on.
 
-- The stats log contains, per request, the time, client IP, host, method, URI (with query string), protocol, status,
-  sizes and duration — no headers, cookies or authorization. It lives in the manager's data folder, readable only by
-  SYSTEM and Administrators, and Caddy deletes it through rotation (at most 50 MB).
-- The counters store **no IP addresses** for unique clients — only keyed 64-bit hashes (HMAC-SHA256 with a random key
-  of this installation; exact mode) or HyperLogLog registers. The key is kept in `db\telemetry.key`, outside the
-  statistics database and encrypted with Windows DPAPI for this machine, so a copy of `telemetry.db` cannot be turned
-  back into addresses by hashing every possible IPv4 address. (If the key is lost — the file deleted, or the data folder
-  moved to another machine — a new one is created; clients seen before and after that moment are not recognised as the
-  same.)
-- The **top-clients summary stores up to 200 IP addresses per day** with their request counts and last-seen time,
-  for 400 days. Everyone with the **viewer** role can see them on the Traffic page.
-- The statistics database is not part of backups (`manager.db` is), and restoring a backup leaves it unchanged.
-- Turn **Traffic statistics** off if you must not keep client IPs; existing statistics stay until they expire.
+> [!IMPORTANT]
+> The top-clients summary stores up to 200 client IP addresses per day for the server and up to 200 per host, in plain text, with their request counts and last-seen time. It keeps them for 400 days. Everyone who can sign in, including the **Viewer** role, can see them in **Top clients** on the Traffic page.
+
+- **The statistics log** contains, per request:
+  - the time, client IP, host, method, and URI (with the query string)
+  - the protocol, status, sizes and duration
+  - the user name, when the request was authenticated with a user name and password
+  - no headers, cookies or authorisation data
+
+  It is stored in the manager's data folder, which the service restricts to SYSTEM and Administrators. Caddy deletes old files as it rotates the log.
+- **Unique-client counts store no IP addresses.** They store only keyed 64-bit hashes (HMAC-SHA256 with a random key for this installation) or estimate registers.
+  - The key is kept in `C:\ProgramData\CaddyProxyManager\db\telemetry.key`, outside the statistics database, and encrypted with Windows DPAPI for this machine.
+  - A copy of the statistics database alone cannot be turned back into addresses.
+  - If the key is lost, for example because the data folder was moved to another computer, a new key is created. Clients seen before and after that moment are then not recognised as the same clients.
+- **Backups do not include the statistics database.**
+- **To stop keeping client IP addresses,** turn **Traffic statistics** off. Existing statistics remain until they expire.
+
+## Related
+
+- [Servers](servers.md)
+- [Dashboard](dashboard.md)
+- [Caddy settings](caddy-settings.md)
+- [Logs](logs.md)
+- [Events](events.md)

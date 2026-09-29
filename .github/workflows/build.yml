@@ -61,6 +61,15 @@ jobs:
           npm run lint
           npm run build
 
+      # The product documentation at /docs (docs/*.md, web/src/docs): every page renders, every link and anchor resolves,
+      # search works, each console screen's Help button opens its page, and /docs needs no sign-in. Headless Chrome
+      # (preinstalled on the runner) against the mock API; report.json, docs-links.json and screenshots are uploaded.
+      - name: Web UI — documentation checks
+        working-directory: web
+        env:
+          CPM_E2E_ARTIFACTS: ${{ github.workspace }}/TestResults/e2e/web-docs
+        run: node mock/e2e/run.ts docs docs-setup docs-help
+
       # The Config/Platform suites run real-Caddy integration tests when .dev/bin/caddy.exe exists. They must run against
       # the Caddy release the product is verified with (CaddyVersion.Tested), not whatever is "latest" today: Caddy changes
       # behaviour between minor versions (v2.11.0 changed the Host header sent to HTTPS upstreams). The job "caddy-latest"

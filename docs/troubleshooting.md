@@ -1,111 +1,183 @@
 # Troubleshooting
 
-## Where to look
+This page lists common problems by symptom, with the cause and the fix. Most fixes in the console need the **Admin** role. The command-line fixes need an elevated PowerShell on the server.
+
+## Where to look first
 
 | What | Where |
 |---|---|
-| Alerts and history | **Server › Events** |
-| Caddy log | **Server › Logs › Caddy**, file `C:\ProgramData\CaddyProxyManager\logs\caddy\caddy.log` |
-| Access logs (per host, when enabled on the host's Advanced tab) | **Server › Logs › Access**, `...\logs\access\<domain>.log` |
-| Manager log | **Server › Logs › Manager**, `...\logs\manager\manager-yyyyMMdd.log` |
-| Windows | Event Viewer › Application, source *Caddy Proxy Manager*; `Get-Service CaddyProxyManager, Caddy` |
-| Applied configs | **Caddy › Configuration › Revisions** |
+| Alerts and their history | **Events** |
+| Caddy's log | **Logs › Caddy**, file `C:\ProgramData\CaddyProxyManager\logs\caddy\caddy.log` |
+| Access logs of a host | **Logs › Access logs**, files `C:\ProgramData\CaddyProxyManager\logs\access\<domain>.log` |
+| Manager log (Admin) | **Logs › Manager**, files `C:\ProgramData\CaddyProxyManager\logs\manager\manager-yyyyMMdd.log`, kept for 14 days |
+| Windows | Event Viewer › Windows Logs › Application, source *Caddy Proxy Manager*. Also `Get-Service CaddyProxyManager, Caddy`. |
+| Configurations Caddy accepted or rejected | **Caddy › Configuration › Revisions** |
+| Server checks | **Readiness** |
 
-## Common problems
+In the Windows Application log, manager warnings and errors appear under the *Caddy Proxy Manager* source. The first-run setup token is the exception: it is only in `setup-token.txt` and the manager log. Events from the **Events** page appear there too (unless **Write to the Windows Event Log** is turned off on **Notifications**), with IDs by category: Caddy 1000, configuration 1100, upstream 1200, certificate 1300, update 1400, readiness 1500, notification 1600, backup 1700, other 1900. Add 1 for a warning, 2 for an error and 3 for a recovery.
 
-**The UI is unreachable after changing its port/bind/HTTPS.** Run `CaddyManager.exe configure --reset-ui`
-elevated, then `Restart-Service CaddyProxyManager`. The manager also falls back to defaults automatically when a
-listener cannot start (see the manager log).
+See [Logs](logs.md) and [Events](events.md).
 
-**"Caddy rejected the configuration".** Nothing was changed — the previous config keeps running. The dialog shows
-Caddy's error; typical causes are raw JSON routes, a plugin module missing from the binary, or a certificate file
-that cannot be read.
+## Locked out of the console
 
-**Certificates are not issued (ACME).** Readiness shows the usual causes: port 80/443 blocked (firewall/NAT), DNS
-not pointing at the server, clock skew, outbound HTTPS blocked or a proxy required (Settings › Updates › proxy for
-Caddy), CAA records. The *certificate missing* alert includes Caddy's ACME error. Use *Let's Encrypt staging* while
-testing to avoid rate limits.
+### The console is unreachable after changing its port, address or HTTPS
 
-**The HTTP→HTTPS redirect sends clients to the wrong port** (for example `https://site:8443/` from the Internet,
-where only 443 is open). Caddy listens on a non-standard HTTPS port behind NAT or port forwarding. Set **Settings ›
-Caddy › Public HTTPS port** to the port clients use (443 in that example); redirects then always use it. See
-[installation.md › Other HTTP/HTTPS ports](installation.md#other-httphttps-ports-nat-and-port-forwarding).
+When the manager cannot listen on the configured address or port, it falls back to port `81` on all interfaces. It records the event "Management UI started with fallback settings" and logs the reason in the manager log. First try `http://<server>:81/`.
 
-**A proxy host answers `503` to everyone, or an *Upstream unhealthy* alert appears.** How Caddy decides that a
-backend (upstream) is down depends on the host:
+If that does not work, reset the listener from the command line. The command needs the service to be stopped, because it opens the database directly.
 
-- **Several upstreams:** passive health checks. A request that fails at the proxy level (connection refused, reset
-  or dropped, timeout; *not* an HTTP error status from the backend) takes that upstream out of rotation for 30 s.
-  Requests are retried on the other upstreams for up to 5 s. When every upstream is out, the host answers 503 until
-  one comes back.
-- **One upstream:** no passive checks. A failing backend fails only the affected requests (502). It never takes the
-  whole host offline, even when a client repeats a request that makes the backend drop the connection.
-- **Active health check** (host › *Active health check*, any number of upstreams): Caddy requests the path every
-  interval, with the same `Host` header as proxied requests. One failed check (wrong status, timeout, no connection)
-  marks the upstream unhealthy until a check passes. With a single upstream the host answers **503 in the meantime**,
-  so choose a path that answers reliably, and set *Expected status* when it redirects (for example 3 = any 3xx).
-- **Alerts:** the monitor reports upstreams whose health Caddy tracks, meaning those with an active check or in a host
-  with several upstreams. A single upstream without an active check is not monitored and never raises
-  *Upstream unhealthy*. Turn on an active check to be alerted when it goes down.
+```powershell
+Stop-Service CaddyProxyManager
+& 'C:\Program Files\Caddy Proxy Manager\CaddyManager.exe' configure --reset-ui
+Start-Service CaddyProxyManager
+```
 
-Caddy's log (**Server › Logs › Caddy**) names the failing upstream and the error. The *Upstream unhealthy* alert names
-its address.
+`--reset-ui` sets port `81` on all interfaces with HTTPS and the HTTPS redirect turned off. Make sure TCP `81` is allowed in Windows Firewall. See [Management UI](management-ui.md).
 
-**HTTP/3 clients get `425 Too Early`.** Early data (QUIC 0-RTT) reached a host with an IP access list. The manager
-disables 0-RTT, so this comes from a configuration that the manager has not applied yet (for example an earlier
-version, before the first save) or from custom JSON that sets `allow_0rtt`. Apply the configuration once (**Caddy ›
-Configuration**, or save any host). See [installation.md › HTTP/3 and 0-RTT](installation.md#http3-and-0-rtt).
+### Forgot the admin password
 
-**Port 80/443 already in use.** Readiness › Ports names the owner. PID 4 (*System*) means http.sys: IIS
-(`Stop-Service W3SVC; Set-Service W3SVC -StartupType Disabled`), WinRM HTTPS listeners, SSRS, ADFS/WAP.
-`netsh http show servicestate` lists http.sys registrations.
+Reset the password of a local account from the command line, with the service stopped:
 
-**E-mail over TLS fails with a certificate revocation error.** Windows could not download the CRL/OCSP data of the
-mail server's certificate. It uses the WinHTTP proxy for that, not the manager's outbound proxy: set it with
-`netsh winhttp set proxy proxy-server="<host:port>" bypass-list="<local>"` (Readiness › Connectivity › *WinHTTP proxy*).
+```powershell
+Stop-Service CaddyProxyManager
+& 'C:\Program Files\Caddy Proxy Manager\CaddyManager.exe' reset-password --email admin@example.com
+Start-Service CaddyProxyManager
+```
 
-**Microsoft 365 e-mail stops with `535 5.7.139`.** Basic authentication for SMTP AUTH is disabled for the tenant:
-switch to *Microsoft 365 OAuth2* ([notifications.md](notifications.md)).
+- Without `--password <password>`, a strong password is generated and printed.
+- `--enable` also re-enables a disabled account.
+- `list-users` shows all accounts with their role and status.
 
-**Readiness says "Windows PowerShell runs in ConstrainedLanguage mode".** A Windows Defender Application Control /
-AppLocker policy puts PowerShell into Constrained Language mode, which blocks the scripts the firewall, network and
-port checks use. Check those settings manually (`Get-NetFirewallProfile`, `Get-NetConnectionProfile`,
-`Get-NetTCPConnection -State Listen`) or allow the checks in the policy; everything else works normally.
+Resetting a password signs out that user's existing sessions. Directory (LDAP) accounts have no local password: reset them in the directory, or use a local admin account. See [Users](users.md) and [Command line](cli.md).
 
-**Restart from the UI.** *Restart* ends the manager process with exit code 1 without reporting "stopped" to Windows;
-the Service Control Manager logs event 7031/7034 (*terminated unexpectedly*) and restarts it after 5 seconds through
-the recovery actions. Those events are expected. If the manager does not come back, check
-`sc.exe qfailure CaddyProxyManager` (restart 5 s / 10 s / 30 s) — re-running the MSI or `CaddyManager.exe install`
-repairs it.
+### "Too many attempts" when signing in
 
-**`sc query Caddy` shows `START_PENDING` although Caddy serves, and `sc stop Caddy` / `net stop Caddy` fail with
-error 1061 ("cannot accept control messages") or 1052.** A known issue of Caddy v2.11.4 as a Windows service: when
-Caddy loads its config before Windows has finished starting the service (small config, fast machine), its "running"
-report is lost and the service stays *Starting* ([caddy PR #8012](https://github.com/caddyserver/caddy/pull/8012), not
-released yet). Caddy itself works normally. The manager handles it:
+After 10 sign-in attempts within a minute from one address, the sign-in page shows "Too many sign-in attempts. Wait a minute before trying again." Wait a minute.
 
-- While the service is *Starting* but Caddy's admin API answers, the UI shows Caddy as *Running* and no *Caddy down*
-  alert is raised.
-- *Start*/*Restart* and every stop from the manager (UI, binary updates) first re-send the running configuration unchanged
-  to Caddy's admin API (`POST /load` without forcing a reload, so nothing restarts); Caddy then reports *Running* and
-  stops normally. If the service still refuses, the manager asks Caddy to exit through its admin API (`/stop`) and,
-  as the last resort, ends the Caddy process. While it does that it switches the service's recovery actions off, so
-  Windows does not restart Caddy a few seconds later, and restores them afterwards (the manager's next start restores
-  them too). The manager log names the path taken ("stopped (Fallback)" / "stopped (Killed)"). Uninstall
-  (`CaddyManager.exe uninstall`, `uninstall-caddy-service`) retries the stop for 10 s and then ends the process the
-  same way.
-- A service that stays *Starting* for more than 2 minutes **without** the admin API answering is reported as *Unknown*
-  with an explanation (the monitor alerts); *Start* ends that hung process and starts Caddy again.
+## The console says it cannot reach the management service
 
-To get the service out of that state by hand, use *Restart* on **Caddy › Service & Updates**. Without the UI:
-`sc.exe queryex Caddy` for the PID, then `Stop-Process -Id <PID> -Force`; Windows counts that as a failure and starts
-Caddy again after 5 s through the recovery actions (and it may end up in the same state again).
+The message "The management service could not be reached. Check that the Caddy Proxy Manager service is running." means the browser got no answer from the manager.
 
-**Local firewall rules have no effect.** A GPO disables local rules — deploy the GPO script (see
-[group-policy.md](group-policy.md)).
+1. Check the service: `Get-Service CaddyProxyManager`.
+2. Start it if it is stopped: `Start-Service CaddyProxyManager`, or `CaddyManager.exe manager start`.
+3. If it keeps stopping, read the newest file in `C:\ProgramData\CaddyProxyManager\logs\manager\` and the Application log.
 
-**Backends using Windows authentication (IIS/SharePoint) prompt repeatedly.** Enable *Upstream uses Windows
-authentication (NTLM)* on the host and add the plugin `github.com/caddyserver/ntlm-transport`.
+Caddy keeps serving sites while the manager is stopped.
 
-**Caddy update failed.** The previous binary is restored automatically; details are in Events and the job log. Use
-*Roll back* on Caddy › Service & Updates to return to the previous version at any time.
+### After Restart now, Windows logs "terminated unexpectedly"
+
+**Restart now** in a **Restart required** panel (Admin) ends the manager on purpose. The panel appears after you change the management UI listener or stage a restore. Windows then restarts the manager through the service recovery actions: after 5, 10 and 30 seconds. The System log entries 7031 or 7034 ("terminated unexpectedly") are expected.
+
+If the manager does not come back, check the recovery actions with `sc.exe qfailure CaddyProxyManager`. Running the installer again, or `CaddyManager.exe install`, repairs them.
+
+## Caddy does not start or keeps stopping
+
+When Caddy is stopped or its admin API does not answer on two checks in a row, the **Events** page shows "Caddy is not running (state: …)" or "Caddy is running but its admin API is not reachable". With **Restart Caddy automatically** turned on under **Notifications**, the manager tries to start Caddy up to 3 times in 10 minutes. After that it raises "Automatic restart of Caddy gave up after 3 attempts in 10 minutes".
+
+1. Read **Logs › Caddy** for the reason.
+2. Open **Readiness** and look at the **Ports** section. A port that another program holds is the most common cause.
+3. Start Caddy with **Start** or **Restart** on **Caddy › Service & Updates**.
+
+If the Caddy service stays *Starting* for more than 2 minutes without its admin API answering, the console shows its state as *Unknown* and raises an alert. **Start** then ends the hung process and starts Caddy again.
+
+See [Caddy service](caddy-service.md).
+
+### Port 80 or 443 is already in use
+
+**Readiness › Ports** names the program that holds the port.
+
+- "… is held by http.sys (PID 4 'System')" means a Windows component registered a URL on that port. It is typically IIS (W3SVC), WinRM, SQL Server Reporting Services, ADFS, WSUS or Windows Admin Center. List the registrations with `netsh http show servicestate view=requestq`, then move that service to another port or stop it. For IIS: `Stop-Service W3SVC; Set-Service W3SVC -StartupType Disabled`.
+- "… is already in use by *program* (PID …). Caddy cannot bind it." names another program. Stop or reconfigure it, or change Caddy's ports on **Settings › Caddy**.
+
+### A Caddy update failed
+
+Use **Roll back** on **Caddy › Service & Updates** to return to the previous Caddy version. The job log and **Events** show why the update failed. See [Caddy service](caddy-service.md).
+
+## A certificate is not issued
+
+When an enabled host with an ACME or internal certificate still has no certificate 10 minutes after its last change, the **Events** page shows "No certificate has been issued for *domain*". The event includes the last certificate errors from Caddy's log.
+
+Check the usual causes:
+
+- **DNS**: the domain's public DNS must point at this server, or at the load balancer in front of it. **Readiness** has a **DNS** check per domain.
+- **Ports**: HTTP-01 needs TCP `80`, and TLS-ALPN-01 needs TCP `443`, reachable from the internet. Check the firewall and any NAT. If you cannot open them, use the DNS challenge (see [ACME](acme.md)).
+- **Clock**: the **System clock** check on **Readiness** compares the server's time with Let's Encrypt. TLS and ACME fail when the clock is wrong.
+- **Outbound HTTPS**: Caddy must reach the CA. The **Connectivity** checks on **Readiness** test outbound HTTPS. If your network needs a proxy, set it on **Settings › Updates** and turn on **Send Caddy’s own traffic through the proxy** (see [Updates](updates.md)).
+- **Rate limits**: while testing, choose **Let’s Encrypt (staging — for testing, untrusted)** as the certificate authority.
+
+In a cluster behind a load balancer, HTTP-01 and TLS-ALPN-01 need shared storage. See [Clustering](cluster.md#shared-caddy-storage).
+
+## Caddy rejected the configuration
+
+When you save a change that Caddy refuses, a dialog titled **Caddy rejected the configuration** appears. It says "The change was not saved and the previous configuration is still active" and shows Caddy's error. Nothing changed: Caddy keeps running the previous configuration.
+
+- Read Caddy's error in the dialog. It names the part of the configuration it refused.
+- **Caddy › Configuration › Revisions** lists recent attempts, with **Applied** or **Rejected**.
+- If the error names a module Caddy does not have, add the plugin on **Caddy › Plugins** and rebuild Caddy. See [Plugins](plugins.md).
+
+Two other outcomes look similar:
+
+- **Configuration not applied**: the change was saved, but Caddy did not accept the resulting configuration. Read the error and correct the change.
+- **Saved — Caddy is not running**: the configuration was written to disk. Caddy loads it when it starts.
+
+See [Host options](host-options.md) and [Configuration](configuration.md).
+
+## Streams are saved but not active
+
+The **Streams** page shows "The installed Caddy binary does not include the layer4 plugin", and saving or enabling a stream reports "Stream saved but not active" or "Stream enabled but not active". Streams need the plugin `github.com/mholt/caddy-l4`.
+
+1. Click **Open Plugins**, or go to **Caddy › Plugins**.
+2. Add `github.com/mholt/caddy-l4`.
+3. Click **Rebuild & install**.
+
+The streams become active when Caddy runs with the plugin. See [Streams](streams.md).
+
+## A backend is reported down or never alerts
+
+The manager does not add passive health checks, so a single failing request never takes a backend out of rotation. The manager reports an upstream as unhealthy only when the host has an active health check. A backend without one is not monitored and never raises **Upstream unhealthy**. To be alerted when a backend goes down, turn on **Enable health checks** in the host's **Active health check** section. See [Host options](host-options.md).
+
+## Clients are redirected to the wrong HTTPS port
+
+If Caddy listens on a non-standard HTTPS port behind NAT or port forwarding, HTTP-to-HTTPS redirects use that port. Set **Public HTTPS port** on **Settings › Caddy** to the port clients use, for example `443`. See [Caddy settings](caddy-settings.md).
+
+## Readiness says PowerShell runs in ConstrainedLanguage mode
+
+A Windows Defender Application Control or AppLocker policy runs PowerShell in a restricted language mode, and the readiness scripts cannot run. Check the firewall, network profile and port settings by hand, for example with `Get-NetFirewallProfile`, `Get-NetConnectionProfile` and `Get-NetTCPConnection -State Listen`. Alternatively, allow the checks in the policy. Everything else works normally. See [Readiness](readiness.md).
+
+## E-mail over TLS fails with a certificate revocation error
+
+Windows could not download the revocation data of the mail server's certificate. It uses the WinHTTP proxy for that, not the manager's outbound proxy. The **WinHTTP proxy (certificate revocation checks)** check on **Readiness** shows the current setting. Set it with:
+
+```powershell
+netsh winhttp set proxy proxy-server="proxy.example.com:8080" bypass-list="<local>"
+```
+
+## Restore problems
+
+| Message or symptom | Cause and fix |
+|---|---|
+| This backup is encrypted. Enter the backup password. | Enter the encryption password in **Backup password**. |
+| The backup password is incorrect. | Use the password that was set when the backup was created. It cannot be recovered. |
+| The archive has no manifest.json — it is not a Caddy Proxy Manager backup. | Upload a zip that the console created. |
+| The backup format version … is newer than this version … supports. | Upgrade Caddy Proxy Manager on this server first. |
+| The database in the backup has no enabled administrator account … | That backup would lock everyone out. Use another backup. |
+| The restore was staged but nothing changed | The staged restore is applied only when the management service restarts. Click **Restart now**, or run `Restart-Service CaddyProxyManager`. |
+| Manager log: "A backup restore is staged … but has not been applied" | Stop the service, run `CaddyManager.exe apply-restore`, then start the service. |
+| Manager log: "Backup restore FAILED and the previous database was kept" | The previous database is back in use. The staged files are in `C:\ProgramData\CaddyProxyManager\restore-failed-<timestamp>`. Read the error in the log. |
+| Messages such as "The stored EAB MAC key could not be decrypted (was the database restored from another server?)" | Secrets do not move between servers. Enter them again (see [Moving to another server](backup-restore.md#moving-to-another-server)). |
+
+See [Backup and restore](backup-restore.md).
+
+## Cluster problems
+
+For nodes that are offline, out of sync, rejected or waiting to join, see [Cluster problems](cluster.md#cluster-problems).
+
+## Related
+
+- [Readiness](readiness.md)
+- [Logs](logs.md)
+- [Events](events.md)
+- [Command line](cli.md)
+- [Management UI](management-ui.md)
+- [Backup and restore](backup-restore.md)
+- [Clustering](cluster.md)

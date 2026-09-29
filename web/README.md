@@ -23,4 +23,9 @@ In mock mode, custom routes containing an unknown handler (e.g. `[{"handle":[{"h
 are rejected with a Caddy-style 422 to exercise the error dialog. The mock is a Vite dev-server plugin
 and is never part of a production build.
 
+Product documentation: `/docs` renders the Markdown pages in the repository's `docs/` folder (listed in
+`src/docs/manifest.ts`, parsed by `src/docs/markdown.ts`, no sign-in and no API calls). Writing rules are in
+`../docs/STYLE.md`; `node mock/e2e/run.ts docs docs-setup docs-help` checks rendering, links, images, search and the Help
+button. `node mock/e2e/docs-screenshots.ts [name…]` regenerates the screenshots in `../docs/images` (light and dark).
+
 API types in `src/api/types.ts` mirror `src/CaddyManager.Core` (camelCase properties and enum values, nulls omitted).

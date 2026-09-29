@@ -18,14 +18,14 @@
 //   where a UTC day and the local day differ, and expected labels are computed for that zone explicitly.
 // - An interception leaks into a later step → each one is removed right after its step.
 // - A scenario's state leaks into the next → one mock server (fresh state) per scenario.
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BinarySettings, CaddySettings, ManagerUpdateInfo, RegenerateTokenResult, ServerSummary, SiteHost, TrafficReport } from '../../src/api/types.ts';
+import { allPages, unpublishedDocs } from '../../src/docs/manifest.ts';
 import { Browser, type Page, until } from './cdp.ts';
+import { Mock, WEB } from './mock-server.ts';
 
-const WEB = join(import.meta.dirname, '..', '..');
 const ARTIFACTS = process.env.CPM_E2E_ARTIFACTS || join(WEB, 'mock', 'e2e', 'artifacts');
 const TZ = 'America/New_York';
 const EXE = 'C:\\Program Files\\Caddy Proxy Manager\\CaddyManager.exe';
@@ -39,65 +39,6 @@ interface Check {
 }
 const checks: Check[] = [];
 const screenshots: string[] = [];
-
-// ---------------------------------------------------------------- mock server
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as { port: number }).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
-
-class Mock {
-  readonly base: string;
-  private proc: ChildProcess;
-  private output = '';
-
-  private constructor(base: string, proc: ChildProcess) {
-    this.base = base;
-    this.proc = proc;
-    proc.stdout?.on('data', (d) => (this.output += String(d)));
-    proc.stderr?.on('data', (d) => (this.output += String(d)));
-  }
-
-  static async start(env: Record<string, string>): Promise<Mock> {
-    const port = await freePort();
-    const proc = spawn(process.execPath, [join(WEB, 'node_modules', 'vite', 'bin', 'vite.js'), '--mode', 'mock', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
-      cwd: WEB,
-      env: { ...process.env, MOCK_LATENCY: '0', ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const m = new Mock(`http://127.0.0.1:${port}`, proc);
-    try {
-      await until('the mock API', async () => (await fetch(`${m.base}/api/auth/me`)).ok, 30_000, 250);
-    } catch (err) {
-      proc.kill();
-      throw new Error(`${(err as Error).message}\n${m.output}`, { cause: err });
-    }
-    return m;
-  }
-
-  async api<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(this.base + path, {
-      method,
-      // X-CPM-Request: the anti-CSRF header every state-changing API call carries (like src/api/client.ts).
-      headers: { 'X-CPM-Request': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${text}`);
-    return (text ? JSON.parse(text) : null) as T;
-  }
-
-  stop() {
-    this.proc.kill();
-  }
-}
 
 // ---------------------------------------------------------------- scenario plumbing
 
@@ -793,6 +734,299 @@ async function managerUpdateScenarios() {
   });
 }
 
+/**
+ * Product documentation at /docs (web/src/docs, content from the repository's docs/ folder).
+ * Ways it could fail, and the check for each:
+ * - The auth guard catches /docs (signed out → /login, first run → /setup) → opened signed out and in setup mode.
+ * - The docs call the API (a 401 would bounce readers to /login) → no /api request while reading every page.
+ * - A manifest page has no Markdown file or renders empty → every sidebar page has a title and real content.
+ * - A link points at a page or heading that does not exist → every /docs link and #anchor is resolved.
+ * - Markdown syntax leaks into the text (**, ](, [!NOTE], table rules, ```) → checked outside code on every page.
+ * - Search finds nothing or opens the wrong place → Ctrl+K, query, Enter lands on the hit's heading, in view.
+ * - A deep link does not scroll to its heading → /docs/<page>#<heading> puts the heading below the top bar.
+ * - The console's Help button maps a screen to a missing or wrong page → every console route checked.
+ * - Phone layout scrolls sideways or the drawer does not navigate → every page at 390 px, drawer used.
+ * - The console becomes public along with the docs → a console route signed out still goes to /login.
+ */
+interface DocCrawl {
+  path: string;
+  images: { src: string; alt: string; sized: boolean }[];
+  title: string;
+  blocks: number;
+  textLength: number;
+  ids: string[];
+  links: string[];
+  leaks: string[];
+}
+async function docsScenarios() {
+  let S = 'docs';
+  await scenario(S, { MOCK_ANON: '1' }, async ({ mock, page }) => {
+    await check(S, ['DOCS-CONTENT'], 'every Markdown file in docs/ is either a published page or listed as unpublished, and every page has a file', () => {
+      // Dot files (macOS ._* metadata) are not matched by the bundler's glob either.
+      const files = readdirSync(join(WEB, '..', 'docs')).filter((f) => f.endsWith('.md') && !f.startsWith('.')).map((f) => f.slice(0, -3));
+      const slugs = allPages.map((p) => p.slug);
+      const stray = files.filter((f) => !slugs.includes(f) && !unpublishedDocs.includes(f));
+      const missing = slugs.filter((s) => !files.includes(s));
+      if (stray.length) return `not in the manifest or unpublishedDocs: ${stray.join(', ')}`;
+      if (missing.length) return `manifest pages without a file: ${missing.join(', ')}`;
+    });
+    const article = `document.querySelector('main#doc-content article')`;
+    const rendered = (path: string) =>
+      `document.querySelector('aside[aria-label="Documentation"] nav a[aria-current="page"]')?.getAttribute('href') === ${js(path)}`;
+    await page.goto(`${mock.base}/docs`, `!!${article} && !!document.querySelector('#doc-title')`, 'the documentation home (signed out)');
+    await page.eval(`localStorage.setItem('cpm.theme', 'light')`);
+    await page.goto(`${mock.base}/docs`, `!!${article}`, 'the documentation home (light)');
+    await shot(page, 'docs-home-light');
+    await check(S, ['DOCS-PUBLIC'], 'signed out, /docs shows the documentation instead of redirecting to /login', async () => {
+      const r = await page.eval<{ path: string; title: string }>(`({ path: location.pathname, title: document.querySelector('#doc-title').textContent })`);
+      if (r.path !== '/docs') return `redirected to ${r.path}`;
+      if (!r.title.trim()) return 'no page title';
+    });
+
+    const sidebar = await page.eval<{ path: string; label: string }[]>(
+      `[...document.querySelectorAll('aside[aria-label="Documentation"] nav a')].map((a) => ({ path: a.getAttribute('href'), label: a.textContent.trim() }))`,
+    );
+    await check(S, ['DOCS-NAV'], `the sidebar lists the documentation pages (${sidebar.length})`, () =>
+      sidebar.length >= 30 ? undefined : `only ${sidebar.length} pages in the sidebar`,
+    );
+
+    // Read every page through client-side navigation, as a reader clicking the sidebar would.
+    await page.eval(`performance.clearResourceTimings(); performance.setResourceTimingBufferSize(10000)`);
+    const crawl: DocCrawl[] = [];
+    for (const item of sidebar) {
+      await page.eval(`history.pushState({}, '', ${js(item.path)}); dispatchEvent(new PopStateEvent('popstate'))`);
+      // Rendered state, not just the URL: pushState changes location before React re-renders.
+      await page.waitFor(`the page ${item.path}`, `${rendered(item.path)} && !!${article} && !!document.querySelector('#doc-title')`);
+      crawl.push(
+        await page.eval<DocCrawl>(`(() => {
+          const a = ${article};
+          const prose = a.cloneNode(true);
+          prose.querySelectorAll('pre, code').forEach((e) => e.remove());
+          const text = prose.innerText;
+          return {
+            path: location.pathname,
+            title: document.querySelector('#doc-title').textContent.trim(),
+            blocks: a.querySelectorAll('p, li, table, pre, aside, h2, h3').length,
+            textLength: a.innerText.length,
+            ids: [...document.querySelectorAll('[id]')].map((e) => e.id),
+            links: [...a.querySelectorAll('a[href]')].map((l) => l.getAttribute('href')),
+            images: [...a.querySelectorAll('img')].map((i) => ({ src: i.getAttribute('src'), alt: i.getAttribute('alt') || '', sized: !!(i.getAttribute('width') && i.getAttribute('height')) })),
+            leaks: [text],
+          };
+        })()`),
+      );
+    }
+    // Markdown syntax that should have been rendered, looked for in the prose (code removed) of each page.
+    const leakPatterns: [string, RegExp][] = [
+      ['**', /\*\*/],
+      ['](', /\]\(/],
+      ['[!ALERT]', /\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i],
+      ['table rule', /(^|\n)\s*\|?\s*:?-{3,}:?\s*\|/],
+      ['heading #', /(^|\n)#{1,6} /],
+      ['fence', /```/],
+      ['image', /!\[/],
+      ['missing image', /Missing image:/],
+    ];
+    for (const c of crawl) {
+      const text = c.leaks[0];
+      c.leaks = leakPatterns.filter(([, re]) => re.test(text)).map(([name, re]) => `${name}: ${text.match(re)?.[0]}`);
+    }
+    const pagesByPath = new Map(crawl.map((c) => [c.path, c]));
+    await check(S, ['DOCS-CONTENT'], 'every page has a title and real content (≥ 8 blocks, ≥ 1,200 characters)', () => {
+      const thin = crawl.filter((c) => !c.title || c.title === 'Page not found' || c.blocks < 8 || c.textLength < 1200);
+      return thin.length ? `thin or missing: ${thin.map((c) => `${c.path} (${c.blocks} blocks, ${c.textLength} chars)`).join(', ')}` : undefined;
+    });
+    await check(S, ['DOCS-CONTENT'], 'no Markdown syntax leaks into the rendered text of any page', () => {
+      const bad = crawl.filter((c) => c.leaks.length);
+      return bad.length ? bad.map((c) => `${c.path}: ${c.leaks.join('; ')}`).join(' | ') : undefined;
+    });
+    const linkReport: { from: string; href: string; ok: boolean; why?: string }[] = [];
+    for (const c of crawl) {
+      for (const href of c.links) {
+        if (/^https?:/.test(href)) {
+          linkReport.push({ from: c.path, href, ok: true });
+          continue;
+        }
+        const [pathPart, hash] = href.startsWith('#') ? [c.path, href.slice(1)] : [href.split('#')[0], href.split('#')[1]];
+        let why: string | undefined;
+        if (pathPart.startsWith('/docs')) {
+          const target = pagesByPath.get(pathPart);
+          if (!target) why = 'no such documentation page';
+          else if (hash && !target.ids.includes(decodeURIComponent(hash))) why = `no heading #${hash} on ${pathPart}`;
+        } else if (!pathPart.startsWith('/')) why = 'relative link that is not a documentation page';
+        linkReport.push({ from: c.path, href, ok: !why, why });
+      }
+    }
+    writeFileSync(join(ARTIFACTS, 'docs-links.json'), JSON.stringify({ pages: crawl.map(({ ids: _ids, ...rest }) => rest), links: linkReport }, null, 2));
+    await check(S, ['DOCS-LINKS'], `every link between documentation pages resolves to a page and heading (${linkReport.length} links)`, () => {
+      const broken = linkReport.filter((l) => !l.ok);
+      return broken.length ? broken.map((l) => `${l.from} → ${l.href} (${l.why})`).join('; ') : undefined;
+    });
+    // Screenshots (docs/images, generated by mock/e2e/docs-screenshots.ts)
+    const imageFiles = readdirSync(join(WEB, '..', 'docs', 'images')).filter((f) => f.endsWith('.webp'));
+    const used = crawl.flatMap((c) => c.images.map((i) => ({ page: c.path, ...i })));
+    await check(S, ['DOCS-IMAGES'], `every screenshot on the pages is served as an image, has alt text and a reserved size (${used.length} images)`, async () => {
+      const bad: string[] = [];
+      for (const img of used) {
+        if (!img.alt.trim()) bad.push(`${img.page}: ${img.src} has no alt text`);
+        // Without a reserved size, images loading above an anchor push it out of view (docs/images/images.json).
+        if (!img.sized) bad.push(`${img.page}: ${img.src} has no width/height (missing from docs/images/images.json)`);
+        const r = await fetch(new URL(img.src, mock.base));
+        const type = r.headers.get('content-type') ?? '';
+        if (!r.ok || !type.startsWith('image/webp')) bad.push(`${img.page}: ${img.src} → ${r.status} ${type}`);
+      }
+      return bad.length ? bad.join('; ') : undefined;
+    });
+    await check(S, ['DOCS-IMAGES'], 'every screenshot file is used by a page and has a light and a dark variant', () => {
+      const light = imageFiles.filter((f) => !f.endsWith('.dark.webp'));
+      const noDark = light.filter((f) => !imageFiles.includes(f.replace(/\.webp$/, '.dark.webp')));
+      const orphanDark = imageFiles.filter((f) => f.endsWith('.dark.webp') && !imageFiles.includes(f.replace(/\.dark\.webp$/, '.webp')));
+      // Dev server: /…/images/<name>.webp; build: /assets/<name>-<hash>.webp.
+      const isFile = (src: string, f: string) => new RegExp(`/${f.replace(/\.webp$/, '').replace(/\./g, '\\.')}(-[\\w-]{8})?\\.webp$`).test(src);
+      const unused = light.filter((f) => !used.some((u) => isFile(u.src, f)));
+      const problems = [
+        ...noDark.map((f) => `${f} has no dark variant`),
+        ...orphanDark.map((f) => `${f} has no light variant`),
+        ...unused.map((f) => `${f} is not used by any page`),
+      ];
+      return problems.length ? problems.join('; ') : undefined;
+    });
+    await check(S, ['DOCS-PUBLIC'], 'reading every page made no API request (works signed out and with the service down)', async () => {
+      const api = await page.eval<string[]>(`performance.getEntriesByType('resource').map((e) => e.name).filter((n) => new URL(n).pathname.startsWith('/api/'))`);
+      return api.length ? `API requests: ${api.join(', ')}` : undefined;
+    });
+
+    // Deep link to a heading
+    const target = crawl.find((c) => c.path === '/docs/acme') ?? crawl[1];
+    const anchor = target.ids.find((id) => id === 'dns-01') ?? target.ids.find((id) => /^[a-z]/.test(id) && !['doc-title', 'doc-content', 'root'].includes(id))!;
+    await page.goto(`${mock.base}${target.path}#${anchor}`, `!!document.getElementById(${js(anchor)})`, `the deep link ${target.path}#${anchor}`);
+    await check(S, ['DOCS-ANCHOR'], `a deep link (${target.path}#${anchor}) scrolls its heading just below the top bar`, async () => {
+      const top = await page.waitFor<number>('the heading scrolled into view', `(() => { const t = document.getElementById(${js(anchor)}).getBoundingClientRect().top; return t >= 40 && t <= 160 ? t : 0; })()`);
+      return top ? undefined : 'heading not in view';
+    });
+
+    // Search: Ctrl+K, type, Enter
+    await page.goto(`${mock.base}/docs`, `!!${article}`, 'the documentation home');
+    await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))`);
+    await page.waitFor('the search dialog', `!!document.querySelector('[role="dialog"][aria-label="Search the documentation"] input')`);
+    await page.eval(`__e2e.set(document.querySelector('[role="dialog"] input[type="search"]'), 'wildcard certificate')`);
+    await page.waitFor('search results', `document.querySelectorAll('#doc-search-results [role="option"]').length > 0 && ${settled}`);
+    await shot(page, 'docs-search');
+    const first = await page.eval<{ page: string; heading: string }>(`(() => {
+      const o = document.querySelector('#doc-search-results [role="option"]');
+      const spans = o.querySelectorAll('p:first-child span');
+      return { page: spans[0].textContent, heading: spans[1] ? spans[1].textContent : '' };
+    })()`);
+    await check(S, ['DOCS-SEARCH'], `searching "wildcard certificate" finds the ACME page among the results (first: ${first.page} › ${first.heading})`, async () => {
+      const titles = await page.eval<string[]>(`[...document.querySelectorAll('#doc-search-results [role="option"] p:first-child span:first-child')].map((s) => s.textContent)`);
+      const acme = crawl.find((c) => c.path === '/docs/acme')?.title;
+      return acme && titles.includes(acme) ? undefined : `results: ${titles.join(', ')}`;
+    });
+    await page.eval(`document.querySelector('[role="dialog"] input[type="search"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
+    await check(S, ['DOCS-SEARCH'], 'Enter opens the first result at its heading and closes the search', async () => {
+      const r = await page.waitFor<{ path: string; hash: string; heading: string; top: number } | null>('the result page', `(() => {
+        if (document.querySelector('[role="dialog"][aria-label="Search the documentation"]')) return null;
+        const id = decodeURIComponent(location.hash.slice(1));
+        const h = id ? document.getElementById(id) : document.querySelector('#doc-title');
+        if (!h) return null;
+        return { path: location.pathname, hash: id, heading: h.textContent.trim(), top: h.getBoundingClientRect().top };
+      })()`);
+      if (!r) return 'did not navigate';
+      if (first.heading && !r.heading.startsWith(first.heading)) return `landed on "${r.heading}", expected "${first.heading}"`;
+      if (r.top < 0 || r.top > 200) return `heading at ${Math.round(r.top)}px, not in view`;
+    });
+
+    await page.goto(`${mock.base}/docs/does-not-exist`, `__e2e.has('Page not found')`, 'an unknown documentation page');
+    await check(S, ['DOCS-NAV'], 'an unknown page shows "Page not found" with a way back', async () =>
+      (await page.eval<boolean>(`!!document.querySelector('main a[href="/docs"]')`)) ? undefined : 'no link back to the documentation home',
+    );
+
+    // Dark theme rendering of a page with tables, code and callouts
+    await page.eval(`localStorage.setItem('cpm.theme', 'dark')`);
+    await page.goto(`${mock.base}/docs/acme`, `!!${article} && document.documentElement.classList.contains('dark')`, 'a page in the dark theme');
+    await page.eval(`document.querySelector('main#doc-content aside')?.scrollIntoView({ block: 'center' })`);
+    await shot(page, 'docs-page-dark');
+    await check(S, ['DOCS-IMAGES'], 'the dark theme shows the dark screenshot; selecting it opens it full size and Escape closes it', async () => {
+      const shown = await page.eval<string[]>(`[...document.querySelectorAll('main#doc-content figure img')].filter((i) => i.getClientRects().length).map((i) => i.getAttribute('src'))`);
+      if (!shown.length) return 'no visible screenshot on the page';
+      if (!shown.every((src) => /\.dark(-[\w-]+)?\.webp$/.test(src))) return `light image shown in the dark theme: ${shown.join(', ')}`;
+      await page.eval(`document.querySelector('main#doc-content figure button').scrollIntoView({ block: 'center' }); document.querySelector('main#doc-content figure button').click()`);
+      await page.waitFor('the full-size view', `!!document.querySelector('[role="dialog"][aria-modal="true"] img') && ${settled}`);
+      await shot(page, 'docs-image-full-size');
+      await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      const closed = await page.waitFor<boolean>('the full-size view to close', `!document.querySelector('[role="dialog"][aria-modal="true"]')`);
+      return closed ? undefined : 'did not close';
+    });
+
+    // Phone width: no sideways scrolling on any page; the drawer navigates.
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await page.eval(`localStorage.setItem('cpm.theme', 'light')`);
+    await page.goto(`${mock.base}/docs`, `!!${article}`, 'the documentation on a phone');
+    const wide: string[] = [];
+    for (const c of crawl) {
+      await page.eval(`history.pushState({}, '', ${js(c.path)}); dispatchEvent(new PopStateEvent('popstate'))`);
+      await page.waitFor(`${c.path} on a phone`, `${rendered(c.path)} && !!${article}`);
+      const w = await page.eval<{ scroll: number; view: number }>(`({ scroll: document.documentElement.scrollWidth, view: window.innerWidth })`);
+      if (w.scroll > w.view) wide.push(`${c.path} (${w.scroll}px > ${w.view}px)`);
+    }
+    await check(S, ['DOCS-MOBILE'], 'at 390 px no page scrolls sideways (tables and code scroll inside their boxes)', () => (wide.length ? wide.join(', ') : undefined));
+    await page.goto(`${mock.base}/docs/proxy-hosts`, `!!${article}`, 'a page on a phone');
+    await shot(page, 'docs-phone');
+    await page.eval(`document.querySelector('button[aria-label="Open documentation navigation"]').click()`);
+    await page.waitFor('the navigation drawer', `!!document.querySelector('[role="dialog"][aria-label="Documentation navigation"]') && ${settled}`);
+    await shot(page, 'docs-phone-drawer');
+    await page.eval(`__e2e.click('[role="dialog"] nav a', 'Certificates')`);
+    await check(S, ['DOCS-MOBILE'], 'choosing a page in the drawer opens it and closes the drawer', async () => {
+      const ok = await page.waitFor<boolean>('the certificates page', `location.pathname === '/docs/certificates' && !document.querySelector('[role="dialog"][aria-label="Documentation navigation"]')`);
+      return ok ? undefined : 'drawer did not navigate';
+    });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+
+    // The console itself stays private, and the sign-in page links to the docs.
+    await page.goto(`${mock.base}/hosts/proxy`, `location.pathname === '/login' && !!document.querySelector('input[type="password"]')`, 'a console page signed out');
+    await check(S, ['DOCS-PUBLIC'], 'signed out, console pages still redirect to the sign-in page', async () => eq(await page.eval(`location.pathname`), '/login', 'path'));
+    await check(S, ['DOCS-HELP'], 'the sign-in page links to the documentation', async () =>
+      (await page.eval<boolean>(`[...document.querySelectorAll('a[href="/docs"]')].some((a) => a.textContent.trim() === 'Documentation')`)) ? undefined : 'no Documentation link',
+    );
+  });
+
+  S = 'docs-setup';
+  await scenario(S, { MOCK_SETUP: '1' }, async ({ mock, page }) => {
+    await page.goto(`${mock.base}/docs/installation`, `!!document.querySelector('#doc-title') || location.pathname === '/setup'`, 'the documentation before setup');
+    await check(S, ['DOCS-PUBLIC'], 'before first-run setup, /docs is readable instead of redirecting to /setup', async () =>
+      eq(await page.eval(`location.pathname`), '/docs/installation', 'path'),
+    );
+  });
+
+  S = 'docs-help';
+  await scenario(S, {}, async ({ mock, page }) => {
+    await page.goto(`${mock.base}/`, `!!document.querySelector('a[aria-label^="Help for this page"]')`, 'the dashboard');
+    await shot(page, 'docs-help-button');
+    const routes = await page.eval<string[]>(`[...document.querySelectorAll('aside nav[aria-label="Main"] a')].map((a) => a.getAttribute('href'))`);
+    const extra = ['/settings?tab=caddy', '/settings?tab=cluster', '/settings?tab=updates', '/settings?tab=ui', '/settings?tab=ldap', '/settings?tab=backup'];
+    const help: Record<string, string> = {};
+    for (const route of [...routes, ...extra]) {
+      // A full load per screen: the link then reflects that screen from the first render (no stale read).
+      await page.goto(`${mock.base}${route}`, `!!document.querySelector('a[aria-label^="Help for this page"]')`, `the Help link on ${route}`);
+      help[route] = await page.eval<string>(`document.querySelector('a[aria-label^="Help for this page"]').getAttribute('href')`);
+    }
+    await page.goto(`${mock.base}/docs`, `!!document.querySelector('aside[aria-label="Documentation"] nav a')`, 'the documentation');
+    const docPages = new Set(await page.eval<string[]>(`[...document.querySelectorAll('aside[aria-label="Documentation"] nav a')].map((a) => a.getAttribute('href'))`));
+    writeFileSync(join(ARTIFACTS, 'docs-help-map.json'), JSON.stringify(help, null, 2));
+    await check(S, ['DOCS-HELP'], `every console screen's Help button opens an existing documentation page for that screen (${Object.keys(help).length} screens)`, () => {
+      const bad = Object.entries(help).filter(([, href]) => !docPages.has(href) || href === '/docs');
+      return bad.length ? bad.map(([r, h]) => `${r} → ${h}`).join(', ') : undefined;
+    });
+    await check(S, ['DOCS-HELP'], 'the Help button follows the screen: proxy hosts, dashboard and the Directory settings tab', () =>
+      eq([help['/hosts/proxy'], help['/'], help['/settings?tab=ldap']], ['/docs/proxy-hosts', '/docs/dashboard', '/docs/directory-sign-in'], 'help targets'),
+    );
+    await check(S, ['DOCS-HELP'], 'the Help button opens the documentation in a new tab', async () =>
+      eq(await page.goto(`${mock.base}/hosts/proxy`, `!!document.querySelector('a[aria-label^="Help for this page"]')`, 'proxy hosts').then(() =>
+        page.eval(`document.querySelector('a[aria-label^="Help for this page"]').getAttribute('target')`)), '_blank', 'target'),
+    );
+  });
+}
+
 // ---------------------------------------------------------------- main
 
 const started = new Date();
@@ -804,6 +1038,7 @@ try {
   await serversScenario();
   await brandingScenario();
   await managerUpdateScenarios();
+  await docsScenarios();
 } finally {
   mkdirSync(ARTIFACTS, { recursive: true });
   const failed = checks.filter((c) => c.result === 'fail').length;

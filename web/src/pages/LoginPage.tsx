@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Navigate, useNavigate, useSearchParams } from 'react-router';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router';
 import { ApiError, errorMessage } from '@/api/client';
 import { useLogin, useMe, useSetupStatus } from '@/api/hooks';
 import { Button, Callout, Field, Input, LoadingBlock } from '@/components/ui';
@@ -58,6 +58,11 @@ export default function LoginPage() {
         <>
           Forgot the admin password? On the server, in an elevated prompt run{' '}
           <span className="mono whitespace-nowrap">CaddyManager.exe reset-password --email &lt;e-mail&gt;</span>
+          <span className="mt-3 block">
+            <Link to="/docs" className="text-accent-text hover:underline">
+              Documentation
+            </Link>
+          </span>
         </>
       }
     >

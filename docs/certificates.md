@@ -1,129 +1,274 @@
 # Certificates
 
-Every site has a **TLS mode** (host editor › TLS):
+Every HTTPS site needs a certificate. Caddy Proxy Manager gets them automatically from a public or private ACME CA,
+issues them from Caddy's own internal CA, or uses certificates you bring yourself. The **Certificates** page lists all
+of them. Every role can view it; adding and changing certificates needs the Operator role, and some sources need Admin.
 
-| Mode | Use for | How |
+## Certificate types
+
+Each host has a TLS mode, which you choose on the host's **TLS** tab (see [Host options](host-options.md#tls-tab)). The mode
+decides where the host's certificate comes from.
+
+| TLS mode | Use it for | Where the certificate comes from |
 |---|---|---|
-| Automatic (ACME) | Public names | Caddy obtains and renews certificates from the CA in **Settings › Caddy** (Let's Encrypt, Let's Encrypt staging, ZeroSSL, or a custom ACME directory such as an internal step-ca / AD CS ACME). Needs public DNS pointing at the server and inbound 80/443 — unless a DNS challenge is configured. |
-| Internal CA | Internal names (`app.corp.local`) | Caddy's own CA issues short-lived certificates (≈12 h, auto-renewed). Distribute the root once via GPO. |
-| Custom certificate | Your PKI / purchased certs | A certificate managed on the **Certificates** page, assigned to the host. |
-| None (HTTP only) | Trusted networks, TLS terminated upstream | Plain HTTP on port 80. |
+| Automatic (ACME) | Public names, or internal names served by a private ACME CA | Caddy obtains and renews it from the CA configured in **Settings › Caddy**. See [ACME certificates](acme.md). |
+| Internal CA | Internal names such as `app.corp.local` | Caddy's local CA issues and renews it. Clients must trust the internal root (see [Internal CA root](#internal-ca-root)). |
+| Custom certificate | Certificates from your own PKI or a commercial CA | A certificate you add on the **Certificates** page and select on the host. |
+| None (HTTP only) | Trusted networks, or TLS terminated before Caddy | No certificate. The site is served over plain HTTP. |
 
-## Your own certificates ("point domain X at certificate Y")
+On the **Certificates** page, ACME and internal certificates appear automatically once Caddy has obtained them. Custom
+certificates appear when you add them.
 
-**Security › Certificates › Add certificate**, then pick it on the host's TLS tab (*Custom certificate*).
-The host editor warns when the certificate does not cover the host's domains.
+## The Certificates page
 
-| Source | When | Renewal |
+Open **Security › Certificates**.
+
+![The Certificates page listing ACME, internal and custom certificates with their expiry](images/certificates-list.webp)
+
+- **Internal root CA** downloads the root certificate of Caddy's internal CA. Every role can use it.
+- **Add certificate** opens the import dialog. It is shown to Operators and Admins.
+- The search box matches the name, subjects, issuer, file path and notes.
+- The filter buttons **All**, **Custom**, **ACME** and **Internal** limit the list to one type. The internal root CA
+  row is shown under **All** only.
+
+Rows that need attention come first: certificates with a problem, then expired ones, then those closest to expiry.
+Internal certificates and the internal root are listed last.
+
+### Columns
+
+| Column | What it shows |
+|---|---|
+| Name | The certificate's name, its issuer (for example `R11 (Let's Encrypt)`), your notes, and any problem in red. |
+| Type | **Custom**, **ACME**, **Internal** or **Internal root CA**. Certificates from any ACME CA, including a private one, show as **ACME**. |
+| Source | For custom certificates: **Uploaded**, **File**, **PFX file** or **Windows store**. Sources the manager re-reads by itself also show **Auto-sync**, or **Sync failed** when the last re-read failed. ACME certificates show **ACME (Caddy)**; internal ones show **Caddy local CA**. |
+| Subjects | The DNS names and IP addresses the certificate covers. The first two are shown; hover **+N** for the rest. |
+| Expires | The time left, coloured by urgency, and the expiry date. |
+| Used by | The hosts that use the certificate. Custom certificates that no host uses show **Not used**. |
+
+### Expiry colours
+
+| Type | Green | Amber | Red |
+|---|---|---|---|
+| Custom | More than 30 days left | 8 to 30 days left | 7 days or less, or expired |
+| ACME | **Auto-renews** with more than 7 days left | 7 days or less (**renewal overdue**) | Expired |
+| Internal | Always grey (**Auto-renews**) | — | Expired |
+| Internal root CA | Always grey | — | Expired |
+
+Caddy renews ACME certificates well before they expire, so an ACME certificate with a week or less left means renewal
+is failing. Check **Server › Logs** for ACME errors (see [Logs](logs.md)).
+
+> [!NOTE]
+> When Caddy keeps its data in Redis or a custom storage module (see [Cluster](cluster.md)), ACME and internal
+> certificates are stored outside the server and the page lists only your own certificates.
+
+## Add your own certificate
+
+You need the Operator role. Three sources that read files on the server or the Windows certificate store are
+available to Admins only, because the services run as LocalSystem and can read almost any file.
+
+| Tab | Role | Use it for | How renewals reach Caddy |
+|---|---|---|---|
+| Upload PEM | Operator | Certificate and key files from any CA | Upload the renewed certificate with **Replace…** |
+| Upload PFX | Operator | A `.pfx` / `.p12` export from Windows or a CA portal | Upload the renewed certificate with **Replace…** |
+| Paste PEM | Operator | Certificate and key text copied from elsewhere | Upload the renewed certificate with **Replace…** |
+| File path | Admin | PEM files that another tool renews in place (a script, your PKI tooling) | Detected automatically |
+| PFX on disk/share | Admin | A PFX that another tool renews in place (for example win-acme) | Re-converted automatically |
+| Windows store | Admin | Certificates enrolled into the Windows certificate store (AD CS autoenrolment, `certreq`, IIS) | Re-exported automatically when you follow renewals by subject |
+
+To add a certificate:
+
+1. Open **Security › Certificates** and select **Add certificate**.
+2. Choose the tab for your source.
+3. Optionally enter a **Name**. It is shown in the host editor. Leave it empty to use the certificate's first domain
+   name.
+4. Fill in the source fields described below.
+5. Select **Add certificate**.
+
+If the server refuses the certificate, the dialog shows **The certificate was not accepted** with the reason. A
+certificate that has expired, or is not valid yet, is still added, with a warning.
+
+### Upload PEM
+
+| Field | Default | Description |
 |---|---|---|
-| Upload PEM (certificate + key) | One-off / purchased certificates | Replace via the row menu |
-| Upload PFX (+ password) | Exports from Windows / CA portals | Replace via the row menu |
-| Paste PEM | Quick import | Replace |
-| PEM files on disk or share (admin) | Another tool renews files in place (e.g. win-acme PEM output, a script) | Detected automatically (file watcher + 5-minute poll); Caddy reloads |
-| PFX file on disk or share (admin) | win-acme default output, CA exports | Re-converted when the PFX changes |
-| Windows certificate store (admin) | AD CS auto-enrolment / `certreq` into `LocalMachine\My` | *Follow renewals by subject*: the newest valid certificate with a private key and matching subject/SAN is exported every 15 minutes; or pin a thumbprint |
+| Certificate file | — | PEM file (`.pem`, `.crt`, `.cer`). Put the intermediate certificates after the server certificate. |
+| Private key file | — | Unencrypted PEM key (`.key`, `.pem`). |
 
-Uploaded and converted certificates are written to the **certificate store**
-(`C:\ProgramData\CaddyProxyManager\certificates\<id>\fullchain.pem` + `privkey.pem`, SYSTEM/Administrators only).
-Set **Settings › Caddy › Certificate store path** to use a shared location instead, e.g.
-`\\fileserver\pki$\caddy`. The services run as LocalSystem and reach shares as the computer account
-(`DOMAIN\SERVER$`): grant that account share and NTFS *Modify* on the folder.
+### Upload PFX
 
-Windows-store certificates must have an **exportable private key** (certificate template: *Allow private key to be
-exported*), because Caddy reads PEM files.
-
-## DNS-01 challenge (wildcards, servers not reachable from the internet)
-
-With the DNS challenge the CA checks a TXT record `_acme-challenge.<domain>` that Caddy creates through your DNS
-provider's API, so no inbound port 80/443 is needed and **wildcard** names (`*.example.com`) can be issued.
-
-1. **Caddy › Plugins**: add the provider's plugin (e.g. `github.com/caddy-dns/cloudflare`) and *Rebuild & install*.
-   Settings › Caddy offers this when the selected provider is not in the installed Caddy.
-2. **Settings › Caddy › ACME challenge**: pick the **DNS provider** from the list (Cloudflare, Route 53, Azure DNS,
-   DigitalOcean, Google Cloud DNS, OVHcloud, GoDaddy, Porkbun, Namecheap, Gandi, Duck DNS, IONOS, deSEC,
-   Linode, Vultr, Netlify, DNSimple, Bunny, NameSilo, Alibaba Cloud, PowerDNS, ACME-DNS, RFC 2136) and fill in its
-   fields. Credentials (tokens, secrets, TSIG keys) are **write-only**: stored encrypted, never shown again, and
-   replaced by `***` (also in their URL-encoded forms) in Caddy error messages, `caddy.log` as shown by *Logs › Caddy*,
-   certificate events and notifications, Caddy start errors, and any configuration a non-administrator can see. Other
-   providers can be used by their module name (`dns.providers.<name>`) with plain options. The settings are refused
-   while the selected provider's plugin is missing from the installed Caddy and a host uses the DNS challenge.
-   *Hetzner* is not offered: the only Hetzner plugin the Caddy download service builds (`caddy-dns/hetzner` v1) uses
-   the old DNS Console API, which Hetzner shut down in May 2026; use the HTTP challenge, or host the zone at a
-   supported provider.
-3. Choose where DNS-01 is used: **Default challenge** = DNS for every ACME host, or per host on the TLS tab
-   (*ACME challenge*: Default / HTTP / DNS). Wildcard names always use DNS once a provider is configured.
-
-Optional settings: **propagation delay** (wait before the first check), **propagation timeout** (default 2 minutes;
-`-1` skips the check — useful when the check cannot see your authoritative servers), **TTL** of the TXT record,
-**resolvers** (`host:port`, e.g. `10.0.0.53:53`; used for the zone lookup and propagation check — set them behind
-split-horizon DNS where the internal resolvers do not show the public zone).
-
-*RFC 2136* works with BIND, Knot, PowerDNS and other servers that accept dynamic updates signed with a TSIG key
-(`server` host:port, key name, algorithm such as `hmac-sha256`, base64 secret). **Windows DNS does not work with it**:
-Active Directory-integrated zones accept only Kerberos-signed (GSS-TSIG) secure updates, which the provider cannot send.
-For a zone on Windows DNS, use the HTTP challenge, or host the zone on a TSIG-capable server or at a supported DNS
-provider.
-
-*ACME-DNS* ([acme-dns](https://github.com/joohoi/acme-dns)) is a small DNS server that only holds challenge records.
-Register an account (`POST <server>/register`), enter `username`, `password`, `subdomain` and `server_url` as the
-provider fields, and create the CNAME `_acme-challenge.<domain>` → the returned `fulldomain` yourself, once per domain.
-An acme-dns account keeps only its two newest TXT values, so with many names issued at once a validation can fail and
-Caddy retries it later.
-
-Enabling DNS disables the HTTP and TLS-ALPN challenges for those names; IP addresses on an ACME host always keep the
-HTTP / TLS-ALPN challenges (the DNS challenge cannot validate IP addresses). The *ACME issuer JSON* (Plugins & advanced)
-is still merged into every ACME issuer after generation, for options the form does not cover, except
-`challenges.dns.provider`: the provider is configured under *ACME challenge* only, and saving the settings with both is
-refused (remove `challenges.dns.provider` from the JSON).
-
-**No set-once TXT record yet.** A standard DNS-01 TXT value changes with every issuance and renewal, so the manager
-does not offer a manual TXT flow. The new `dns-persist-01` challenge (one TXT record `_validation-persist.<domain>`,
-set once) will be added when Let's Encrypt offers it in production and Caddy supports it
-([Let's Encrypt announcement](https://letsencrypt.org/2026/02/18/dns-persist-01),
-[Caddy issue #7495](https://github.com/caddyserver/caddy/issues/7495)).
-
-## Wildcard certificates
-
-- **Internal CA / custom**: supported directly.
-- **ACME**: needs the DNS-01 challenge (above). Without a DNS provider the configuration warns and issuance fails;
-  exact names covered by such a wildcard get their own certificates.
-
-## Shared storage (several servers)
-
-Caddy keeps ACME accounts, issued certificates, locks and the internal CA in its **storage**. Servers configured with
-the **same storage** coordinate as one certificate cluster: one server obtains or renews a certificate, the others
-load it, and they share the internal CA root. HTTP-01 and TLS-ALPN-01 challenges are answered by any of them, so they
-work behind a load balancer. (Configuration itself is not shared by storage — the manager's cluster feature pushes it.)
-
-**Settings › Cluster › Shared storage**:
-
-| Backend | Setting | Notes |
+| Field | Default | Description |
 |---|---|---|
-| Local (default) | `C:\ProgramData\CaddyProxyManager\caddy\data` | Not shared. |
-| Shared folder | Local path or UNC share, e.g. `\\fileserver\caddy$` | Grant the computer accounts (`DOMAIN\SERVER$`) *Modify*; mapped drive letters are not visible to services. The manager tests that it can write there before saving. |
-| Redis | `host:port` of the Redis server, database, user/password, key prefix, optional TLS and encryption key | Needs the plugin `github.com/pberkel/caddy-storage-redis`. One address only: with several, the plugin switches to a Redis Cluster client, which a normal (primary/replica) Redis rejects; Redis Cluster and Sentinel are not supported yet. |
-| Custom | Storage JSON with `"module"` (e.g. consul, s3, postgres) | Needs the plugin providing `caddy.storage.<module>`; stored encrypted. |
+| PFX / PKCS#12 file | — | A `.pfx` or `.p12` file. When you export from Windows, choose *Include all certificates in the certification path*. |
+| PFX password | Empty | Used only to open the file. It is not stored. |
 
-Switching from **Local** to a shared folder copies `certificates\`, `acme\`, `pki\` and `ocsp\` to the new folder when
-they do not exist there yet (existing data is never overwritten), so issued certificates and the internal CA root are
-kept; the result message lists what was copied. With Redis or a custom module the Certificates page lists only custom
-certificates (ACME/internal certificates live in that storage).
+The private key in the PFX must be exportable. If it is not, re-export the PFX with *Mark this key as exportable*.
 
-The shared folder and the certificate store hold private keys, so neither may be a static site's root folder, inside
-one, or above one. Saving a storage folder or certificate store that conflicts with an existing static site is refused
-(the message names the sites). Every server also checks this itself when it builds its configuration, against its own
-folders (data folder, Caddy storage, its certificate store, the shared folder, program and Windows folders): a static
-site whose root is such a folder — for example a replicated host whose root is a node's own certificate store — answers
-**403** on that server and the configuration result warns about it, until its root folder is changed.
+### Paste PEM
+
+| Field | Default | Description |
+|---|---|---|
+| Certificate (PEM) | — | Text starting with `-----BEGIN CERTIFICATE-----`, with any intermediates after the server certificate. |
+| Private key (PEM) | — | Text starting with `-----BEGIN PRIVATE KEY-----` (or `RSA` / `EC PRIVATE KEY`). Encrypted keys are not accepted. |
+
+### File path (Admin)
+
+The files are referenced, not copied. Renew them in place and the manager picks up the change.
+
+| Field | Default | Description |
+|---|---|---|
+| Certificate path | — | Full path of the PEM certificate chain, for example `\\fileserver\pki\web01\fullchain.pem`. |
+| Private key path | — | Full path of the unencrypted PEM key, for example `\\fileserver\pki\web01\privkey.pem`. |
+
+- Paths must be absolute: a local path or a UNC share.
+- Allowed extensions are `.pem`, `.crt`, `.cer` and `.key`.
+- On a share, grant read access to the server's computer account (`DOMAIN\SERVER$`).
+- Files inside the manager's data folder (`C:\ProgramData\CaddyProxyManager`) are refused, except in the certificate
+  store.
+
+### PFX on disk/share (Admin)
+
+For tools that renew a PFX in place. The manager converts the PFX to PEM in the certificate store and converts it again
+whenever the file changes.
+
+| Field | Default | Description |
+|---|---|---|
+| PFX path | — | Local path or UNC share of a `.pfx` or `.p12` file, for example `C:\ProgramData\win-acme\certificates\app.example.com.pfx`. |
+| PFX password | Empty | Leave empty when the file has no password. It is stored encrypted so renewals can be read unattended. |
+
+### Windows store (Admin)
+
+![The Add certificate dialog on the Windows store tab, listing certificates from the Personal store](images/add-certificate.webp)
+
+| Field | Default | Description |
+|---|---|---|
+| Store location | Local computer (LocalMachine) | Or **Service account (CurrentUser)**. |
+| Store | Personal (My) | Or **Web Hosting (WebHosting)**. |
+| Which certificate to use | This certificate (thumbprint) | Pin one certificate, or **Follow renewals by subject**. |
+| Subject or SAN to follow | — | Shown when you follow renewals. The host name the certificate is issued for, for example `app.corp.example.com`. |
+
+The dialog lists the certificates in the selected store. Usable certificates (with a private key, not expired) come
+first. Badges show **Expired**, **No private key** (cannot be selected), **Key not exportable** and the AD CS
+**Template**. Certificates enrolled for the computer are usually in **Local computer › Personal**.
+
+- **This certificate (thumbprint)** pins the certificate you select. Renewals are not picked up: when the certificate
+  is renewed, add the new one or switch to following renewals.
+- **Follow renewals by subject** uses the newest currently valid certificate that has a private key, allows Server
+  Authentication, and whose subject CN or a DNS name matches. A wildcard name that covers the host name also matches.
+  This follows AD CS autoenrolment and `certreq` renewals.
+
+> [!IMPORTANT]
+> Caddy reads certificates as PEM files, so the manager has to export the private key. Windows refuses this for
+> non-exportable keys. Issue the certificate from a template with *Allow private key to be exported* enabled, or import
+> a PFX instead.
+
+### Supported formats and limits
+
+- RSA and ECDSA keys in PKCS#1, SEC1 or PKCS#8 format.
+- The private key must belong to the certificate. The import fails if the public keys differ.
+- Uploaded files can be up to 2 MB each.
+- The manager stores the chain server certificate first, followed by its issuers.
+
+## Use a certificate on a host
+
+On the host's **TLS** tab, choose **Custom certificate** and select the certificate (see
+[Host options](host-options.md#tls-tab)). The host editor warns when the certificate does not cover all of the host's
+domains, and when it has expired.
+
+If a custom certificate's files go missing or cannot be read, the hosts that use it are left out of the configuration
+until the files are back, and the configuration result says so.
+
+## Renewal and synchronisation
+
+The manager re-reads certificates from external sources by itself:
+
+| Source | How changes are detected |
+|---|---|
+| File | A file watcher on the folder, plus a check every 5 minutes (covers shares and missed events). Files changed while the service was stopped are picked up by the first check after it starts. |
+| PFX file | The same watcher and 5-minute check. The PFX is converted to PEM again when it changes. |
+| Windows store | Every 15 minutes the store is read again. With **Follow renewals by subject**, a newer certificate is exported. |
+
+When a certificate in use by an enabled host changes, the manager applies the configuration again so Caddy loads it.
+
+To re-read a certificate straight away, open its row menu and select **Sync now**. This is available for File, PFX
+file and Windows store certificates (Operator).
+
+If a re-read fails, the row shows **Sync failed** and the error, and the manager raises a warning event. When a later
+re-read succeeds, a recovery event follows. See [Events](events.md).
+
+## Edit, replace or delete a certificate
+
+The row menu of a custom certificate (Operator) offers:
+
+- **Edit name & notes**: change the **Name** and add **Notes**, for example where the certificate came from and who
+  renews it.
+- **Sync now**: re-read the source now (File, PFX file and Windows store only).
+- **Replace…**: upload a renewed certificate and key, as PEM or PFX (Uploaded certificates only). Hosts that use the
+  certificate pick it up immediately.
+- **Delete**: remove the certificate. It shows as **Delete (in use)** and is disabled while any host uses it, including
+  disabled hosts. Change those hosts' TLS settings first.
+
+What **Delete** removes depends on the source:
+
+| Source | Deleted | Kept |
+|---|---|---|
+| Uploaded | The certificate and its private key in the certificate store. This cannot be undone. | — |
+| File | The entry in the manager | The files on disk |
+| PFX file | The entry and its converted PEM copy | The PFX file |
+| Windows store | The entry and its exported PEM copy | The certificate in the Windows store |
+
+ACME and internal certificates have no row menu. Caddy manages them.
+
+## Where certificates are stored
+
+The manager writes uploaded certificates, and the PEM copies of PFX and Windows-store certificates, to the
+**certificate store**: one folder per certificate with `fullchain.pem` and `privkey.pem`.
+
+- The default is `C:\ProgramData\CaddyProxyManager\certificates`. On a local folder, the manager restricts access to
+  SYSTEM and Administrators.
+- To use another folder or a share, set **Certificate store path** in **Settings › Caddy** (see
+  [Caddy settings](caddy-settings.md)). The manager writes to it, so on a share grant the computer account
+  (`DOMAIN\SERVER$`) modify rights on the share and folder. Share permissions are not changed by the manager.
+
+On a server managed by a cluster primary, certificates are replicated from the primary and the page is read-only. See
+[Cluster](cluster.md).
 
 ## Internal CA root
 
-**Certificates › Internal root CA** downloads Caddy's root certificate. Deploy it to *Trusted Root Certification
-Authorities* with Group Policy (see [group-policy.md](group-policy.md)). The root key lives in
-`C:\ProgramData\CaddyProxyManager\caddy\data\pki` (or `pki\` in the shared storage folder) — back it up (it is included in backups) and protect it.
+Hosts with **Internal CA** TLS get certificates from Caddy's local CA. Browsers trust them only when the client trusts
+the CA's root certificate.
 
-## Monitoring
+1. Open **Security › Certificates** and select **Internal root CA**. The file `caddy-local-root.crt` is downloaded.
+2. Deploy it to the clients' *Trusted Root Certification Authorities* store, for example with Group Policy. See
+   [Group Policy](group-policy.md).
 
-Certificates expiring within *N* days (Notifications › alert rules), certificates that fail to be issued (ACME
-errors from Caddy's log are included in the alert, with every configured credential replaced by `***`) and sync
-failures of file/PFX/store certificates raise alerts.
+Caddy creates the root the first time a host uses Internal TLS. Before that, the download fails with a message saying
+the internal CA has not been created yet. The manager never installs the root into the server's own trust stores.
+
+The root's row in the list shows every host that uses Internal TLS under **Used by**.
+
+## Expiry and missing-certificate alerts
+
+The manager watches certificates and raises events. Notifications for them follow the **Certificate expiring** alert
+rule on the **Notifications** page (Admin; see [Notifications](notifications.md)). Events are recorded either way.
+
+- **Expiring certificates**: every 6 hours, custom and ACME certificates are checked. A warning is raised when a
+  certificate expires within the number of days set in **Warn this many days before expiry** (default 14), and an
+  error once it has expired. Internal certificates are not included, because Caddy renews them continuously.
+- **Unreadable certificates**: a custom certificate whose files cannot be read raises a warning.
+- **Certificates not issued**: every 5 minutes, each domain of an enabled host with Automatic (ACME) or Internal CA TLS
+  must have a current certificate. If a domain still has none 10 minutes after the host was last changed, a warning
+  **No certificate has been issued for** the domain is raised, with the last certificate errors from Caddy's log.
+  Wildcard names are not checked. The check runs only while Caddy is running and the configuration mode is
+  **Managed**.
+- **Sync failures** of File, PFX file and Windows store certificates raise warnings (see
+  [Renewal and synchronisation](#renewal-and-synchronisation)).
+
+Each alert is followed by a recovery event when the problem is resolved.
+
+## Related
+
+- [ACME certificates](acme.md)
+- [Host options](host-options.md)
+- [Group Policy](group-policy.md)
+- [Notifications](notifications.md)
+- [Cluster](cluster.md)

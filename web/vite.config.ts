@@ -21,6 +21,8 @@ export default defineConfig(async ({ command, mode }) => {
     server: {
       port: 5173,
       strictPort: false,
+      // The documentation pages are read from the repository's docs/ folder (src/docs/content.ts).
+      fs: { allow: [fileURLToPath(new URL('.', import.meta.url)), fileURLToPath(new URL('../docs', import.meta.url))] },
       proxy: useMock
         ? undefined
         : {

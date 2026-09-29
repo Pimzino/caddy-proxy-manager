@@ -1,11 +1,12 @@
 import { Suspense, useEffect, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router';
-import { ChevronRight, Menu } from 'lucide-react';
+import { ChevronRight, CircleHelp, Menu } from 'lucide-react';
 import { useSystemInfo } from '@/api/hooks';
 import { ManagerUpdatePill, ManagerUpdateProvider } from '@/components/ManagerUpdateDialog';
 import { LoadingBlock } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { readStorage, writeStorage } from '@/lib/storage';
+import { helpSlugFor, docPath } from '@/docs/manifest';
 import { findNav } from '@/nav';
 import { CaddyStatusPill } from './CaddyStatusPill';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -93,6 +94,16 @@ export function AppShell() {
             </nav>
             <ManagerUpdatePill />
             <CaddyStatusPill />
+            <a
+              href={docPath(helpSlugFor(location.pathname, location.search))}
+              target="_blank"
+              rel="noopener"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-ring"
+              aria-label="Help for this page (opens the documentation in a new tab)"
+              title="Help"
+            >
+              <CircleHelp size={17} aria-hidden />
+            </a>
             <UserMenu />
           </header>
           <ManagedNodeBanner />

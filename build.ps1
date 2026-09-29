@@ -206,6 +206,13 @@ if (-not $SkipZip) {
         if ($docs.Count -gt 0) {
             $docsTarget = New-Item -ItemType Directory -Path (Join-Path $staging 'docs')
             $docs | Copy-Item -Destination $docsTarget.FullName
+            # The pages show screenshots from docs/images (the light variants; the in-app /docs also has dark ones).
+            $images = @(Get-ChildItem -LiteralPath (Join-Path $root 'docs\images') -Filter '*.webp' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike '*.dark.webp' })
+            if ($images.Count -gt 0) {
+                $imagesTarget = New-Item -ItemType Directory -Path (Join-Path $docsTarget.FullName 'images')
+                $images | Copy-Item -Destination $imagesTarget.FullName
+            }
         } else {
             Write-Warning 'No docs/*.md found; the zip is built without documentation.'
         }

@@ -30,6 +30,7 @@ const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const UsersPage = lazy(() => import('@/pages/UsersPage'));
 const AuditPage = lazy(() => import('@/pages/AuditPage'));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'));
+const DocsPage = lazy(() => import('@/pages/docs/DocsPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,6 +78,9 @@ const router = createBrowserRouter([
     children: [
       { path: '/login', element: <LoginPage /> },
       { path: '/setup', element: <SetupPage /> },
+      // Public: the documentation needs no sign-in (see DocsPage).
+      { path: '/docs', element: <DocsPage /> },
+      { path: '/docs/:slug', element: <DocsPage /> },
       {
         element: (
           <RequireAuth>

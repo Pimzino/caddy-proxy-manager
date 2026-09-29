@@ -34,7 +34,7 @@ server is actually ready to serve traffic, and e-mails you when something goes w
 - **Sites.** Proxy hosts (load balancing, health checks, custom locations, header rules, WebSockets, NTLM upstreams),
   redirects, static sites, custom responses, and TCP/UDP streams (with the `caddy-l4` plugin).
 - **Certificates.** Automatic Let's Encrypt / ZeroSSL / private ACME CA (incl. EAB), with the HTTP challenge or the
-  **DNS-01 challenge** through 24 built-in DNS provider integrations (Cloudflare, Route 53, Azure DNS, RFC 2136 …;
+  **DNS-01 challenge** through 23 built-in DNS provider integrations (Cloudflare, Route 53, Azure DNS, RFC 2136 …;
   no inbound ports needed, wildcards supported, the provider plugin is added to Caddy for you),
   Caddy's internal CA (root exportable for GPO), and your own certificates — uploaded PEM/PFX, referenced PEM or PFX
   files on disk or a share (renewals picked up automatically), or the Windows certificate store (follows AD CS
@@ -70,24 +70,29 @@ server is actually ready to serve traffic, and e-mails you when something goes w
 6. Add your first proxy host.
 
 The manager downloads the latest Caddy on first start. On servers without Internet access use
-**Caddy › Service & Updates › Upload binary**.
+**Caddy › Service & Updates**, the **…** menu of the Caddy binary card, **Upload binary (offline)…**.
 
 ## Documentation
 
+The full product documentation is built into the console: open `http://<server>:81/docs` (no sign-in needed), or
+use the **Help** button in the console's top bar to open the page for the screen you are on. The same pages are the
+Markdown files in [docs/](docs/README.md):
+
 | Topic | |
 |---|---|
-| [Installation, upgrade and uninstall](docs/installation.md) | MSI and zip installs, silent parameters, ports, first run |
-| [Certificates](docs/certificates.md) | ACME, internal CA, own certificates, shares, Windows store, wildcards |
-| [Clustering (multiple servers)](docs/cluster.md) | Adding servers, replication, shared storage, security model |
-| [Traffic statistics](docs/traffic-statistics.md) | What is measured, accuracy, retention |
-| [Group Policy and firewall](docs/group-policy.md) | Readiness checks, GPO firewall rules, distributing the internal root CA |
-| [Notifications](docs/notifications.md) | SMTP, Microsoft 365, webhooks, alert rules |
-| [Users and sign-in](docs/users.md) | Roles, Active Directory (LDAP), password reset |
+| [Installation, upgrade and removal](docs/installation.md) | Requirements, MSI and zip installs, silent parameters, ports, first start |
+| [Getting started](docs/getting-started.md) | Setup token, first administrator, sign-in, a tour of the console |
+| [Proxy hosts](docs/proxy-hosts.md) and [host options](docs/host-options.md) | Upstreams, load balancing, health checks, TLS, access, headers, locations |
+| [Certificates](docs/certificates.md) and [ACME & DNS challenge](docs/acme.md) | ACME, DNS-01 providers, internal CA, own certificates, shares, Windows store |
+| [Clustering](docs/cluster.md) | Adding servers, replication, shared storage, security model |
+| [Readiness checks](docs/readiness.md) and [Group Policy](docs/group-policy.md) | Firewall, ports, DNS, GPO firewall rules, distributing the internal root CA |
+| [Notifications](docs/notifications.md) and [events](docs/events.md) | SMTP, Microsoft 365, webhooks, Event Log, alert rules |
+| [Users & roles](docs/users.md) and [Active Directory sign-in](docs/directory-sign-in.md) | Roles, LDAP, password reset |
 | [Backup and restore](docs/backup-restore.md) | Scheduled backups, restore, moving to another server |
-| [Command line](docs/cli.md) | `CaddyManager.exe` verbs |
-| [Troubleshooting](docs/troubleshooting.md) | Logs, common failures |
-| [Security notes](docs/security.md) | Threat model, hardening checklist |
-| [Development](docs/development.md) | Building, testing, architecture |
+| [Command line & tray icon](docs/cli.md) | `CaddyManager.exe` commands |
+| [Troubleshooting](docs/troubleshooting.md) | Logs, common failures and fixes |
+| [Security & hardening](docs/security.md) | Security model, hardening checklist |
+| [Development](docs/development.md) | Building, testing, architecture (not part of the in-app docs) |
 
 ## Layout on the server
 
