@@ -174,7 +174,8 @@ public class BinaryInspectionTests
         await File.WriteAllTextAsync(cfg, DevCaddy.MinimalConfig(12150, 18181, Path.Combine(env.Root, "x.log")), ct);
         Assert.Equal(0, (await bin.RunCaddyAsync(["validate", "--config", cfg], ct: ct)).ExitCode);
 
-        File.Delete(env.Paths.CaddyExe);
+        // Windows antivirus may still hold the just-run binary for a moment (see DeleteBinaryAsync).
+        await DevCaddy.DeleteBinaryAsync(env.Paths.CaddyExe, ct);
         Assert.Null(await bin.GetInstalledAsync(ct));
         await Assert.ThrowsAsync<FileNotFoundException>(() => bin.RunCaddyAsync(["version"], ct: ct));
     }

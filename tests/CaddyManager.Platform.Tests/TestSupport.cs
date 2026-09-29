@@ -65,6 +65,37 @@ public static class DevCaddy
         return null;
     }
 
+    /// <summary>
+    /// Deletes a Caddy binary the test has just run. On Windows, antivirus (Defender) opens a freshly copied executable
+    /// after it runs and holds it for a moment, so File.Delete can fail with a sharing violation although every caddy
+    /// process has exited and been disposed. Same policy as the product's MoveWithRetryAsync (CaddyBinaryManager):
+    /// retry IOException / UnauthorizedAccessException every 500 ms, at most 20 attempts (10 s).
+    /// Ways this could mislead, and the guard for each:
+    /// - It hides a handle the manager itself leaks → a leaked handle never goes away: after 10 s the test fails and says so.
+    /// - It hides an unrelated error → only the two lock exceptions are retried, and only while the file still exists.
+    /// - It slows the suite → the first attempt normally succeeds; there is no delay before it.
+    /// </summary>
+    public static async Task DeleteBinaryAsync(string path, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Delete(path);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 20 && File.Exists(path))
+            {
+                await Task.Delay(500, ct);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new IOException($"{path} is still locked after {attempt} attempts (10 s): a caddy process or a handle the manager " +
+                                      $"leaked is holding it, not a brief antivirus scan. {ex.Message}", ex);
+            }
+        }
+    }
+
     /// <summary>Copies the dev binary into AppPaths.CaddyExe, or skips the test when it is not available.</summary>
     public static void InstallInto(AppPaths paths)
     {
