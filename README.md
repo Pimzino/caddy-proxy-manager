@@ -90,7 +90,7 @@ Markdown files in [docs/](docs/README.md):
 | [Users & roles](docs/users.md) and [Active Directory sign-in](docs/directory-sign-in.md) | Roles, LDAP, password reset |
 | [Backup and restore](docs/backup-restore.md) | Scheduled backups, restore, moving to another server |
 | [Command line & tray icon](docs/cli.md) | `CaddyManager.exe` commands |
-| [Troubleshooting](docs/troubleshooting.md) | Logs, common failures and fixes |
+| [Troubleshooting](docs/troubleshooting.md) | Logs, common failures and fixes, [forgotten admin password](docs/troubleshooting.md#forgot-the-admin-password) |
 | [Security & hardening](docs/security.md) | Security model, hardening checklist |
 | [Development](docs/development.md) | Building, testing, architecture (not part of the in-app docs) |
 

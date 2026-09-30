@@ -55,15 +55,9 @@ export default function LoginPage() {
       title="Sign in"
       description="Use your Caddy Proxy Manager account or, when directory sign-in is enabled, your domain account."
       footer={
-        <>
-          Forgot the admin password? On the server, in an elevated prompt run{' '}
-          <span className="mono whitespace-nowrap">CaddyManager.exe reset-password --email &lt;e-mail&gt;</span>
-          <span className="mt-3 block">
-            <Link to="/docs" className="text-accent-text hover:underline">
-              Documentation
-            </Link>
-          </span>
-        </>
+        <Link to="/docs" className="text-accent-text hover:underline">
+          Documentation
+        </Link>
       }
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
