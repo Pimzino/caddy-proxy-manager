@@ -175,9 +175,13 @@ public sealed class LiveCaddy : IDisposable
             },
             SslOptions = new SslClientAuthenticationOptions
             {
+                // Always a full handshake: callers inspect the served certificate. On Windows the SChannel session cache is
+                // shared across the process, and Caddy keeps its session ticket keys across config reloads, so a resumed
+                // session reports the certificate from before the config change (TlsE2ETests failed this way on CI).
+                AllowTlsResume = false,
                 RemoteCertificateValidationCallback = (_, cert, _, _) =>
                 {
-                    if (cert is not null) served = X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
+                    if (cert is not null) served =X509CertificateLoader.LoadCertificate(cert.GetRawCertData());
                     return true;
                 },
             },
