@@ -22,6 +22,9 @@
     <CpmPublishDirDefine>$(CpmPublishDir.TrimEnd('\').TrimEnd('/'))</CpmPublishDirDefine>
     <CpmRepoRootDefine>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..').TrimEnd('\').TrimEnd('/'))</CpmRepoRootDefine>
     <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(CpmPublishDirDefine);RepoRoot=$(CpmRepoRootDefine)</DefineConstants>
+    <!-- ICE61 ("should remove only older versions of itself") is the expected result of AllowSameVersionUpgrades in
+         Package.wxs, which CI builds sharing one MSI version rely on. -->
+    <SuppressIces>ICE61</SuppressIces>
     <!-- Not a .NET project: keep repo-wide settings from Directory.Build.props from leaking in. -->
     <Nullable />
     <ImplicitUsings />

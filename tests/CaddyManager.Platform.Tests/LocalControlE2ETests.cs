@@ -105,7 +105,7 @@ public class LocalControlE2ETests
             // (1) DACL: deny NETWORK, allow SYSTEM (full) and Administrators (read/write), nothing else
             using (var server = new NamedPipeClientStream(".", AppPaths.LocalControlPipe, PipeDirection.InOut))
             {
-                await server.ConnectAsync(10_000);
+                await server.ConnectAsync(10_000, TestContext.Current.CancellationToken);
                 var rules = server.GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<PipeAccessRule>()
                     .Select(r => (Sid: ((SecurityIdentifier)r.IdentityReference).Value, r.AccessControlType, r.PipeAccessRights)).ToList();
                 steps.Add(new JsonObject
