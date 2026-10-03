@@ -1,5 +1,5 @@
 // Vite dev-server plugin that emulates the Caddy Proxy Manager HTTP API with in-memory state.
-// Enabled only by `npm run dev:mock` (vite --mode mock, serve). Never part of a production build.
+// Enabled only by `pnpm dev:mock` (vite --mode mock, serve). Never part of a production build.
 //
 // Environment switches: MOCK_SETUP=1 (first-run setup flow), MOCK_ANON=1 (start signed out),
 // MOCK_ROLE=viewer|operator (start as a lower role), MOCK_LATENCY=ms (default 180),

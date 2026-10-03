@@ -30,11 +30,16 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - uses: actions/setup-node@v7
+      # pnpm (version from "packageManager" in web/package.json) and Node.js; runs `pnpm install` in web/ with
+      # --frozen-lockfile and fails when web/pnpm-lock.yaml is missing. Dependency build scripts stay blocked
+      # (pnpm default) and web/pnpm-workspace.yaml delays brand-new releases. Pinned to the v3.0.0 commit.
+      # https://github.com/pnpm/setup/releases/tag/v3.0.0 ; https://pnpm.io/continuous-integration
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
         with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          working-directory: web
+          runtime: node@24
+          cache: true
+          require-lockfile: true
 
       # Python + aioquic for the HTTP/3 0-RTT end-to-end test (TlsE2ETests): .NET's QUIC client (msquic) cannot send 0-RTT
       # early data, so the test drives Caddy with aioquic and skips itself without CPM_AIOQUIC_PYTHON. aioquic 1.3.0 ships
@@ -53,13 +58,13 @@ jobs:
           & '${{ steps.py.outputs.python-path }}' -c "import aioquic, sys; print('aioquic', aioquic.__version__, 'on Python', sys.version)"
           if ($LASTEXITCODE -ne 0) { throw 'aioquic does not import.' }
 
-      - name: Web UI — install, typecheck, lint, build
+      - name: Web UI — typecheck, lint, build
         working-directory: web
+        shell: pwsh
         run: |
-          npm ci
-          npm run typecheck
-          npm run lint
-          npm run build
+          pnpm typecheck; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm lint; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The product documentation at /docs (docs/*.md, web/src/docs): every page renders, every link and anchor resolves,
       # search works, each console screen's Help button opens its page, and /docs needs no sign-in. Headless Chrome
@@ -278,9 +283,13 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - uses: actions/setup-node@v7
+      # pnpm and Node.js for build.ps1 (which runs the frozen install itself). See the build job above.
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
         with:
-          node-version: '24'
+          working-directory: web
+          runtime: node@24
+          cache: true
+          install: false
 
       - name: Determine version
         id: version

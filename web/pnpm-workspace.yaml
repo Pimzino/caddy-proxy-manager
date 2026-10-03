@@ -1,0 +1,7 @@
+# pnpm settings for the web UI (pnpm reads project settings from this file, not from .npmrc).
+# https://pnpm.io/settings
+
+# Do not install a version until it has been on the registry for 3 days (minutes). Most hijacked releases are
+# found and removed within that window. Setting it explicitly also makes resolution fail, instead of falling
+# back to a too-new version, when nothing in the requested range is old enough.
+minimumReleaseAge: 4320

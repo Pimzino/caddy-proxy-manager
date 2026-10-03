@@ -4,11 +4,11 @@ React 19 + TypeScript + Vite SPA. Built to `web/dist` and embedded in `CaddyMana
 
 | Command | Purpose |
 |---|---|
-| `npm ci` | Install dependencies |
-| `npm run dev` | Dev server on :5173, proxies `/api` to `http://localhost:5081` (override with `CPM_API`) |
-| `npm run dev:mock` | Dev server with the in-memory mock API from `mock/` (no backend needed) |
-| `npm run build` | Type-check and build to `dist/` |
-| `npm run typecheck` / `npm run lint` | Static checks |
+| `pnpm install --frozen-lockfile` | Install dependencies (pnpm only; never npm) |
+| `pnpm dev` | Dev server on :5173, proxies `/api` to `http://localhost:5081` (override with `CPM_API`) |
+| `pnpm dev:mock` | Dev server with the in-memory mock API from `mock/` (no backend needed) |
+| `pnpm build` | Type-check and build to `dist/` |
+| `pnpm typecheck` / `pnpm lint` | Static checks |
 
 Mock mode signs you in as `admin@example.com`. Environment switches: `MOCK_ROLE=viewer|operator`,
 `MOCK_ANON=1` (start signed out; any fixture e-mail + any password signs in, the password `wrong` fails),

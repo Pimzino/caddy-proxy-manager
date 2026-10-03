@@ -117,13 +117,13 @@ New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
 
 # ------------------------------------------------------------------ 1. web UI
 if (-not $SkipWeb) {
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "'npm' was not found on PATH (install Node.js 24) or use -SkipWeb." }
-    Invoke-Step 'Web UI (npm ci + build)' {
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw "'pnpm' was not found on PATH (install Node.js 24 and pnpm, https://pnpm.io/installation) or use -SkipWeb." }
+    Invoke-Step 'Web UI (pnpm install + build)' {
         Push-Location (Join-Path $root 'web')
         try {
-            npm ci --no-audit --no-fund
+            pnpm install --frozen-lockfile
             if ($LASTEXITCODE -ne 0) { return }
-            npm run build
+            pnpm build
         } finally { Pop-Location }
     }
 }

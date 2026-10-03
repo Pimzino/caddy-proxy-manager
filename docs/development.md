@@ -18,25 +18,25 @@ The manager generates Caddy's **JSON** config from its database and applies it w
 
 ## Prerequisites
 
-.NET 10 SDK, Node.js 22+ (24 recommended). On Windows additionally nothing else — the WiX SDK is restored via NuGet.
+.NET 10 SDK, Node.js 22+ (24 recommended) and pnpm (https://pnpm.io/installation; the web UI is never installed with npm). On Windows additionally nothing else — the WiX SDK is restored via NuGet.
 
 ## Run locally (macOS / Linux / Windows)
 
 ```bash
-cd web && npm ci && npm run build && cd ..
+cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
 mkdir -p .dev/bin   # put a caddy binary for your OS here (dev mode copies it on first start)
 CM_UI_PORT=5081 dotnet run --project src/CaddyManager
 ```
 
 On non-Windows the manager runs Caddy as a child process and uses `./.devdata` for data. The first-run token is in
-`.devdata/setup-token.txt`. For UI work: `cd web && npm run dev` (proxies `/api` to :5081) or `npm run dev:mock`
+`.devdata/setup-token.txt`. For UI work: `cd web && pnpm dev` (proxies `/api` to :5081) or `pnpm dev:mock`
 (no backend needed).
 
 ## Tests
 
 ```bash
 dotnet test CaddyManager.sln --filter "Category!=Network"
-cd web && npm run typecheck && npm run lint && npm run build
+cd web && pnpm typecheck && pnpm lint && pnpm build
 ```
 
 Config and Platform tests use a real Caddy binary (`.dev/bin/caddy` or `CM_TEST_CADDY`) when present. Use the
