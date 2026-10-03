@@ -105,7 +105,7 @@ The manager checks GitHub for new Caddy releases in the background (see [Updates
 A release counts as an update when its version is newer than the installed one. The manager offers every newer Caddy release. It does not hold releases back. Read the release notes on this page before you update.
 
 > [!NOTE]
-> Each Caddy Proxy Manager release is verified against one Caddy release, currently Caddy `v2.11.4`. Newer Caddy releases are offered as updates all the same. To stay on a version, use [Install a specific version](#install-a-specific-version) and leave **Install updates automatically** off in [Updates](updates.md).
+> Each Caddy Proxy Manager release is verified against one Caddy release, currently Caddy `v2.11.7`. Newer Caddy releases are offered as updates all the same. To stay on a version, use [Install a specific version](#install-a-specific-version) and leave **Install updates automatically** off in [Updates](updates.md).
 
 The manager asks GitHub without signing in, which GitHub limits to 60 requests per hour per public IP address. If several servers share one public address and the limit is reached, set the environment variable `CM_GITHUB_TOKEN` to a GitHub token for the Caddy Proxy Manager service.
 
@@ -147,7 +147,7 @@ Use this to go back to an older release or to stay on one version. You need the 
 
 1. On the **Caddy binary** card, open the **More binary actions** menu (the **…** button).
 2. Select **Install specific version…**.
-3. Enter the GitHub release tag of Caddy in **Version**, for example `v2.11.4`.
+3. Enter the GitHub release tag of Caddy in **Version**, for example `v2.11.7`.
 4. Select **Install**.
 
 Plugins are only available for the latest version. When plugins are selected, the manager ignores the requested version and builds the latest Caddy with your plugins.

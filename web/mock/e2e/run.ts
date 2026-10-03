@@ -2,7 +2,7 @@
 //
 //   cd web && node mock/e2e/run.ts [scenario…]        (Node 22.18+ / 24 runs the TypeScript directly)
 //
-// Each scenario starts its own mock server (the `npm run dev:mock` dev server with a fresh in-memory state and its
+// Each scenario starts its own mock server (the `pnpm dev:mock` dev server with a fresh in-memory state and its
 // environment switches) and a fresh browser tab in a fixed time zone and locale, drives the real UI (clicks, typing,
 // saving) and checks both what the page shows and what reached the mock API. Output: report.json plus screenshots in
 // $CPM_E2E_ARTIFACTS or mock/e2e/artifacts (git-ignored); the exit code is 1 when a check fails. CHROME=<path> selects the
@@ -263,6 +263,161 @@ async function settingsScenario() {
       await page.waitFor('the membership card to follow', `__e2e.dd('Caddy storage') === 'Shared folder'`, 5_000);
     });
     await shot(page, 'settings-cluster-shared-storage');
+  });
+}
+
+/**
+ * URL pattern locations in the host editor (Caddy v2.11.6+ url_pattern matcher).
+ * Ways it could fail: an existing pattern location opens as a path prefix; switching "Match by" keeps the strip-prefix
+ * option or the old pattern; an empty or malformed pattern is saved; the saved location lacks the pattern or its
+ * ignore-case flag.
+ */
+async function urlPatternScenario() {
+  const S = 'url-pattern';
+  await scenario(S, {}, async ({ mock, page }) => {
+    const find = async () => (await mock.api<SiteHost[]>('GET', '/api/hosts')).find((h) => h.domains.includes('api.example.com'))!;
+    await page.goto(`${mock.base}/hosts/proxy`, `__e2e.has('api.example.com')`, 'the proxy hosts list');
+    await page.eval(`__e2e.one('tr', 'api.example.com').click()`);
+    await page.waitFor('the host editor', `!!__e2e.dialog() && __e2e.withText('[role="tab"]', 'Locations').length > 0`);
+    await page.eval(`__e2e.click('[role="tab"]', 'Locations', __e2e.dialog())`);
+    await page.waitFor('the locations', `__e2e.all('label', __e2e.dialog()).some((l) => __e2e.norm(l.textContent).startsWith('URL pattern'))`);
+    await check(S, ['PATTERN-1'], 'the stored locations open as one path prefix and one URL pattern, the latter without “Strip path prefix”', async () =>
+      eq(
+        await page.eval(
+          `[__e2e.control('Path prefix', __e2e.dialog()).value, __e2e.control('URL pattern', __e2e.dialog()).value, __e2e.withText('label', 'Strip path prefix', __e2e.dialog()).length]`,
+        ),
+        ['/v2', '/files/:id', 1],
+        'fields',
+      ),
+    );
+
+    await page.eval(`__e2e.setLabel('URL pattern', 'files/:id', __e2e.dialog())`);
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    await check(S, ['PATTERN-2'], 'a pattern without a leading / or scheme is refused before saving', async () => {
+      await page.waitFor('the pattern error', `__e2e.has('Start the pattern with / (any host), or with a scheme and host.')`);
+      return eq((await find()).locations[1].urlPattern, '/files/:id', 'stored pattern');
+    });
+
+    await page.eval(`__e2e.setLabel('URL pattern', '/files/:id/*', __e2e.dialog())`);
+    // Advanced tab: this host's own idle timeouts.
+    await page.eval(`__e2e.click('[role="tab"]', 'Advanced', __e2e.dialog())`);
+    await page.waitFor('the idle timeout fields', `!!__e2e.control('Upload idle timeout (seconds)', __e2e.dialog())`);
+    await check(S, ['TIMEOUT-1'], 'the host’s idle timeouts are empty and show the global values (60 s) as placeholders', async () =>
+      eq(
+        await page.eval(
+          `['Upload idle timeout (seconds)', 'Download idle timeout (seconds)'].map((l) => [__e2e.control(l, __e2e.dialog()).value, __e2e.control(l, __e2e.dialog()).placeholder])`,
+        ),
+        [['', '60'], ['', '60']],
+        'value and placeholder',
+      ),
+    );
+    await page.eval(`__e2e.setLabel('Upload idle timeout (seconds)', '5000', __e2e.dialog())`);
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    await check(S, ['TIMEOUT-2'], 'a timeout above an hour is refused before saving', async () => {
+      await page.waitFor('the timeout error', `__e2e.has('Enter 1 to 3600 seconds, or leave empty.')`);
+      return eq((await find()).readIdleTimeoutSeconds ?? null, null, 'stored timeout');
+    });
+    await page.eval(`__e2e.setLabel('Upload idle timeout (seconds)', '300', __e2e.dialog())`);
+    await page.eval(`__e2e.click('[role="tab"]', 'Locations', __e2e.dialog())`);
+    await page.waitFor('the locations', `!!__e2e.control('URL pattern', __e2e.dialog())`);
+    await page.eval(`__e2e.control('Ignore case', __e2e.dialog()).click()`);
+    await shot(page, 'host-url-pattern-location');
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    await page.waitFor('the editor to close after saving', `!document.querySelector('[aria-modal="true"]')`, 10_000);
+    await check(S, ['PATTERN-3'], 'the saved host carries the pattern, its ignore-case flag, no strip prefix and its own upload idle timeout', async () => {
+      const l = (await find()).locations;
+      return eq(
+        [l[0].path, l[0].urlPattern ?? null, l[1].urlPattern, l[1].urlPatternIgnoreCase, l[1].stripPrefix, (await find()).readIdleTimeoutSeconds, (await find()).writeIdleTimeoutSeconds ?? null],
+        ['/v2', null, '/files/:id/*', true, false, 300, null],
+        'saved locations',
+      );
+    });
+  });
+}
+
+/**
+ * Settings › Caddy › Request limits and headers (server options of Caddy v2.11.6+).
+ * Ways it could fail: the section is missing; the placeholders do not show Caddy's defaults; out-of-range numbers or a
+ * header name Caddy would refuse reach the API; valid values are not saved as typed; an emptied field is not sent as
+ * "use the default" (null).
+ */
+async function requestLimitsScenario() {
+  const S = 'request-limits';
+  await scenario(S, {}, async ({ mock, page }) => {
+    const stored = () => mock.api<CaddySettings>('GET', '/api/settings/caddy');
+    const addHeader = (name: string) =>
+      page.eval(
+        `(() => { const el = __e2e.control('Request headers to keep'); el.scrollIntoView({ block: 'center' }); __e2e.set(el, ${js(name)}); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`,
+      );
+    await page.goto(
+      `${mock.base}/settings`,
+      `__e2e.has('Request limits and headers') && !!__e2e.control('Request header limit (KiB)')`,
+      'Settings › Caddy',
+    );
+    await check(S, ['LIMITS-1'], 'empty fields show Caddy’s defaults (16 KiB, 60 s, 60 s) as placeholders', async () =>
+      eq(
+        await page.eval(
+          `['Request header limit (KiB)', 'Upload idle timeout (seconds)', 'Download idle timeout (seconds)'].map((l) => [__e2e.control(l).value, __e2e.control(l).placeholder])`,
+        ),
+        [['', '16'], ['', '60'], ['', '60']],
+        'value and placeholder',
+      ),
+    );
+
+    await page.eval(`__e2e.setLabel('Request header limit (KiB)', '2000')`);
+    await page.eval(`__e2e.setLabel('Upload idle timeout (seconds)', '0')`);
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save')`);
+    await check(S, ['LIMITS-2'], 'out-of-range limits are refused before saving', async () => {
+      await page.waitFor('the range errors', `__e2e.has('Enter 4 to 1024 KiB, or leave empty.') && __e2e.has('Enter 1 to 3600 seconds, or leave empty.')`);
+      const s = await stored();
+      return eq([s.maxRequestHeaderKb ?? null, s.readIdleTimeoutSeconds ?? null], [null, null], 'stored limits');
+    });
+
+    await addHeader('X-Normal');
+    await check(S, ['LIMITS-3'], 'a header name without an underscore or a dot is not added', async () => {
+      await page.waitFor('the entry error', `__e2e.has('X-Normal: no underscore or dot')`);
+    });
+    await addHeader('SM_USER');
+    await addHeader('webhook_*');
+    await page.eval(`__e2e.setLabel('Proxy-Status name', 'bad"name')`);
+    await page.eval(`__e2e.setLabel('Rotate access logs every (days)', '400')`);
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save')`);
+    await check(S, ['LIMITS-6'], 'a Proxy-Status name with a quote and a rotation above a year are refused before saving', async () => {
+      await page.waitFor('the errors', `__e2e.has('without quotes or backslashes') && __e2e.has('Enter 1 to 365 days, or leave empty.')`);
+      const s = await stored();
+      return eq([s.proxyStatusName ?? null, s.accessLogRollDays ?? null], [null, null], 'stored');
+    });
+    await page.eval(`__e2e.setLabel('Proxy-Status name', 'edge01.example.com')`);
+    await page.eval(`__e2e.setLabel('Minimum upload rate (bytes/s)', '500')`);
+    await page.eval(`__e2e.setLabel('Rotate access logs every (days)', '7')`);
+    await page.eval(
+      `(() => { const el = __e2e.control('Cookies hashed in access logs'); for (const n of ['a=b', 'ASP.NET_SessionId']) { __e2e.set(el, n); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); } return true; })()`,
+    );
+    await page.eval(`__e2e.setLabel('Request header limit (KiB)', '64')`);
+    await page.eval(`__e2e.setLabel('Upload idle timeout (seconds)', '120')`);
+    await page.eval(`__e2e.setLabel('Download idle timeout (seconds)', '30')`);
+    await shot(page, 'settings-request-limits');
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save')`);
+    await check(S, ['LIMITS-4'], 'valid limits and header names are saved as typed', async () => {
+      await until('the save', async () => (await stored()).maxRequestHeaderKb === 64, 8_000);
+      const s = await stored();
+      return eq(
+        [s.maxRequestHeaderKb, s.readIdleTimeoutSeconds, s.writeIdleTimeoutSeconds, s.keptRequestHeaders, s.proxyStatusName, s.accessLogRollDays, s.accessLogHashedCookies, s.readMinRateBytes, s.writeMinRateBytes ?? null],
+        [64, 120, 30, ['SM_USER', 'webhook_*'], 'edge01.example.com', 7, ['ASP.NET_SessionId'], 500, null],
+        'stored settings',
+      );
+    });
+
+    // The form is disabled while the save is pending.
+    await page.waitFor('the form to accept input again', `__e2e.has('Settings saved and applied') && !__e2e.control('Request header limit (KiB)').matches(':disabled')`);
+    await page.eval(`__e2e.setLabel('Request header limit (KiB)', '')`);
+    await page.waitFor('unsaved changes', `__e2e.has('Unsaved changes')`);
+    await page.eval(`__e2e.click('button[type="submit"]', 'Save')`);
+    await check(S, ['LIMITS-5'], 'emptying a limit returns it to Caddy’s default and keeps the others', async () => {
+      await until('the cleared limit', async () => (await stored()).maxRequestHeaderKb == null, 8_000);
+      const s = await stored();
+      return eq([s.readIdleTimeoutSeconds, s.keptRequestHeaders], [120, ['SM_USER', 'webhook_*']], 'other settings');
+    });
   });
 }
 
@@ -1034,6 +1189,8 @@ try {
   await trafficScenario();
   await hostsScenario();
   await settingsScenario();
+  await requestLimitsScenario();
+  await urlPatternScenario();
   await dnsOnlyScenarios();
   await serversScenario();
   await brandingScenario();

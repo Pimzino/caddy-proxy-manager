@@ -14,15 +14,18 @@ internal struct AccessEntry
     public string ClientIp;
     public long BytesIn;
     public long BytesOut;
-    /// <summary>0 when nothing wrote a status (aborted request).</summary>
+    /// <summary>
+    /// 0 when nothing wrote a status (aborted request). Since Caddy v2.11.6 a proxied request that the client cancels
+    /// before the response starts, or whose upload stalls past the idle timeout, is logged as 499 instead.
+    /// </summary>
     public int Status;
     public double DurationSeconds;
 }
 
 /// <summary>
-/// Parses the JSON lines Caddy v2.11.4 writes for the `http.log.access` loggers (SPEC "Traffic statistics logging";
+/// Parses the JSON lines Caddy v2.11.7 writes for the `http.log.access` loggers (SPEC "Traffic statistics logging";
 /// field list in docs/research/round3-accesslog.md §1, source:
-/// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go logRequest / LoggableHTTPRequest).
+/// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/server.go logRequest / LoggableHTTPRequest).
 /// Unknown fields and nested objects are skipped, so the filter encoder's deletions or additions do not matter.
 /// </summary>
 internal static class AccessLogParser

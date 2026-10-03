@@ -13,7 +13,7 @@ namespace CaddyManager.Telemetry.Traffic;
 /// <item>a name matched by a configured wildcard → the wildcard ("*.example.com"), so random sub-domains stay one bucket;</item>
 /// <item>everything else — unknown names, IP addresses nobody configured, requests without a Host — → <see cref="Other"/>.</item>
 /// </list>
-/// Matching follows Caddy v2.11.4's host matcher (modules/caddyhttp/matchers.go MatchHost.MatchWithError): case-insensitive
+/// Matching follows Caddy v2.11.7's host matcher (modules/caddyhttp/matchers.go MatchHost.MatchWithError): case-insensitive
 /// comparison of the Host without port and brackets; "*" matches exactly one label, so "*.example.com" matches
 /// "a.example.com" but neither "example.com" nor "a.b.example.com". The configured domains are normalised the way the
 /// Config module stores them (lower case, no trailing dot, IDN → punycode, canonical IP text). Keys are at most

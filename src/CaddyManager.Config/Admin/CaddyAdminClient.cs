@@ -204,7 +204,7 @@ public sealed partial class CaddyAdminClient : ICaddyAdminClient
     /// uses the address, or passive checks (fail_duration set) there. The manager itself generates no passive checks
     /// (one request could mark every upstream down), so an upstream without an active check is not monitored unless an
     /// administrator added passive checks in advanced routes.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/hosts.go (Upstream.Healthy)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/reverseproxy/hosts.go (Upstream.Healthy)
     /// </summary>
     public async Task<List<UpstreamStatus>> GetUpstreamStatusAsync(CancellationToken ct = default)
     {
@@ -273,7 +273,7 @@ public sealed partial class CaddyAdminClient : ICaddyAdminClient
     /// or an empty map when it cannot be read. Each reverse_proxy handler sets it every 10 s from Upstream.Healthy(),
     /// which combines ACTIVE health checks with the passive failure count (fails &lt; max_fails) - the only place Caddy
     /// exposes active health. /reverse_proxy/upstreams only has address, num_requests and fails (passive).
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/metrics.go ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/reverseproxy/metrics.go ;
     /// https://caddyserver.com/docs/api#get-reverse_proxyupstreams
     /// </summary>
     private async Task<Dictionary<string, bool>> GetUpstreamHealthMetricAsync(CancellationToken ct)

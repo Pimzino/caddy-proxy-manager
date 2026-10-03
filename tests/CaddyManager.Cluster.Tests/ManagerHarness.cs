@@ -20,11 +20,11 @@ using Microsoft.Extensions.Logging;
 
 namespace CaddyManager.Cluster.Tests;
 
-/// <summary>The development Caddy binary (.dev/bin/caddy, v2.11.4) found above the test binaries, or CM_DEV_CADDY.</summary>
+/// <summary>The development Caddy binary (.dev/bin/caddy, v2.11.7) found above the test binaries, or CM_DEV_CADDY.</summary>
 public static class DevCaddy
 {
     public static readonly string? Path = Find("caddy", "CM_DEV_CADDY");
-    /// <summary>.dev/bin/caddy-plugins: v2.11.4 with caddy-dns/cloudflare, caddyserver/ntlm-transport and mholt/caddy-l4.</summary>
+    /// <summary>.dev/bin/caddy-plugins: v2.11.7 with caddy-dns/cloudflare, caddyserver/ntlm-transport and mholt/caddy-l4.</summary>
     public static readonly string? PluginsPath = Find("caddy-plugins", "CM_DEV_CADDY_PLUGINS");
 
     private static string? Find(string baseName, string variable)

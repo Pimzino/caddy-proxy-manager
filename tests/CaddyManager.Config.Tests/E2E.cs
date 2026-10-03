@@ -280,12 +280,15 @@ public sealed class RecordingBackend : IAsyncDisposable
 
     /// <param name="custom">Optional handler that runs first; returns true when it has handled the request itself
     /// (e.g. answered with a special status or aborted the connection).</param>
+    /// <param name="maxRequestHeadersBytes">Kestrel's limit for all request headers together (its default is 32 KiB).</param>
     public static async Task<RecordingBackend> StartAsync(bool https, bool strictSni = false, int? port = null,
-        Func<HttpContext, Task<bool>>? custom = null)
+        Func<HttpContext, Task<bool>>? custom = null, int? maxRequestHeadersBytes = null)
     {
         var listenPort = port ?? Net.FreeTcpPort();
         var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
+        if (maxRequestHeadersBytes is int headerBytes)
+            builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestHeadersTotalSize = headerBytes);
         if (https)
         {
             using var cert = TestCerts.SelfSigned(["backend.lan"]);

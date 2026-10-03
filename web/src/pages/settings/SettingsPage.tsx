@@ -45,7 +45,20 @@ import { formatDateTime, formatDuration } from '@/lib/format';
 import { isAbsoluteHttpUrl, isIpv4, isIpv6, isValidCidr, isValidEmail, isValidPort, jsonObjectError, type FieldErrors } from '@/lib/validation';
 import { AcmeChallengeSection, DNS_FIELDS } from './AcmeChallengeSection';
 import { BackupTab } from './BackupTab';
-import { caddyFormInput, dnsChallengeAvailable, nodeLocalErrors, round3Payload, validateDns } from './caddyForm';
+import {
+  ACCESS_LOG_ROLL_DAYS,
+  caddyFormInput,
+  cookieNameError,
+  dnsChallengeAvailable,
+  IDLE_TIMEOUT_SECONDS,
+  keptRequestHeaderError,
+  MIN_RATE_BYTES,
+  nodeLocalErrors,
+  REQUEST_HEADER_KB,
+  round3Payload,
+  validateDns,
+  validateRequestLimits,
+} from './caddyForm';
 import { ClusterTab } from './ClusterTab';
 import { LdapTab } from './LdapTab';
 import { HiddenValue, PLUGIN_FIELDS, PluginsAdvancedSection, validatePluginFields } from './PluginsAdvancedSection';
@@ -143,6 +156,8 @@ function noChallengeLeft(f: CaddySettingsInput, settings: CaddySettings): boolea
   return f.disableHttpChallenge && f.disableTlsAlpnChallenge && dnsChallengeAvailable(f, settings) === false;
 }
 
+const optionalNumber = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? null : v);
+
 function validateCaddy(f: CaddySettingsInput, settings: CaddySettings): FieldErrors {
   const e: FieldErrors = {};
   if (f.acmeEmail && !isValidEmail(f.acmeEmail)) e.acmeEmail = 'Enter a valid e-mail address or leave empty.';
@@ -157,13 +172,15 @@ function validateCaddy(f: CaddySettingsInput, settings: CaddySettings): FieldErr
   if (jsonErr) e.serverOptionsJson = jsonErr;
   if (noChallengeLeft(f, settings)) e.disableTlsAlpnChallenge = NO_CHALLENGE_TEXT;
   if (!!f.eabKeyId?.trim() && f.eabMacKey === '') e.eabKeyId = 'External account binding needs both the key ID and the HMAC key.';
-  return { ...e, ...validatePluginFields(f) };
+  return { ...e, ...validateRequestLimits(f), ...validatePluginFields(f) };
 }
 
 /** Field keys the Caddy settings form shows next to a field; other server errors go to a summary. */
 const CADDY_FIELDS = [
   'acmeEmail', 'customAcmeDirectory', 'customAcmeRootPath', 'eabKeyId', 'disableTlsAlpnChallenge', 'httpPort', 'httpsPort', 'publicHttpsPort',
-  'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
+  'bindAddresses', 'defaultRedirectUrl', 'trustedProxies', 'maxRequestHeaderKb', 'readIdleTimeoutSeconds', 'writeIdleTimeoutSeconds', 'readMinRateBytes', 'writeMinRateBytes', 'keptRequestHeaders', 'proxyStatusName', 'accessLogRollDays',
+  'accessLogHashedCookies',
+  'logLevel', 'certificateStorePath', 'adminListen', 'serverOptionsJson',
   ...PLUGIN_FIELDS,
   ...DNS_FIELDS,
 ];
@@ -240,6 +257,13 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
         acmeIssuerJson: secretPayload(form.acmeIssuerJson),
         adminListen: form.adminListen.trim(),
         publicHttpsPort,
+        maxRequestHeaderKb: optionalNumber(form.maxRequestHeaderKb),
+        readIdleTimeoutSeconds: optionalNumber(form.readIdleTimeoutSeconds),
+        writeIdleTimeoutSeconds: optionalNumber(form.writeIdleTimeoutSeconds),
+        readMinRateBytes: optionalNumber(form.readMinRateBytes),
+        writeMinRateBytes: optionalNumber(form.writeMinRateBytes),
+        accessLogRollDays: optionalNumber(form.accessLogRollDays),
+        proxyStatusName: form.proxyStatusName?.trim() || null,
       });
       feedback.applied(res.apply, 'Settings saved and applied');
     } catch (err) {
@@ -400,6 +424,102 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             </Field>
           </FormSection>
 
+          <FormSection
+            title="Request limits and headers"
+            description="Limits Caddy applies to every request on every site, and the request headers it removes. Empty fields use Caddy’s defaults. The idle timeouts and the header list need Caddy v2.11.6 or later."
+          >
+            <Replicated locked={managed}>
+              <div className="grid items-start gap-4 xl:grid-cols-3">
+                <Field
+                  label="Request header limit (KiB)"
+                  error={errors.maxRequestHeaderKb}
+                  hint="The request line and all headers together. Larger requests get 431. Raise it for large Kerberos (Negotiate) tickets or cookies."
+                >
+                  <NumberInput
+                    min={REQUEST_HEADER_KB.min}
+                    max={REQUEST_HEADER_KB.max}
+                    placeholder="16"
+                    value={form.maxRequestHeaderKb}
+                    onValueChange={(v) => set('maxRequestHeaderKb', Number.isNaN(v) ? null : v)}
+                  />
+                </Field>
+                <Field
+                  label="Upload idle timeout (seconds)"
+                  error={errors.readIdleTimeoutSeconds}
+                  hint="A request whose body stops arriving for this long is aborted. Slow uploads that keep sending are not affected."
+                >
+                  <NumberInput
+                    min={IDLE_TIMEOUT_SECONDS.min}
+                    max={IDLE_TIMEOUT_SECONDS.max}
+                    placeholder="60"
+                    value={form.readIdleTimeoutSeconds}
+                    onValueChange={(v) => set('readIdleTimeoutSeconds', Number.isNaN(v) ? null : v)}
+                  />
+                </Field>
+                <Field
+                  label="Download idle timeout (seconds)"
+                  error={errors.writeIdleTimeoutSeconds}
+                  hint="A response the client stops reading for this long is aborted. Pauses between writes, as in server-sent events or WebSockets, do not count."
+                >
+                  <NumberInput
+                    min={IDLE_TIMEOUT_SECONDS.min}
+                    max={IDLE_TIMEOUT_SECONDS.max}
+                    placeholder="60"
+                    value={form.writeIdleTimeoutSeconds}
+                    onValueChange={(v) => set('writeIdleTimeoutSeconds', Number.isNaN(v) ? null : v)}
+                  />
+                </Field>
+              </div>
+              <div className="grid items-start gap-4 xl:grid-cols-3">
+                <Field
+                  label="Minimum upload rate (bytes/s)"
+                  error={errors.readMinRateBytes}
+                  hint="Optional. An upload slower than this on average is aborted, even if it never pauses. Empty: no minimum."
+                >
+                  <NumberInput
+                    min={MIN_RATE_BYTES.min}
+                    max={MIN_RATE_BYTES.max}
+                    value={form.readMinRateBytes}
+                    onValueChange={(v) => set('readMinRateBytes', Number.isNaN(v) ? null : v)}
+                  />
+                </Field>
+                <Field
+                  label="Minimum download rate (bytes/s)"
+                  error={errors.writeMinRateBytes}
+                  hint="Optional. A response the client reads slower than this on average is aborted. Empty: no minimum."
+                >
+                  <NumberInput
+                    min={MIN_RATE_BYTES.min}
+                    max={MIN_RATE_BYTES.max}
+                    value={form.writeMinRateBytes}
+                    onValueChange={(v) => set('writeMinRateBytes', Number.isNaN(v) ? null : v)}
+                  />
+                </Field>
+              </div>
+              <Field
+                label="Request headers to keep"
+                error={fieldError(errors, 'keptRequestHeaders')}
+                hint="Caddy removes request headers from clients whose names contain an underscore or a dot. List the ones your applications need, for example SM_USER or X.Trace. A name ending in * keeps every header that starts with it. For each kept header, the same name written with hyphens (SM-USER) is removed instead."
+              >
+                <ChipInput
+                  value={form.keptRequestHeaders}
+                  onChange={(v) => set('keptRequestHeaders', v)}
+                  placeholder="SM_USER"
+                  validate={keptRequestHeaderError}
+                  disabled={!isAdmin || managed}
+                />
+              </Field>
+              <Field
+                label="Proxy-Status name"
+                error={errors.proxyStatusName}
+                className="lg:max-w-md"
+                hint="Optional. A name for this server, for example its host name. Caddy sends it in the Proxy-Status response header when it refuses to forward a request without buffering (501). Needs Caddy v2.11.7 or later."
+              >
+                <Input mono placeholder="edge01.example.com" value={form.proxyStatusName ?? ''} onChange={(e) => set('proxyStatusName', e.target.value)} />
+              </Field>
+            </Replicated>
+          </FormSection>
+
           <FormSection title="Logging & storage">
             <Field label="Caddy log level" error={errors.logLevel} className="max-w-xs">
               <Select value={form.logLevel} onChange={(e) => set('logLevel', e.target.value)} disabled={managed}>
@@ -416,6 +536,34 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
             >
               <Input mono placeholder="C:\ProgramData\CaddyProxyManager\certificates" value={form.certificateStorePath ?? ''} onChange={(e) => set('certificateStorePath', e.target.value)} />
             </Field>
+            <Replicated locked={managed}>
+              <Field
+                label="Rotate access logs every (days)"
+                error={errors.accessLogRollDays}
+                className="max-w-xs"
+                hint="Per-host access logs start a new file after this many days, as well as at 20 MB. Empty: by size only."
+              >
+                <NumberInput
+                  min={ACCESS_LOG_ROLL_DAYS.min}
+                  max={ACCESS_LOG_ROLL_DAYS.max}
+                  value={form.accessLogRollDays}
+                  onValueChange={(v) => set('accessLogRollDays', Number.isNaN(v) ? null : v)}
+                />
+              </Field>
+              <Field
+                label="Cookies hashed in access logs"
+                error={fieldError(errors, 'accessLogHashedCookies')}
+                hint="Cookie names, for example a session cookie. Per-host access logs show a short hash instead of the value, in the request’s Cookie header and the response’s Set-Cookie header. Only matters when credentials are logged (server option logs.should_log_credentials); otherwise Caddy hides both headers completely."
+              >
+                <ChipInput
+                  value={form.accessLogHashedCookies}
+                  onChange={(v) => set('accessLogHashedCookies', v)}
+                  placeholder="ASP.NET_SessionId"
+                  validate={cookieNameError}
+                  disabled={!isAdmin || managed}
+                />
+              </Field>
+            </Replicated>
             <SwitchField
               label="Traffic statistics"
               disabled={managed}
@@ -450,9 +598,9 @@ function CaddySettingsForm({ settings }: { settings: CaddySettings }) {
                 Anyone who can reach this address can reconfigure Caddy without authentication. Keep it on 127.0.0.1.
               </Callout>
             )}
-            <Field label="Server options (JSON)" error={errors.serverOptionsJson} hint="Merged into every apps.http.servers entry, e.g. timeouts or max_header_bytes. Leave empty unless you know you need it.">
+            <Field label="Server options (JSON)" error={errors.serverOptionsJson} hint="Merged into every apps.http.servers entry, e.g. read_header_timeout or keepalive_interval, and wins over the fields above. Leave empty unless you know you need it.">
               {isAdmin || form.serverOptionsJson !== undefined ? (
-                <Textarea mono rows={5} spellCheck={false} disabled={managed} placeholder={'{\n  "timeouts": { "read_header": "10s" }\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
+                <Textarea mono rows={5} spellCheck={false} disabled={managed} placeholder={'{\n  "read_header_timeout": "10s"\n}'} value={form.serverOptionsJson ?? ''} onChange={(e) => set('serverOptionsJson', e.target.value)} />
               ) : (
                 <HiddenValue />
               )}

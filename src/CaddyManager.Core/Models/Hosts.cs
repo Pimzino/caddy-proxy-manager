@@ -74,6 +74,14 @@ public sealed class HealthCheck
 public sealed class ProxyLocation
 {
     public string Path { get; set; } = "/";
+    /// <summary>
+    /// When set, the location matches requests by this URLPattern (https://urlpattern.spec.whatwg.org/, e.g.
+    /// "/books/:id" or "https://shop.example.com/api/*") instead of the path prefix; Path and StripPrefix are not used.
+    /// Needs Caddy v2.11.6 or later (http.matchers.url_pattern).
+    /// </summary>
+    public string? UrlPattern { get; set; }
+    /// <summary>Match UrlPattern case-insensitively.</summary>
+    public bool UrlPatternIgnoreCase { get; set; }
     public List<Upstream> Upstreams { get; set; } = new();
     public bool StripPrefix { get; set; }
     public bool UpstreamTlsInsecure { get; set; }
@@ -98,6 +106,13 @@ public sealed class SiteHost : Entity
     public bool Hsts { get; set; }
     public bool HstsSubdomains { get; set; }
     public int HstsMaxAgeSeconds { get; set; } = 31536000;
+    /// <summary>
+    /// Idle timeouts for this host instead of the ones in CaddySettings: abort an upload (read), or a response the
+    /// client does not read (write), that makes no progress for this long. null = the value from CaddySettings.
+    /// Caddy v2.11.6+ (handler "timeouts").
+    /// </summary>
+    public int? ReadIdleTimeoutSeconds { get; set; }
+    public int? WriteIdleTimeoutSeconds { get; set; }
     /// <summary>Enable gzip + zstd response compression.</summary>
     public bool Compression { get; set; } = true;
     public string? AccessListId { get; set; }

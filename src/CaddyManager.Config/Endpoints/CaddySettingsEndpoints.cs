@@ -351,6 +351,9 @@ internal static class SettingsEndpoints
 
         next.BindAddresses = (next.BindAddresses ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
         next.TrustedProxies = (next.TrustedProxies ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
+        next.AccessLogHashedCookies = (next.AccessLogHashedCookies ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        next.ProxyStatusName = string.IsNullOrWhiteSpace(next.ProxyStatusName) ? null : next.ProxyStatusName.Trim();
+        next.KeptRequestHeaders = (next.KeptRequestHeaders ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         next.AcmeEmail = next.AcmeEmail?.Trim() ?? "";
         next.AdminListen = next.AdminListen?.Trim() ?? "";
         next.LogLevel = next.LogLevel?.Trim().ToLowerInvariant() ?? "info";

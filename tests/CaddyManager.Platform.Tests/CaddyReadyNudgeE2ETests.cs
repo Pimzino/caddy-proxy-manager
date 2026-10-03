@@ -10,7 +10,7 @@ namespace CaddyManager.Platform.Tests;
 /// <summary>
 /// The building block of the START_PENDING fix (CaddyServiceStartPendingE2ETests, Windows only) that runs on every OS:
 /// CaddyHostSupport.ReloadUnchangedConfigAsync against the real Caddy binary. On Windows its only purpose is the
-/// notify.Ready() at the end of caddy.Load (https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go); here we prove it
+/// notify.Ready() at the end of caddy.Load (https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go); here we prove it
 /// has no other effect on a running Caddy.
 ///
 /// Ways it can fail:

@@ -78,6 +78,44 @@ public sealed class CaddySettings : ISettingsDocument
     /// <summary>"debug" | "info" | "warn" | "error"</summary>
     public string LogLevel { get; set; } = "info";
 
+    // Request limits and headers (apps.http.servers.*; Caddy defaults since v2.11.6)
+    /// <summary>
+    /// Largest request line plus headers Caddy accepts, in KiB (max_header_bytes); larger requests get 431.
+    /// null = Caddy default (16 KiB since v2.11.6, 1 MiB before).
+    /// </summary>
+    public int? MaxRequestHeaderKb { get; set; }
+    /// <summary>Abort a request whose body upload makes no progress for this long (read_idle_timeout, Caddy v2.11.6+). null = Caddy default (1 min).</summary>
+    public int? ReadIdleTimeoutSeconds { get; set; }
+    /// <summary>Abort a response whose client accepts no data for this long (write_idle_timeout, Caddy v2.11.6+). null = Caddy default (1 min).</summary>
+    public int? WriteIdleTimeoutSeconds { get; set; }
+    /// <summary>
+    /// Abort an upload that does not sustain this many bytes per second, averaged from its start (read_min_rate,
+    /// Caddy v2.11.6+): catches a client that trickles just enough never to be idle. null = no minimum.
+    /// </summary>
+    public int? ReadMinRateBytes { get; set; }
+    /// <summary>The same for responses the client reads too slowly (write_min_rate). null = no minimum.</summary>
+    public int? WriteMinRateBytes { get; set; }
+    /// <summary>
+    /// Client request headers with "_" or "." in the name that Caddy keeps instead of dropping (expected_underscore_headers /
+    /// expected_dot_headers, Caddy v2.11.6+). Exact names, or a prefix ending in "*" (the prefix must contain "_" or ".").
+    /// </summary>
+    public List<string> KeptRequestHeaders { get; set; } = new();
+    /// <summary>
+    /// Name that identifies this proxy in the Proxy-Status response header (RFC 9209) when Caddy refuses to forward a
+    /// message incrementally (reverse_proxy proxy_status_name, Caddy v2.11.7+). null = no header.
+    /// </summary>
+    public string? ProxyStatusName { get; set; }
+
+    // Per-host access logs
+    /// <summary>Also start a new access log file every this many days (writer roll_interval, Caddy v2.11.0+). null = by size only.</summary>
+    public int? AccessLogRollDays { get; set; }
+    /// <summary>
+    /// Cookie names whose values are written as a short hash in the per-host access logs, in the request's Cookie header
+    /// (log filter "cookie") and the response's Set-Cookie header (log filter "set_cookie", Caddy v2.11.6+). Only matters
+    /// when credentials are logged (server option logs.should_log_credentials); otherwise Caddy redacts both headers.
+    /// </summary>
+    public List<string> AccessLogHashedCookies { get; set; } = new();
+
     /// <summary>Caddy admin API listen address. Keep on loopback.</summary>
     public string AdminListen { get; set; } = "127.0.0.1:2019";
 

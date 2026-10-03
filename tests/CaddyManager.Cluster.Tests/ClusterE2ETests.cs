@@ -19,7 +19,7 @@ namespace CaddyManager.Cluster.Tests;
 
 /// <summary>
 /// End to end: two complete managers (primary + node) on real Kestrel loopback ports, each driving its own real Caddy
-/// v2.11.4 process. Enrollment, replication, TLS with a replicated custom certificate, the node's read-only mode and
+/// v2.11.7 process. Enrollment, replication, TLS with a replicated custom certificate, the node's read-only mode and
 /// node-local settings, envelope security, proxied telemetry, offline detection/recovery, removal and the CLI are all
 /// exercised through the public HTTP API and the real Caddy listeners. Writes e2e-artifacts/cluster-e2e.json.
 /// </summary>

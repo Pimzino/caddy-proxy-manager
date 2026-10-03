@@ -1,4 +1,4 @@
-// Realistic in-memory fixture data for `npm run dev:mock`. Development only — never bundled.
+// Realistic in-memory fixture data for `pnpm dev:mock`. Development only — never bundled.
 import type {
   AccessList,
   AuditEntry,
@@ -496,7 +496,7 @@ export function createState(): MockState {
       upstreams: [{ scheme: 'http', host: '10.0.10.50', port: 5000 }],
       locations: [
         { path: '/v2', upstreams: [{ scheme: 'http', host: '10.0.10.51', port: 5000 }], stripPrefix: false, upstreamTlsInsecure: false },
-        { path: '/files', upstreams: [{ scheme: 'http', host: '10.0.10.60', port: 9000 }], stripPrefix: true, upstreamTlsInsecure: false },
+        { path: '/', urlPattern: '/files/:id', upstreams: [{ scheme: 'http', host: '10.0.10.60', port: 9000 }], stripPrefix: false, upstreamTlsInsecure: false },
       ],
       requestHeaders: [{ action: 'set', name: 'X-Real-IP', value: '{http.request.remote.host}' }],
     }),
@@ -614,6 +614,8 @@ export function createState(): MockState {
       bindAddresses: [],
       defaultSite: 'notFound',
       trustedProxies: [],
+      keptRequestHeaders: [],
+      accessLogHashedCookies: [],
       logLevel: 'info',
       adminListen: '127.0.0.1:2019',
       defaultAcmeChallenge: dnsOnly ? 'dns' : 'http',

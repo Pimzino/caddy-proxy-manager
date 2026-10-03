@@ -95,7 +95,7 @@ The newest point is the bucket that is still filling. For example, **24 h** cove
 | Requests | Every HTTP request Caddy handled and logged. This includes redirects to HTTPS and ACME HTTP-01 challenge requests. |
 | Data in | Request body bytes. Headers are not included. |
 | Data out | Response body bytes after compression. Headers and TLS overhead are not included. |
-| Status classes | By the final status code. **Other** means a request without a status (aborted before a response was written) or a 1xx status. |
+| Status classes | By the final status code. **Other** means a request without a status (aborted before a response was written) or a 1xx status. A request to a proxy host that the client cancels before the response starts has status `499` and counts as 4xx; with Caddy older than `v2.11.6` it has no status and counts as **Other**. |
 | Unique clients | Distinct client IP addresses. When a request comes through a proxy listed in **Settings › Caddy › Trusted proxies**, the client is the address that proxy reports. Otherwise it is the connecting address. |
 | Avg. duration | Mean time from Caddy receiving the request to finishing the response, in milliseconds. |
 

@@ -13,7 +13,7 @@ namespace CaddyManager.Telemetry.Tests;
 
 /// <summary>
 /// End to end (SEC-2, TEL-1, TEL-2): the Host header is chosen by the client, and Caddy logs every request whatever its
-/// Host. A real Caddy v2.11.4 runs the generated configuration for one exact host and one wildcard host; thousands of
+/// Host. A real Caddy v2.11.7 runs the generated configuration for one exact host and one wildcard host; thousands of
 /// requests with random Host headers, IP literals, names one label too deep for the wildcard, and Host headers of 1,100
 /// and 8,000 characters go through it, together with known traffic for the configured names. Statistics must keep one
 /// bucket per configured name (the wildcard as one), file everything else under "(other)", keep saving (an over-long

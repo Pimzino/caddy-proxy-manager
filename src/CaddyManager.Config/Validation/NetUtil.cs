@@ -25,7 +25,7 @@ public static partial class NetUtil
     /// Parses an IP address the way Caddy (Go's netip.ParseAddr) does: canonical dotted-quad IPv4 or IPv6 text only.
     /// .NET's IPAddress.TryParse also accepts "10" (0.0.0.10), "10.1", "010.1.1.1" (octal: 8.1.1.1) and "0x0a.0.0.1",
     /// which Caddy rejects (the whole config load fails) or which silently mean a different address.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/ip_range.go ; https://pkg.go.dev/net/netip#ParseAddr
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/ip_range.go ; https://pkg.go.dev/net/netip#ParseAddr
     /// </summary>
     public static bool TryParseIp(string? value, out IPAddress ip)
     {

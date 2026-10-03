@@ -298,17 +298,17 @@ public class OfflineInstallTests
             Assert.Empty(Directory.GetFileSystemEntries(env.Paths.CaddyStagingDir));
             var meta = manager.ReadMetadata()!;
             Assert.Equal("upload", meta.Source);
-            Assert.Equal("v2.11.4", meta.Version);
+            Assert.Equal(CaddyVersion.Tested, meta.Version);
             Assert.Empty(meta.Plugins);
             Assert.Equal(128, meta.Sha512?.Length);
-            Assert.Equal("v2.11.4", (await bin.GetInstalledAsync(ct))?.Version);
+            Assert.Equal(CaddyVersion.Tested, (await bin.GetInstalledAsync(ct))?.Version);
             Assert.Equal(CaddyRunState.Running, (await host.GetStatusAsync(ct)).State);
             Assert.Contains("caddy installed", svc.Config.Applied);
-            Assert.Contains(svc.Events.Events, e => e.Message == "Caddy v2.11.4 installed (uploaded file caddy.exe)");
+            Assert.Contains(svc.Events.Events, e => e.Message == $"Caddy {CaddyVersion.Tested} installed (uploaded file caddy.exe)");
             Assert.False(bin.CanRollback);
 
             // 2. Update from an official-style release archive (content-detected): current binary kept as .previous.
-            var archiveName = CaddyPlatform.Current.ReleaseAssetName(CaddyVersion.Parse("v2.11.4"));
+            var archiveName = CaddyPlatform.Current.ReleaseAssetName(CaddyVersion.Parse(CaddyVersion.Tested));
             var archive = Path.Combine(env.Root, archiveName);
             using (var z = ZipFile.Open(archive, ZipArchiveMode.Create))
                 z.CreateEntryFromFile(dev!, "caddy.exe", CompressionLevel.Fastest);
@@ -320,13 +320,13 @@ public class OfflineInstallTests
             Assert.Contains(update.Log, l => l.Contains("Stopping Caddy"));
             Assert.True(File.Exists(env.Paths.CaddyExeBackup));
             Assert.True(bin.CanRollback);
-            Assert.Equal("v2.11.4", await manager.GetPreviousVersionAsync(ct));
+            Assert.Equal(CaddyVersion.Tested, await manager.GetPreviousVersionAsync(ct));
             Assert.Equal(archiveName, manager.ReadMetadata()?.Url);
             Assert.Equal(CaddyPlatform.BinaryName, manager.ReadPreviousMetadata()?.Url);
             var afterUpdate = await host.GetStatusAsync(ct);
             Assert.Equal(CaddyRunState.Running, afterUpdate.State);
             Assert.NotEqual(pidBefore, afterUpdate.ProcessId);
-            Assert.Contains(svc.Events.Events, e => e.Message.StartsWith("Caddy updated from v2.11.4 to v2.11.4 (uploaded file " + archiveName));
+            Assert.Contains(svc.Events.Events, e => e.Message.StartsWith($"Caddy updated from {CaddyVersion.Tested} to {CaddyVersion.Tested} (uploaded file " + archiveName));
 
             // 3. Rollback swaps .previous back in through the same pipeline (and keeps the replaced binary as .previous).
             var rollback = await Jobs.WaitAsync(jobs, bin.StartRollback().Id, TimeSpan.FromMinutes(3));
@@ -337,7 +337,7 @@ public class OfflineInstallTests
             Assert.Equal(archiveName, manager.ReadPreviousMetadata()?.Url);                // and the archive build is the new .previous
             Assert.True(bin.CanRollback);
             Assert.Equal(CaddyRunState.Running, (await host.GetStatusAsync(ct)).State);
-            Assert.Contains(svc.Events.Events, e => e.Message == "Caddy rolled back from v2.11.4 to v2.11.4");
+            Assert.Contains(svc.Events.Events, e => e.Message == $"Caddy rolled back from {CaddyVersion.Tested} to {CaddyVersion.Tested}");
             Assert.Empty(Directory.GetFileSystemEntries(env.Paths.CaddyStagingDir));
         }
         finally

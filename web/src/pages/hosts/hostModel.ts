@@ -96,6 +96,8 @@ export function newHost(kind: HostKind): SiteHostFields {
     accessListId: null,
     blockExploits: false,
     accessLog: false,
+    readIdleTimeoutSeconds: null,
+    writeIdleTimeoutSeconds: null,
     responseHeaders: [],
     upstreams: kind === 'proxy' ? [newUpstream()] : [],
     loadBalancing: 'roundRobin',
@@ -150,8 +152,14 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     notes: trimOrNull(h.notes),
     certificateId: h.tls === 'custom' ? trimOrNull(h.certificateId) : null,
     accessListId: trimOrNull(h.accessListId),
+    readIdleTimeoutSeconds: h.readIdleTimeoutSeconds == null || Number.isNaN(h.readIdleTimeoutSeconds) ? null : h.readIdleTimeoutSeconds,
+    writeIdleTimeoutSeconds: h.writeIdleTimeoutSeconds == null || Number.isNaN(h.writeIdleTimeoutSeconds) ? null : h.writeIdleTimeoutSeconds,
     upstreams: cleanUpstreams(h.upstreams),
-    locations: h.locations.map((l) => ({ ...l, path: l.path.trim(), upstreams: cleanUpstreams(l.upstreams) })),
+    locations: h.locations.map((l) =>
+      l.urlPattern != null
+        ? { ...l, path: '/', urlPattern: l.urlPattern.trim(), stripPrefix: false, upstreams: cleanUpstreams(l.upstreams) }
+        : { ...l, path: l.path.trim(), urlPattern: null, urlPatternIgnoreCase: false, upstreams: cleanUpstreams(l.upstreams) },
+    ),
     requestHeaders: cleanHeaders(h.requestHeaders),
     responseHeaders: cleanHeaders(h.responseHeaders),
     upstreamHostHeader: trimOrNull(h.upstreamHostHeader),
@@ -209,6 +217,18 @@ export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {})
     }
     const paths = new Set<string>();
     h.locations.forEach((l, i) => {
+      if (l.urlPattern != null) {
+        // Mirrors CaddyConfigGenerator.UrlPatternError; whether the pattern compiles is decided by Caddy on save.
+        const pattern = l.urlPattern.trim();
+        const key = `locations.${i}.urlPattern`;
+        if (!pattern) e[key] = 'Enter a URL pattern, for example /books/:id.';
+        else if (/\s/.test(pattern)) e[key] = 'A URL pattern may not contain spaces.';
+        else if (!pattern.startsWith('/') && !pattern.includes('://')) e[key] = 'Start the pattern with / (any host), or with a scheme and host.';
+        else if (paths.has(`pattern:${pattern}`)) e[key] = 'This URL pattern is used by another location.';
+        paths.add(`pattern:${pattern}`);
+        validateUpstreams(l.upstreams, `locations.${i}.upstreams`, e);
+        return;
+      }
       const p = l.path.trim();
       if (!p.startsWith('/')) e[`locations.${i}.path`] = 'The path must start with "/".';
       else if (paths.has(p)) e[`locations.${i}.path`] = `The path ${p} is used by another location.`;
@@ -216,6 +236,10 @@ export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {})
       validateUpstreams(l.upstreams, `locations.${i}.upstreams`, e);
     });
     validateHeaders(h.requestHeaders, 'requestHeaders', e);
+  }
+  for (const key of ['readIdleTimeoutSeconds', 'writeIdleTimeoutSeconds'] as const) {
+    const v = h[key];
+    if (v != null && !Number.isNaN(v) && !(Number.isInteger(v) && v >= 1 && v <= 3600)) e[key] = 'Enter 1 to 3600 seconds, or leave empty.';
   }
   if (h.kind === 'redirect') {
     if (!h.redirectTarget?.trim()) e.redirectTarget = 'Enter the URL to redirect to.';
@@ -256,6 +280,8 @@ const TAB_OF_FIELD: Record<string, HostTab> = {
   locations: 'locations',
   advancedRoutesJson: 'advanced',
   accessLog: 'advanced',
+  readIdleTimeoutSeconds: 'advanced',
+  writeIdleTimeoutSeconds: 'advanced',
   notes: 'advanced',
 };
 

@@ -185,8 +185,8 @@ public sealed class CaddyHostSupport(AppPaths paths, IServiceProvider services, 
     /// "config is unchanged" and does not reload anything, but caddy.Load still ends with notify.Ready(), which reports
     /// RUNNING to the Windows SCM once the service handler has registered its status channel. This is how a service stuck
     /// in START_PENDING (Caddy issue #8012) is moved to RUNNING.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (Load) ;
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddyconfig/load.go (forceReload only with must-revalidate)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go (Load) ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/caddyconfig/load.go (forceReload only with must-revalidate)
     /// Caveat: a config applied by someone else between the GET and the POST would be replaced by the one read here; the
     /// window is milliseconds and the nudge only runs while the service is stuck in START_PENDING.
     /// </summary>

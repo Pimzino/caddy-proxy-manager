@@ -14,10 +14,10 @@ using Microsoft.Extensions.Logging;
 namespace CaddyManager.Platform.Tests;
 
 /// <summary>
-/// Caddy v2.11.4 running as a native Windows service can stay in START_PENDING although it serves: runner.Execute reports
+/// Caddy v2.11.7 running as a native Windows service can stay in START_PENDING although it serves: runner.Execute reports
 /// StartPending (no accepted controls) and the notify.Ready() that caddy.Run sent before Execute registered the status
 /// channel is lost (open upstream PR https://github.com/caddyserver/caddy/pull/8012; code:
-/// https://github.com/caddyserver/caddy/blob/v2.11.4/service_windows.go and notify/notify_windows.go). The SCM then refuses
+/// https://github.com/caddyserver/caddy/blob/v2.11.7/service_windows.go and notify/notify_windows.go). The SCM then refuses
 /// every stop (ControlService: ERROR_SERVICE_CANNOT_ACCEPT_CTRL 1061 or ERROR_INVALID_SERVICE_CONTROL 1052,
 /// https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-controlservice).
 ///
@@ -40,7 +40,7 @@ namespace CaddyManager.Platform.Tests;
 ///     and StartAsync cannot recover it.
 /// 10. After an intentional kill the status shows "last stopped with Win32 exit code 1067" as an error.
 /// 11. The kill hits the wrong process or leaves the service process running.
-/// 12. Real Caddy v2.11.4: a start/stop cycle fails, is slow, leaves the process behind, or the service is restarted by
+/// 12. Real Caddy v2.11.7: a start/stop cycle fails, is slow, leaves the process behind, or the service is restarted by
 ///     the SCM after an intentional stop (research: the exit may race SERVICE_STOPPED).
 /// 13. The PID that QueryServiceStatusEx reports while the service is START_PENDING "may not be valid"
 ///     (https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex, Remarks), so the kill

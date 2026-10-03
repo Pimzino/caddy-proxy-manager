@@ -14,7 +14,7 @@ namespace CaddyManager.Cluster.Tests;
 
 /// <summary>
 /// End to end through the whole product: one manager composed like Program.cs (every module, the real Telemetry module with
-/// short timers) drives a real Caddy v2.11.4. Two proxy hosts are created through the API, loopback is made a trusted proxy
+/// short timers) drives a real Caddy v2.11.7. Two proxy hosts are created through the API, loopback is made a trusted proxy
 /// through PUT /api/settings/caddy, and a known traffic mix goes through Caddy: distinct client IPs in X-Forwarded-For,
 /// 404s and 500s from the upstream, uploads and pages of known body sizes. The traffic API (hour and day, all hosts and
 /// per host) must then report exactly what was sent, the samples API a request rate during the load and Caddy's memory,
@@ -187,7 +187,7 @@ public sealed class FullStackTrafficE2ETests(ITestOutputHelper output)
             var info = local.GetProperty("info");
             var caddyVersion = info.GetProperty("caddyVersion").GetString();
             Assert.False(string.IsNullOrEmpty(caddyVersion), "info.caddyVersion");
-            // `caddy version` prints "v2.11.4 h1:…": the reported version is the binary's.
+            // `caddy version` prints "v2.11.7 h1:…": the reported version is the binary's.
             Assert.StartsWith(caddyVersion + " ", report["caddyVersion"]!.GetValue<string>() + " ");
             Assert.Equal("running", info.GetProperty("caddyState").GetString());
             Assert.Equal(m.DataDir, info.GetProperty("dataDir").GetString());

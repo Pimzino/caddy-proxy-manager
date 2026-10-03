@@ -129,6 +129,55 @@ export function validateDns(f: CaddySettingsInput, settings: CaddySettings, prov
   return e;
 }
 
+/** Bounds of the request limit fields (CaddyConfigGenerator.MinRequestHeaderKb / MaxRequestHeaderKb / MaxIdleTimeoutSeconds). */
+export const REQUEST_HEADER_KB = { min: 4, max: 1024 } as const;
+export const IDLE_TIMEOUT_SECONDS = { min: 1, max: 3600 } as const;
+
+/**
+ * Why a "Request headers to keep" entry is refused, or null (mirrors CaddyConfigGenerator.KeptRequestHeaderError):
+ * a header name with an underscore or a dot, optionally ending in * (prefix).
+ */
+export function keptRequestHeaderError(entry: string): string | null {
+  const e = entry.trim();
+  const name = e.endsWith('*') ? e.slice(0, -1) : e;
+  if (!name) return 'enter a header name';
+  if (!/^[A-Za-z0-9!#$%&'+\-.^_`|~]+$/.test(name)) return 'not a header name';
+  if (!/[_.]/.test(name)) return e.endsWith('*') ? 'no underscore or dot before the *' : 'no underscore or dot';
+  return null;
+}
+
+export const MIN_RATE_BYTES = { min: 1, max: 1_000_000_000 } as const;
+export const ACCESS_LOG_ROLL_DAYS = { min: 1, max: 365 } as const;
+
+/** Why an entry is not a cookie name, or null (mirrors CaddyConfigGenerator.IsCookieName). */
+export function cookieNameError(name: string): string | null {
+  return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name.trim()) ? null : 'not a cookie name';
+}
+
+/** Why the text cannot be the Proxy-Status name, or null (mirrors CaddyConfigGenerator.ProxyStatusNameError). */
+export function proxyStatusNameError(name: string | null | undefined): string | null {
+  const n = (name ?? '').trim();
+  if (!n) return null;
+  if (n.length > 255) return 'At most 255 characters.';
+  return /^[\x20-\x7e]+$/.test(n) && !/["\\]/.test(n) ? null : 'Use letters, digits and punctuation only, without quotes or backslashes.';
+}
+
+const inRange = (v: number | null | undefined, r: { min: number; max: number }) => v == null || Number.isNaN(v) || (Number.isInteger(v) && v >= r.min && v <= r.max);
+
+/** Client-side checks for Request limits and headers (the server stays authoritative). */
+export function validateRequestLimits(f: CaddySettingsInput): FieldErrors {
+  const e: FieldErrors = {};
+  if (!inRange(f.maxRequestHeaderKb, REQUEST_HEADER_KB)) e.maxRequestHeaderKb = `Enter ${REQUEST_HEADER_KB.min} to ${REQUEST_HEADER_KB.max} KiB, or leave empty.`;
+  if (!inRange(f.readIdleTimeoutSeconds, IDLE_TIMEOUT_SECONDS)) e.readIdleTimeoutSeconds = `Enter ${IDLE_TIMEOUT_SECONDS.min} to ${IDLE_TIMEOUT_SECONDS.max} seconds, or leave empty.`;
+  if (!inRange(f.writeIdleTimeoutSeconds, IDLE_TIMEOUT_SECONDS)) e.writeIdleTimeoutSeconds = `Enter ${IDLE_TIMEOUT_SECONDS.min} to ${IDLE_TIMEOUT_SECONDS.max} seconds, or leave empty.`;
+  if (!inRange(f.readMinRateBytes, MIN_RATE_BYTES)) e.readMinRateBytes = 'Enter 1 or more bytes per second, or leave empty.';
+  if (!inRange(f.writeMinRateBytes, MIN_RATE_BYTES)) e.writeMinRateBytes = 'Enter 1 or more bytes per second, or leave empty.';
+  if (!inRange(f.accessLogRollDays, ACCESS_LOG_ROLL_DAYS)) e.accessLogRollDays = `Enter ${ACCESS_LOG_ROLL_DAYS.min} to ${ACCESS_LOG_ROLL_DAYS.max} days, or leave empty.`;
+  const ps = proxyStatusNameError(f.proxyStatusName);
+  if (ps) e.proxyStatusName = ps;
+  return e;
+}
+
 /** CaddySettings.NodeLocalProperties (Core Models/Settings.cs): what a managed cluster node keeps editable. */
 export const NODE_LOCAL_FIELDS = ['httpPort', 'httpsPort', 'publicHttpsPort', 'bindAddresses', 'adminListen', 'certificateStorePath', 'customAcmeRootPath'] as const;
 

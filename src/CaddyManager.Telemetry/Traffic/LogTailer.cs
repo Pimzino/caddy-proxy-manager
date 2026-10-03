@@ -12,7 +12,7 @@ internal delegate void LineHandler(ReadOnlySpan<byte> line);
 /// <summary>
 /// Follows Caddy's stats log across size rotations without losing or repeating lines.
 ///
-/// Caddy v2.11.4's file writer (timberjack) rotates by closing the active file, RENAMING it to
+/// Caddy v2.11.7's file writer (timberjack) rotates by closing the active file, RENAMING it to
 /// "&lt;name&gt;-&lt;time&gt;-&lt;reason&gt;&lt;ext&gt;" and creating a new file at the same path
 /// (docs/research/round3-accesslog.md §3; https://github.com/DeRuina/timberjack/blob/v1.4.2/timberjack.go rotate/openNew).
 /// The tailer holds the file open with FileShare.ReadWrite | FileShare.Delete, so after a rename it keeps reading the

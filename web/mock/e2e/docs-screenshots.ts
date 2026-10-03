@@ -93,6 +93,22 @@ const shots: Shot[] = [
   { name: 'import-caddyfile', path: '/caddy/config', ready: `__e2e.has('caddy.json')`, act: openButton('Import Caddyfile'), actReady: `${dialog} && __e2e.has('Import a Caddyfile')`, crop: 'dialog' },
   { name: 'caddy-settings-listeners', path: '/settings?tab=caddy', ready: `__e2e.has('Public HTTPS port')`, crop: { section: 'Listeners' } },
   { name: 'caddy-settings-unknown-hosts', path: '/settings?tab=caddy', ready: `__e2e.has('Default site')`, crop: { section: 'Unknown hosts' } },
+  {
+    name: 'caddy-settings-request-limits',
+    path: '/settings?tab=caddy',
+    ready: `__e2e.has('Request headers to keep')`,
+    act: `(() => {
+      __e2e.setLabel('Request header limit (KiB)', '64');
+      __e2e.setLabel('Proxy-Status name', 'edge01.example.com');
+      const el = __e2e.control('Request headers to keep');
+      for (const name of ['SM_USER', 'webhook_*']) {
+        __e2e.set(el, name);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      }
+    })()`,
+    actReady: `__e2e.withText('span', 'webhook_*').length > 0`,
+    crop: { section: 'Request limits and headers' },
+  },
   // Monitoring
   { name: 'servers-list', path: '/servers', ready: `__e2e.has('WEB-PROXY03')`, crop: 'main' },
   { name: 'server-detail', path: '/servers/local', ready: `__e2e.has('Resource usage')`, crop: 'main' },

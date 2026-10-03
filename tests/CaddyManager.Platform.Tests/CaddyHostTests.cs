@@ -43,7 +43,7 @@ public class ProcessCaddyHostTests
             Assert.True(running.ServiceInstalled);
             Assert.NotNull(running.ProcessId);
             Assert.NotNull(running.StartedAt);
-            Assert.Equal("v2.11.4", running.Version);
+            Assert.Equal(CaddyVersion.Tested, running.Version);
             Assert.Equal("process", running.HostMode);
             Assert.Equal(env.Paths.CaddyExe, running.BinaryPath);
             Assert.Equal(env.Paths.CaddyConfigFile, running.ConfigPath);
@@ -152,10 +152,11 @@ public class BinaryInspectionTests
 
         var installed = await bin.GetInstalledAsync(ct);
         Assert.NotNull(installed);
-        Assert.Equal("v2.11.4", installed.Version);
+        Assert.Equal(CaddyVersion.Tested, installed.Version);
         Assert.Equal(env.Paths.CaddyExe, installed.Path);
         Assert.Empty(installed.Plugins);
-        Assert.Equal(132, installed.Modules.Count);
+        // Standard modules of the tested release (v2.11.7 added http.handlers.timeouts, http.matchers.url_pattern and the set_cookie log filter).
+        Assert.Equal(135, installed.Modules.Count);
         Assert.Contains("http.handlers.reverse_proxy", installed.Modules);
         Assert.DoesNotContain("layer4", installed.Modules);
         Assert.NotNull(installed.InstalledAt);
@@ -163,7 +164,7 @@ public class BinaryInspectionTests
 
         var (code, output) = await bin.RunCaddyAsync(["version"], ct: ct);
         Assert.Equal(0, code);
-        Assert.StartsWith("v2.11.4", output);
+        Assert.StartsWith(CaddyVersion.Tested, output);
 
         // stdin support: adapt a Caddyfile from stdin
         var (adaptCode, json) = await bin.RunCaddyAsync(["adapt", "--config", "-", "--adapter", "caddyfile"], ":8080 {\n  respond \"hi\"\n}\n", ct);

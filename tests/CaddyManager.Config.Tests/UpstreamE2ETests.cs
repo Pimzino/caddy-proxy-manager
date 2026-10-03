@@ -109,7 +109,7 @@ public sealed class UpstreamE2ETests
     /// whole host answer 503 to every client for 20 s) and round 3 (pool: ONE request on which every backend drops the
     /// connection is retried on each upstream and marked them all down for 30 s) — so the manager generates no passive
     /// checks at all, while pools still fail over (dial errors are retried on the next upstream within try_duration).
-    /// Caddy counts every proxy error as a passive failure (reverseproxy.go v2.11.4: countFailure for any error except
+    /// Caddy counts every proxy error as a passive failure (reverseproxy.go v2.11.7: countFailure for any error except
     /// a client cancel), so a circuit breaker with nothing to fail over to only turns one client's 502s into 503s for
     /// everyone. https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#passive-health-checks
     /// Ways it could fail:
@@ -228,7 +228,7 @@ public sealed class UpstreamE2ETests
     /// Upstream health as reported to the dashboard and the upstream-down alert (research #15/#84, review round 2).
     /// Caddy only knows an upstream is down when a health check measures it: Upstream.Healthy() is true for an upstream
     /// without active or passive checks, and caddy_reverse_proxy_upstreams_healthy just reports that value
-    /// (hosts.go, metrics.go v2.11.4). So an unchecked upstream must be reported as "not monitored", never "healthy".
+    /// (hosts.go, metrics.go v2.11.7). So an unchecked upstream must be reported as "not monitored", never "healthy".
     /// Ways it could fail:
     /// (1) a dead single upstream WITH an active check is not reported unhealthy (the alert never fires);
     /// (2) a dead single upstream WITHOUT any check is reported healthy (the dashboard's "n/n healthy" and the alert
@@ -320,7 +320,7 @@ public sealed class UpstreamE2ETests
     /// <summary>
     /// Active health checks send the host's own name as Host and accept status classes (research #45).
     /// Caddy's active checker sends the upstream address as Host and applies none of the proxy's header operations
-    /// (healthchecks.go v2.11.4), so a backend that routes by Host (IIS site bindings, appliances that redirect IP
+    /// (healthchecks.go v2.11.7), so a backend that routes by Host (IIS site bindings, appliances that redirect IP
     /// access) failed every check and the host answered 503.
     /// Ways it could fail: (1) the check request carries the upstream address instead of the site name, the backend
     /// answers 404 and the host goes 503; (2) a health path that redirects (302) fails although "3" (any 3xx) is

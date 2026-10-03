@@ -374,7 +374,7 @@ public static class TestKeys
     public static byte[] Fixed => Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
 }
 
-/// <summary>Stats log lines in the exact shape the generated cpm_stats sink writes (Caddy v2.11.4, filter encoder).</summary>
+/// <summary>Stats log lines in the exact shape the generated cpm_stats sink writes (Caddy v2.11.7, filter encoder).</summary>
 public static class StatsLines
 {
     public static string Line(DateTime at, string host, string client, int status = 200, long size = 2, long bytesRead = 0)

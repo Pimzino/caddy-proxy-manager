@@ -15,6 +15,21 @@ public static partial class CaddyConfigGenerator
 {
     public const string HttpsServerName = "srv0";
     public const string HttpServerName = "srv1";
+    /// <summary>Bounds of CaddySettings.MaxRequestHeaderKb (Go allows 4 KiB on top of max_header_bytes; 1 MiB was Caddy's limit before v2.11.6).</summary>
+    public const int MinRequestHeaderKb = 4;
+    public const int MaxRequestHeaderKb = 1024;
+    /// <summary>Upper bound of the idle timeouts (CaddySettings.ReadIdleTimeoutSeconds / WriteIdleTimeoutSeconds).</summary>
+    public const int MaxIdleTimeoutSeconds = 3600;
+    /// <summary>Upper bound of the minimum transfer rates (1 GB/s; CaddySettings.ReadMinRateBytes / WriteMinRateBytes).</summary>
+    public const int MaxMinRateBytes = 1_000_000_000;
+    /// <summary>Upper bound of CaddySettings.AccessLogRollDays.</summary>
+    public const int MaxAccessLogRollDays = 365;
+    /// <summary>First Caddy release whose file writer has roll_interval.</summary>
+    public const string RollIntervalMinVersion = "v2.11.0";
+    /// <summary>First Caddy release with reverse_proxy proxy_status_name.</summary>
+    public const string ProxyStatusMinVersion = "v2.11.7";
+    /// <summary>First Caddy release with read_idle_timeout, write_idle_timeout, expected_underscore_headers and expected_dot_headers.</summary>
+    public const string RequestLimitsMinVersion = "v2.11.6";
     public const string Layer4Module = "layer4";
     public const string Layer4Plugin = "github.com/mholt/caddy-l4";
     public const string CertificateTagPrefix = "cpm-";
@@ -102,7 +117,7 @@ public static partial class CaddyConfigGenerator
     /// install_trust is explicitly false (nil means install). A Caddyfile's `pki { ca corp {...} }` block defines
     /// further CAs, and `tls internal` - or any site name that does not qualify for a public certificate - provisions
     /// "local" implicitly (PKI.GetCA). The service runs headless as LocalSystem, so it must never modify trust stores.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddypki/pki.go (Start, GetCA)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddypki/pki.go (Start, GetCA)
     /// </summary>
     private static void DisableTrustInstall(JsonObject root)
     {
@@ -122,6 +137,7 @@ public static partial class CaddyConfigGenerator
         var s = input.Settings;
 
         var sites = SelectSites(ctx);
+        PlanHostTimeouts(sites, ctx);
 
         // ---- servers
         var httpsSites = new List<(Site Site, JsonObject Handler)>();
@@ -150,19 +166,19 @@ public static partial class CaddyConfigGenerator
                 // they are only inserted before our catch-all when at least one name gets a MANAGED certificate
                 // (autohttps.go: `if len(uniqueDomainsForCerts) != 0`), so hosts with only custom certificates got
                 // the default site on http://, and their Location never carries a non-443 https_port.
-                // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/autohttps.go
+                // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/autohttps.go
                 // The plain-HTTP copy omits HSTS (RFC 6797 §8.1: ignored over insecure transport).
                 httpSites.Add((site, site.Host.ForceHttps ? HttpsRedirectHandler(s) : HostHandler(site, ctx, plainHttp: true)));
             }
         }
-        var httpsRoutes = HostRoutes(httpsSites);
-        var httpRoutes = HostRoutes(httpSites);
+        var httpsRoutes = HostRoutes(httpsSites, ctx);
+        var httpRoutes = HostRoutes(httpSites, ctx);
 
         var servers = new JsonObject();
         var httpsHosts = sites.Where(x => x.Host.Tls != TlsMode.None).ToList();
         if (httpsHosts.Count > 0)
         {
-            httpsRoutes.Add(DefaultSiteRoute(s, ctx));
+            httpsRoutes.Add(WithTimeouts(DefaultSiteRoute(s, ctx), null, ctx));
             var srv0 = new JsonObject
             {
                 ["listen"] = Listen(s, s.HttpsPort),
@@ -175,7 +191,7 @@ public static partial class CaddyConfigGenerator
             srv0["protocols"] = s.EnableHttp3 ? new JsonArray("h1", "h2", "h3") : new JsonArray("h1", "h2");
             // QUIC 0-RTT data arrives before the handshake proves the client address, so remote_ip/client_ip matchers
             // answer 425 Too Early (some clients never retry), and early data can be replayed.
-            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go (allow_0rtt)
+            // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/server.go (allow_0rtt)
             if (s.EnableHttp3) srv0["allow_0rtt"] = false;
             var errorRoutes = HostRoutes(httpsSites.Select(x => (x.Site, ErrorHeadersHandler(x.Site.Host, plainHttp: false))).Where(x => x.Item2 is not null)
                 .Select(x => (x.Site, x.Item2!)).ToList());
@@ -184,7 +200,7 @@ public static partial class CaddyConfigGenerator
             servers[HttpsServerName] = srv0;
         }
 
-        httpRoutes.Add(DefaultSiteRoute(s, ctx));
+        httpRoutes.Add(WithTimeouts(DefaultSiteRoute(s, ctx), null, ctx));
         var srv1 = new JsonObject
         {
             ["listen"] = Listen(s, s.HttpPort),
@@ -192,7 +208,7 @@ public static partial class CaddyConfigGenerator
         };
         ApplyCommonServerOptions(srv1, s, loggerNames, ctx);
         // HTTP/2 needs TLS; on a plain-HTTP listener Caddy skips "h2" and logs a warning on every load.
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go (protocols)
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/server.go (protocols)
         srv1["protocols"] = new JsonArray("h1");
         var httpErrorRoutes = HostRoutes(httpSites.Where(x => x.Site.Host.Tls == TlsMode.None || !x.Site.Host.ForceHttps)
             .Select(x => (x.Site, ErrorHeadersHandler(x.Site.Host, plainHttp: true))).Where(x => x.Item2 is not null).Select(x => (x.Site, x.Item2!)).ToList());
@@ -233,16 +249,20 @@ public static partial class CaddyConfigGenerator
         if (s.TrafficStatsEnabled) logs[StatsLogName] = StatsLog(input.Paths);
         foreach (var (name, (domain, _)) in accessLoggers)
         {
+            var writer = new JsonObject
+            {
+                ["output"] = "file",
+                ["filename"] = Path.Combine(input.Paths.AccessLogDir, NetUtil.SafeFileName(domain) + ".log"),
+                ["roll_size_mb"] = 20,
+                ["roll_keep"] = 10,
+            };
+            // Hours, not "7d": the day unit only exists since v2.11.6, roll_interval since v2.11.0.
+            if (s.AccessLogRollDays is int days && days is >= 1 and <= MaxAccessLogRollDays && !InstalledCaddyOlderThan(input.InstalledVersion, RollIntervalMinVersion))
+                writer["roll_interval"] = days * 24 + "h";
             logs[name] = new JsonObject
             {
-                ["writer"] = new JsonObject
-                {
-                    ["output"] = "file",
-                    ["filename"] = Path.Combine(input.Paths.AccessLogDir, NetUtil.SafeFileName(domain) + ".log"),
-                    ["roll_size_mb"] = 20,
-                    ["roll_keep"] = 10,
-                },
-                ["encoder"] = new JsonObject { ["format"] = "json" },
+                ["writer"] = writer,
+                ["encoder"] = AccessLogEncoder(s, ctx),
                 ["level"] = "INFO",
                 ["include"] = new JsonArray("http.log.access." + name),
             };
@@ -273,6 +293,23 @@ public static partial class CaddyConfigGenerator
         /// <summary>With trusted proxies configured, client_ip honours X-Forwarded-For from those proxies.</summary>
         public string IpMatcher => Input.Settings.TrustedProxies.Any(p => !string.IsNullOrWhiteSpace(p)) ? "client_ip" : "remote_ip";
         public void Warn(string message) { if (!Warnings.Contains(message)) Warnings.Add(message); }
+
+        /// <summary>Idle timeouts are set per route instead of per server, for uploads / for responses (PlanHostTimeouts).</summary>
+        public bool PerHostReadIdle { get; set; }
+        public bool PerHostWriteIdle { get; set; }
+
+        private (List<string> Underscore, List<string> Dot)? _kept;
+        /// <summary>True when the servers keep the client request header <paramref name="name"/> (CaddySettings.KeptRequestHeaders).</summary>
+        public bool KeepsRequestHeader(string name)
+        {
+            if (InstalledCaddyOlderThan(Input.InstalledVersion, RequestLimitsMinVersion)) return false;
+            var (underscore, dot) = _kept ??= SplitKeptRequestHeaders(Input.Settings);
+            // A name with both characters is only kept by an exact entry (server.go serveHTTP).
+            var both = name.Contains('_') && name.Contains('.');
+            return underscore.Concat(dot).Any(e => e.EndsWith('*')
+                ? !both && name.StartsWith(e[..^1], StringComparison.OrdinalIgnoreCase)
+                : name.Equals(e, StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     private static string Label(SiteHost h) => h.Domains.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d))?.Trim() ?? h.Id;
@@ -354,13 +391,15 @@ public static partial class CaddyConfigGenerator
     /// then its wildcard names (one route per host and wildcard depth, more specific wildcards first). A host with
     /// both kinds shares one built handler between its routes.
     /// </summary>
-    private static JsonArray HostRoutes(List<(Site Site, JsonObject Handler)> items)
+    /// <param name="ctx">Given for request routes: each route then starts with the host's idle timeouts when
+    /// per-host timeouts are in use (<see cref="PlanHostTimeouts"/>). Null for error routes.</param>
+    private static JsonArray HostRoutes(List<(Site Site, JsonObject Handler)> items, Ctx? ctx = null)
     {
         var routes = new JsonArray();
         foreach (var (site, handler) in items)
         {
             var exact = site.Domains.Where(d => !IsWildcard(d)).ToList();
-            if (exact.Count > 0) routes.Add(RouteFor(exact, handler));
+            if (exact.Count > 0) routes.Add(Timed(RouteFor(exact, handler), site));
         }
         var wildcardGroups = items
             .SelectMany(x => x.Site.Domains.Where(IsWildcard)
@@ -369,8 +408,10 @@ public static partial class CaddyConfigGenerator
             .OrderByDescending(g => g.Depth)
             .ThenBy(g => g.Domains[0], StringComparer.Ordinal)
             .ThenBy(g => g.Site.Host.Id, StringComparer.Ordinal);
-        foreach (var g in wildcardGroups) routes.Add(RouteFor(g.Domains, g.Handler));
+        foreach (var g in wildcardGroups) routes.Add(Timed(RouteFor(g.Domains, g.Handler), g.Site));
         return routes;
+
+        JsonObject Timed(JsonObject route, Site site) => ctx is null ? route : WithTimeouts(route, site.Host, ctx);
 
         static JsonObject RouteFor(List<string> domains, JsonObject handler) => new()
         {
@@ -402,7 +443,7 @@ public static partial class CaddyConfigGenerator
 
         // 0. access log: pick the host's logger explicitly. The server's logger_names lookup is an exact,
         // case-sensitive map lookup on the Host header, so "ECHO.TEST" (routed here case-insensitively) was logged to
-        // the default log instead of this host's file. https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/logging.go
+        // the default log instead of this host's file. https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
         if (h.AccessLog)
             routes.Add(new JsonObject
             {
@@ -635,9 +676,10 @@ public static partial class CaddyConfigGenerator
     /// Header operations. Caddy applies a handler's operations in a FIXED order (add, then set, then delete), not in
     /// the order the user listed them, so the list is folded here into the equivalent final state per header:
     /// "delete X, add X: v" becomes "set X: v" and "set X: a, add X: b" becomes "set X: [a, b]", which Caddy sends
-    /// as ONE comma-joined field line "X: a,b" (equivalent for list-valued fields, RFC 9110 §5.3; not for Set-Cookie,
-    /// which cannot be expressed as set-then-add in one handler).
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/headers/headers.go (ApplyTo)
+    /// as ONE comma-joined field line "X: a,b" (equivalent for list-valued fields, RFC 9110 §5.3). Set-Cookie is the
+    /// exception: up to v2.11.4 it was joined as well, which clients cannot parse; since v2.11.7 Caddy sends one
+    /// Set-Cookie line per value.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/headers/headers.go (ApplyTo)
     /// </summary>
     private sealed class HeaderOpSet
     {
@@ -723,7 +765,7 @@ public static partial class CaddyConfigGenerator
                 if (item is JsonObject o) list.Add(o.DeepClone());
                 else ctx.Warn($"Host '{label}': an advanced route entry is not a JSON object and was ignored.");
             }
-            WarnUnderscoreHeaderMatchers(arr, label, ctx);
+            WarnDroppedHeaderMatchers(arr, label, ctx);
             return list;
         }
         catch (JsonException ex)
@@ -734,12 +776,13 @@ public static partial class CaddyConfigGenerator
     }
 
     /// <summary>
-    /// Caddy v2.11.4 drops every client request header whose name contains "_" before any handler runs
-    /// (GHSA-f59h-q822-g45g), so header / header_regexp matchers on such names never match. Headers the host SETS for
-    /// the upstream are applied later and still go out.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/server.go ; https://github.com/caddyserver/caddy/releases/tag/v2.11.4
+    /// Caddy drops every client request header whose name contains "_" (since v2.11.4, GHSA-f59h-q822-g45g) or "."
+    /// (since v2.11.6, GHSA-49wc-4hcv-v58q) before any handler runs, unless the server lists it in
+    /// expected_underscore_headers / expected_dot_headers (CaddySettings.KeptRequestHeaders). So header / header_regexp
+    /// matchers on other such names never match. Headers the host SETS for the upstream are applied later and still go out.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/server.go (serveHTTP)
     /// </summary>
-    private static void WarnUnderscoreHeaderMatchers(JsonNode node, string label, Ctx ctx)
+    private static void WarnDroppedHeaderMatchers(JsonNode node, string label, Ctx ctx)
     {
         switch (node)
         {
@@ -748,16 +791,63 @@ public static partial class CaddyConfigGenerator
                 {
                     if (key is "header" or "header_regexp" && value is JsonObject headers)
                         foreach (var (name, _) in headers)
-                            if (name.Contains('_'))
-                                ctx.Warn($"Host '{label}': an advanced route matches the request header '{name}', but Caddy drops client request headers whose names contain an underscore, so it never matches. Use the hyphenated name if the client can send it.");
-                    if (value is not null) WarnUnderscoreHeaderMatchers(value, label, ctx);
+                            if ((name.Contains('_') || name.Contains('.')) && !ctx.KeepsRequestHeader(name))
+                                ctx.Warn($"Host '{label}': an advanced route matches the request header '{name}', but Caddy drops client request headers whose names contain an underscore or a dot, so it never matches. Use the hyphenated name if the client can send it, or add the header to 'Request headers to keep' under Settings > Caddy.");
+                    if (value is not null) WarnDroppedHeaderMatchers(value, label, ctx);
                 }
                 break;
             case JsonArray a:
                 foreach (var item in a)
-                    if (item is not null) WarnUnderscoreHeaderMatchers(item, label, ctx);
+                    if (item is not null) WarnDroppedHeaderMatchers(item, label, ctx);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Why <paramref name="entry"/> cannot be an entry of CaddySettings.KeptRequestHeaders, or null when it can.
+    /// Caddy refuses the whole configuration for entries with non-ASCII characters, with "*" anywhere but the end, or
+    /// whose name (without the "*") contains neither "_" nor "." (server.go provisionHeaderAliasAllowlist, v2.11.7).
+    /// </summary>
+    public static string? KeptRequestHeaderError(string? entry)
+    {
+        var e = (entry ?? "").Trim();
+        var name = e.EndsWith('*') ? e[..^1] : e;
+        if (name.Length == 0) return "Enter a header name, for example SM_USER.";
+        // RFC 9110 §5.6.2 token characters; "*" is one of them, but Caddy reads it as the prefix wildcard.
+        if (name.Any(c => !(char.IsAsciiLetterOrDigit(c) || "!#$%&'+-.^_`|~".Contains(c))))
+            return $"'{e}' is not a header name: use letters, digits and - _ . only, with an optional * at the end.";
+        if (!name.Contains('_') && !name.Contains('.'))
+            return $"'{e}' has no underscore or dot{(e.EndsWith('*') ? " before the *" : "")}. Only such headers are dropped; others reach the upstream anyway.";
+        return null;
+    }
+
+    /// <summary>
+    /// CaddySettings.KeptRequestHeaders split into Caddy's two lists. A name goes where its characters belong; a name
+    /// with both "_" and "." is only honoured as an exact entry, in either list, and goes to the underscore list.
+    /// </summary>
+    internal static (List<string> Underscore, List<string> Dot) SplitKeptRequestHeaders(CaddySettings s)
+    {
+        var underscore = new List<string>();
+        var dot = new List<string>();
+        foreach (var raw in s.KeptRequestHeaders ?? [])
+        {
+            var entry = (raw ?? "").Trim();
+            if (KeptRequestHeaderError(entry) is not null) continue;
+            var list = entry.Contains('_') ? underscore : dot;
+            if (!list.Contains(entry, StringComparer.OrdinalIgnoreCase)) list.Add(entry);
+        }
+        return (underscore, dot);
+    }
+
+    /// <summary>True when the installed Caddy is known to be older than <paramref name="minimum"/> (pre-releases count as their release).</summary>
+    internal static bool InstalledCaddyOlderThan(string? installed, string minimum)
+    {
+        static Version? Parse(string? text)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"^\s*v?(\d+)\.(\d+)(?:\.(\d+))?");
+            return m.Success ? new Version(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0) : null;
+        }
+        return Parse(installed) is { } have && Parse(minimum) is { } need && have < need;
     }
 
     // ------------------------------------------------------------------ kind handlers
@@ -766,7 +856,28 @@ public static partial class CaddyConfigGenerator
     {
         var h = site.Host;
         var label = site.Domains[0];
+        // URL pattern locations come first, in the order listed: a pattern is usually the more specific rule, and
+        // patterns have no length to order them by. https://caddyserver.com/docs/caddyfile/matchers#url-pattern
+        foreach (var loc in h.Locations.Where(l => !string.IsNullOrWhiteSpace(l.UrlPattern)))
+        {
+            var pattern = loc.UrlPattern!.Trim();
+            var ups = ValidUpstreams(loc.Upstreams, $"Host '{label}', location '{pattern}'", ctx);
+            if (ups.Count == 0 || UrlPatternError(pattern) is not null)
+            {
+                ctx.Warn($"Host '{label}': location '{pattern}' has no valid upstream or pattern and was skipped.");
+                continue;
+            }
+            var matcher = new JsonObject { ["pattern"] = pattern };
+            if (loc.UrlPatternIgnoreCase) matcher["ignore_case"] = true;
+            routes.Add(new JsonObject
+            {
+                ["match"] = new JsonArray(new JsonObject { ["url_pattern"] = matcher }),
+                ["handle"] = new JsonArray(ReverseProxy(ups, loc.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: false, site, ctx)),
+            });
+        }
+
         var locations = h.Locations
+            .Where(l => string.IsNullOrWhiteSpace(l.UrlPattern))
             .Select(l => (Location: l, Path: NormalizeLocationPath(l.Path)))
             .OrderByDescending(x => x.Path.Length)
             .ThenBy(x => x.Path, StringComparer.Ordinal)
@@ -812,6 +923,38 @@ public static partial class CaddyConfigGenerator
         });
     }
 
+    /// <summary>
+    /// Why <paramref name="pattern"/> cannot be a location's URL pattern, or null. Only the shape is checked (a path
+    /// pattern starting with "/" or an absolute pattern with a scheme, no whitespace or control characters); whether
+    /// the pattern compiles is decided by Caddy when the configuration is applied.
+    /// </summary>
+    public static string? UrlPatternError(string? pattern)
+    {
+        var p = (pattern ?? "").Trim();
+        if (p.Length == 0) return "Enter a URL pattern, for example /books/:id.";
+        if (p.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))) return "A URL pattern may not contain spaces.";
+        if (!p.StartsWith('/') && !p.Contains("://")) return "Start the pattern with / (any host), or with a scheme and host such as https://shop.example.com/api/*.";
+        return null;
+    }
+
+    /// <summary>RFC 6265 cookie-name: a token (no control characters, spaces or separators).</summary>
+    public static bool IsCookieName(string? name) =>
+        !string.IsNullOrEmpty(name) && name.All(c => c is > ' ' and < (char)127 && !"()<>@,;:\\\"/[]?={}".Contains(c));
+
+    /// <summary>
+    /// Why <paramref name="name"/> cannot be the Proxy-Status name, or null (empty = no header). RFC 9209 wants a name
+    /// for this deployment (a host name or service name); Caddy writes it as a token or a quoted string, so quotes,
+    /// backslashes and anything outside printable ASCII are refused.
+    /// </summary>
+    public static string? ProxyStatusNameError(string? name)
+    {
+        var n = (name ?? "").Trim();
+        if (n.Length == 0) return null;
+        if (n.Length > 255) return "The Proxy-Status name may have at most 255 characters.";
+        if (n.Any(c => c is < ' ' or > '~' or '"' or '\\')) return "Use letters, digits and punctuation only, without quotes or backslashes, for example the server's host name.";
+        return null;
+    }
+
     internal static string NormalizeLocationPath(string? path)
     {
         var p = (path ?? "/").Trim();
@@ -849,6 +992,14 @@ public static partial class CaddyConfigGenerator
     {
         var label = site.Domains[0];
         var rp = new JsonObject { ["handler"] = "reverse_proxy" };
+        if (ctx.Input.Settings.ProxyStatusName?.Trim() is { Length: > 0 } proxyStatusName && ProxyStatusNameError(proxyStatusName) is null)
+        {
+            // Sent in the Proxy-Status header of the 501 that refuses an incremental message (reverseproxy.go
+            // refuseIncremental, v2.11.7). An older Caddy rejects the unknown field.
+            if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, ProxyStatusMinVersion))
+                ctx.Warn($"The Proxy-Status name needs Caddy {ProxyStatusMinVersion} or later (installed: {ctx.Input.InstalledVersion}); it was not applied.");
+            else rp["proxy_status_name"] = proxyStatusName;
+        }
         var keepClientHost = string.IsNullOrWhiteSpace(h.UpstreamHostHeader);
 
         var request = HeaderOps(h.RequestHeaders);
@@ -873,7 +1024,10 @@ public static partial class CaddyConfigGenerator
             // a bodiless GET to HTTP/2 upstreams as HEADERS without END_STREAM plus an empty DATA frame; strict
             // upstreams reject that (Nutanix Prism's Envoy answers 503 "upstream connect error"). Buffering a few KB
             // lets Caddy see the empty body and send it with Content-Length: 0 and END_STREAM (reverseproxy.go
-            // prepareRequest, v2.11.4); larger bodies still stream after the first bytes.
+            // prepareRequest, v2.11.7); larger bodies still stream after the first bytes.
+            // Side effect since v2.11.7: a request with a body that asks for incremental forwarding ("Incremental: ?1",
+            // RFC 10036) is answered 501, because Caddy refuses to buffer it (incrementalRequestConflicts).
+            // docs/caddy-settings.md (HTTP/3) says so; RequestLimitsE2ETests covers it.
             // https://caddyserver.com/docs/json/apps/http/servers/routes/handle/reverse_proxy/request_buffers/
             rp["request_buffers"] = Http3RequestBufferBytes;
         }
@@ -922,7 +1076,7 @@ public static partial class CaddyConfigGenerator
         // fail_duration (repeatable by anyone). Unhealthy upstreams are detected by the optional active check instead
         // (then reported; otherwise "not monitored", CaddyAdminClient.GetUpstreamStatusAsync).
         // https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#passive-health-checks ;
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/reverseproxy.go (countFailure)
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/reverseproxy/reverseproxy.go (countFailure)
         var healthChecks = new JsonObject();
         if (includeHealthCheck && upstreams.Count > 1 && !h.HealthCheck.Enabled
             && h.LoadBalancing is LoadBalancingPolicy.First or LoadBalancingPolicy.IpHash or LoadBalancingPolicy.UriHash or LoadBalancingPolicy.Cookie)
@@ -943,7 +1097,7 @@ public static partial class CaddyConfigGenerator
             // Active checks send the upstream address as Host and do not apply the proxy's header operations, so a
             // backend that routes by Host (IIS bindings, appliances redirecting IP access) failed its check and the
             // host answered 503. Send the Host that proxied requests carry. Request placeholders are unavailable here.
-            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/healthchecks.go
+            // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/reverseproxy/healthchecks.go
             var healthHost = HealthCheckHost(h, site);
             if (healthHost is not null) active["headers"] = new JsonObject { ["Host"] = new JsonArray(healthHost) };
             healthChecks["active"] = active;
@@ -962,7 +1116,7 @@ public static partial class CaddyConfigGenerator
     /// only evaluated when a connection is DIALLED, and the transport pools connections per upstream address, not per
     /// SNI, so a connection opened for a.test was reused for b.test and strict upstreams answered 421 Misdirected
     /// Request. Every handler has its own transport, so its own connection pool.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/reverseproxy/httptransport.go (DialTLSContext)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/reverseproxy/httptransport.go (DialTLSContext)
     /// </summary>
     private static JsonObject PerNameSni(JsonObject rp, List<string> names)
     {
@@ -1024,8 +1178,8 @@ public static partial class CaddyConfigGenerator
     /// The host comes from the Host header with any port removed but IPv6 brackets kept: {http.request.host} strips the
     /// brackets (net.SplitHostPort), which turned "[::1]:8080" into "https://::1:8443/". {http.request.uri} keeps the
     /// path escaped as the client sent it (URL.RequestURI).
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/replacer.go ;
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/autohttps.go
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/replacer.go ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/autohttps.go
     /// </summary>
     private static JsonObject HttpsRedirectHandler(CaddySettings s)
     {
@@ -1063,8 +1217,9 @@ public static partial class CaddyConfigGenerator
     internal static int PublicHttpsPort(CaddySettings s) => s.PublicHttpsPort is int p && NetUtil.IsValidPort(p) ? p : s.HttpsPort;
 
     /// <summary>
-    /// Escapes braces in user text that Caddy would otherwise read as placeholders: static_response header values
-    /// go through ReplaceAll, which turns unknown "{...}" into an empty string. Real placeholders ({http.*}, {env.*},
+    /// Escapes braces in user text that Caddy would otherwise read as placeholders: up to v2.11.4 static_response
+    /// header values went through ReplaceAll, which turns unknown "{...}" into an empty string (since v2.11.6 it is
+    /// ReplaceKnown, which keeps them; the escaped form is right for both). Real placeholders ({http.*}, {env.*},
     /// {system.*}, {time.*}, {file.*}) are kept. https://caddyserver.com/docs/conventions#placeholders
     /// </summary>
     internal static string EscapeLiteralBraces(string value) =>
@@ -1098,7 +1253,7 @@ public static partial class CaddyConfigGenerator
         // "&". Placeholders cannot express "only if not empty", so requests with and without a query get their own
         // route. The path must stay ESCAPED: {http.request.uri.path} is the decoded path, so "/x%3Fy%23z" became
         // "/p/x?y#z?a=1"; it is taken from {http.request.uri} (escaped) with a regexp instead.
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/replacer.go (http.request.uri, .path)
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/replacer.go (http.request.uri, .path)
         var basePath = target[..q].TrimEnd('/');
         var query = target[(q + 1)..];
         var queryPart = query.Length == 0 ? "" : "?" + query;
@@ -1140,7 +1295,7 @@ public static partial class CaddyConfigGenerator
         {
             // Fail closed: an empty root makes file_server fall back to {http.vars.root}, i.e. "." - the service's
             // working directory (C:\Windows\System32 for a Windows service).
-            // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/fileserver/staticfiles.go
+            // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/fileserver/staticfiles.go
             ctx.Warn($"Host '{label}': static site has no root folder; requests receive 503.");
             routes.Add(new JsonObject
             {
@@ -1238,7 +1393,7 @@ public static partial class CaddyConfigGenerator
     private static JsonObject ResponseHandler(SiteHost h)
     {
         // 1xx codes are informational: Caddy sends them and then an implicit 200 (103 even continues the chain).
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/staticresp.go
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/staticresp.go
         var status = h.ResponseStatus is >= 200 and <= 599 ? h.ResponseStatus : 200;
         var o = new JsonObject { ["handler"] = "static_response", ["status_code"] = status };
         if (!string.IsNullOrEmpty(h.ResponseBody)) o["body"] = h.ResponseBody;
@@ -1299,6 +1454,7 @@ public static partial class CaddyConfigGenerator
 
     private static void ApplyCommonServerOptions(JsonObject srv, CaddySettings s, SortedDictionary<string, string> loggerNames, Ctx ctx)
     {
+        ApplyRequestLimits(srv, s, ctx);
         var proxies = s.TrustedProxies.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
         var valid = new List<string>();
         foreach (var p in proxies)
@@ -1318,7 +1474,7 @@ public static partial class CaddyConfigGenerator
 
         // Access logging only happens when servers.*.logs is set ({} suffices). With traffic statistics every request must
         // be logged, so skip_unmapped_hosts is not used then: unmapped hosts go to the base http.log.access logger, which
-        // only the statistics sink includes. https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/logging.go
+        // only the statistics sink includes. https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
         // (ServerLogConfig; docs/research/round3-accesslog.md §2)
         if (loggerNames.Count > 0 || s.TrafficStatsEnabled)
         {
@@ -1332,6 +1488,131 @@ public static partial class CaddyConfigGenerator
             }
             srv["logs"] = logs;
         }
+    }
+
+    /// <summary>
+    /// Settings > Caddy > Request limits and headers. Unset values are left out so that Caddy's own defaults apply
+    /// (app.go v2.11.7: max_header_bytes 16 KiB, read_idle_timeout and write_idle_timeout 1 minute). max_header_bytes
+    /// exists in every Caddy 2; the other fields are new in v2.11.6, and an older Caddy rejects a configuration that
+    /// contains them ("unknown field"), so they are left out for it with a warning.
+    /// https://caddyserver.com/docs/json/apps/http/servers/ ; https://github.com/caddyserver/caddy/releases/tag/v2.11.6
+    /// </summary>
+    /// <summary>
+    /// Per-host idle timeouts (SiteHost.ReadIdleTimeoutSeconds / WriteIdleTimeoutSeconds).
+    /// Caddy's per-route "timeouts" handler only takes effect when the matching server-wide timeout is disabled: the
+    /// server-wide one is applied after it on every read and write and so takes precedence, and two handlers in one
+    /// chain behave the same way. So as soon as one enabled host sets its own value for a direction, that direction
+    /// is planned per host: the servers get read_idle_timeout / write_idle_timeout "-1s", and EVERY request route (each
+    /// host, the HTTPS redirects, the default site) starts with exactly one "timeouts" handler carrying the host's
+    /// value, or the global one (CaddySettings, else Caddy's 1 minute) and the global minimum rate. Requests Caddy
+    /// answers before the routes run (ACME HTTP-01 challenges) have no idle timeout then; they have no body to stall.
+    /// https://caddyserver.com/docs/caddyfile/directives/timeouts ; https://caddyserver.com/docs/caddyfile/options#timeouts
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/timeouts/timeouts.go
+    /// </summary>
+    private static void PlanHostTimeouts(List<Site> sites, Ctx ctx)
+    {
+        static bool Valid(int? v) => v is int x && x is >= 1 and <= MaxIdleTimeoutSeconds;
+        var read = sites.Where(x => Valid(x.Host.ReadIdleTimeoutSeconds)).ToList();
+        var write = sites.Where(x => Valid(x.Host.WriteIdleTimeoutSeconds)).ToList();
+        if (read.Count + write.Count == 0) return;
+        if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, RequestLimitsMinVersion))
+        {
+            foreach (var site in read.Concat(write).DistinctBy(x => x.Host.Id))
+                ctx.Warn($"Host '{site.Domains[0]}': the host's idle timeouts need Caddy {RequestLimitsMinVersion} or later (installed: {ctx.Input.InstalledVersion}); they were not applied.");
+            return;
+        }
+        ctx.PerHostReadIdle = read.Count > 0;
+        ctx.PerHostWriteIdle = write.Count > 0;
+    }
+
+    /// <summary>Caddy's default for read_idle_timeout and write_idle_timeout (app.go v2.11.7).</summary>
+    private const int DefaultIdleTimeoutSeconds = 60;
+
+    /// <summary>
+    /// Puts the "timeouts" handler for <paramref name="host"/> (null = no host: the default site) in front of the
+    /// route's handlers when per-host timeouts are in use; see <see cref="PlanHostTimeouts"/>. The handler takes its
+    /// durations as time.Duration, that is nanoseconds as a number, not "1s".
+    /// </summary>
+    private static JsonObject WithTimeouts(JsonObject route, SiteHost? host, Ctx ctx)
+    {
+        if (!ctx.PerHostReadIdle && !ctx.PerHostWriteIdle) return route;
+        var s = ctx.Input.Settings;
+        static int? Valid(int? v, int max) => v is int x && x >= 1 && x <= max ? x : null;
+        var handler = new JsonObject { ["handler"] = "timeouts" };
+        if (ctx.PerHostReadIdle)
+        {
+            var seconds = Valid(host?.ReadIdleTimeoutSeconds, MaxIdleTimeoutSeconds) ?? Valid(s.ReadIdleTimeoutSeconds, MaxIdleTimeoutSeconds) ?? DefaultIdleTimeoutSeconds;
+            handler["read_timeout"] = seconds * 1_000_000_000L;
+            if (Valid(s.ReadMinRateBytes, MaxMinRateBytes) is int rate) handler["read_min_rate"] = rate;
+        }
+        if (ctx.PerHostWriteIdle)
+        {
+            var seconds = Valid(host?.WriteIdleTimeoutSeconds, MaxIdleTimeoutSeconds) ?? Valid(s.WriteIdleTimeoutSeconds, MaxIdleTimeoutSeconds) ?? DefaultIdleTimeoutSeconds;
+            handler["write_timeout"] = seconds * 1_000_000_000L;
+            if (Valid(s.WriteMinRateBytes, MaxMinRateBytes) is int rate) handler["write_min_rate"] = rate;
+        }
+        route["handle"]!.AsArray().Insert(0, handler);
+        return route;
+    }
+
+    private static void ApplyRequestLimits(JsonObject srv, CaddySettings s, Ctx ctx)
+    {
+        if (s.MaxRequestHeaderKb is int kb && kb is >= MinRequestHeaderKb and <= MaxRequestHeaderKb) srv["max_header_bytes"] = kb * 1024;
+
+        var readIdle = s.ReadIdleTimeoutSeconds is int r && r is >= 1 and <= MaxIdleTimeoutSeconds ? r : (int?)null;
+        var writeIdle = s.WriteIdleTimeoutSeconds is int w && w is >= 1 and <= MaxIdleTimeoutSeconds ? w : (int?)null;
+        var readRate = s.ReadMinRateBytes is int rr && rr is >= 1 and <= MaxMinRateBytes ? rr : (int?)null;
+        var writeRate = s.WriteMinRateBytes is int wr && wr is >= 1 and <= MaxMinRateBytes ? wr : (int?)null;
+        var (underscore, dot) = SplitKeptRequestHeaders(s);
+        if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, RequestLimitsMinVersion))
+        {
+            if (readIdle is not null || writeIdle is not null || readRate is not null || writeRate is not null)
+                ctx.Warn($"The idle timeout and minimum rate settings need Caddy {RequestLimitsMinVersion} or later (installed: {ctx.Input.InstalledVersion}); they were not applied.");
+            if (underscore.Count + dot.Count > 0)
+                ctx.Warn($"'Request headers to keep' needs Caddy {RequestLimitsMinVersion} or later (installed: {ctx.Input.InstalledVersion}); the headers are still dropped.");
+            return;
+        }
+        // With per-host timeouts the server-wide timeout of that direction is off and the routes carry it (PlanHostTimeouts).
+        if (ctx.PerHostReadIdle) srv["read_idle_timeout"] = "-1s";
+        else
+        {
+            if (readIdle is int ri) srv["read_idle_timeout"] = ri + "s";
+            if (readRate is int rate) srv["read_min_rate"] = rate;
+        }
+        if (ctx.PerHostWriteIdle) srv["write_idle_timeout"] = "-1s";
+        else
+        {
+            if (writeIdle is int wi) srv["write_idle_timeout"] = wi + "s";
+            if (writeRate is int wrate) srv["write_min_rate"] = wrate;
+        }
+        if (underscore.Count > 0) srv["expected_underscore_headers"] = StringArray(underscore);
+        if (dot.Count > 0) srv["expected_dot_headers"] = StringArray(dot);
+    }
+
+    /// <summary>
+    /// Encoder of the per-host access logs: JSON, wrapped in the filter encoder when cookie names are listed in
+    /// CaddySettings.AccessLogHashedCookies. Their values are replaced by the first 4 bytes of their SHA-256 in the
+    /// request's Cookie header (filter "cookie") and the response's Set-Cookie header (filter "set_cookie", new in
+    /// v2.11.6; an older Caddy rejects it, so it is left out there with a warning).
+    /// https://caddyserver.com/docs/json/logging/logs/encoder/filter/ ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/logging/filters.go (CookieFilter, SetCookieFilter)
+    /// </summary>
+    private static JsonObject AccessLogEncoder(CaddySettings s, Ctx ctx)
+    {
+        var json = new JsonObject { ["format"] = "json" };
+        var names = (s.AccessLogHashedCookies ?? []).Select(n => (n ?? "").Trim()).Where(IsCookieName).Distinct(StringComparer.Ordinal).ToList();
+        if (names.Count == 0) return json;
+        JsonArray Actions()
+        {
+            var actions = new JsonArray();
+            foreach (var n in names) actions.Add(new JsonObject { ["type"] = "hash", ["name"] = n });
+            return actions;
+        }
+        var fields = new JsonObject { ["request>headers>Cookie"] = new JsonObject { ["filter"] = "cookie", ["actions"] = Actions() } };
+        if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, RequestLimitsMinVersion))
+            ctx.Warn($"Hashing cookies in the Set-Cookie header of access logs needs Caddy {RequestLimitsMinVersion} or later (installed: {ctx.Input.InstalledVersion}); only the request's Cookie header is hashed.");
+        else fields["resp_headers>Set-Cookie"] = new JsonObject { ["filter"] = "set_cookie", ["actions"] = Actions() };
+        return new JsonObject { ["format"] = "filter", ["wrap"] = json, ["fields"] = fields };
     }
 
     private static void MergeServerOptions(JsonObject srv, CaddySettings s, Ctx ctx)
@@ -1405,7 +1686,7 @@ public static partial class CaddyConfigGenerator
         }
         // ACME/Internal names covered by a custom wildcard: policies are first-match-wins and the SNI matcher honours
         // wildcards, so without this policy the custom *.example.com policy would serve them its tagged certificate.
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddytls/connpolicy.go
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddytls/connpolicy.go
         var customWildcards = custom.SelectMany(x => x.Domains.Where(IsWildcard)).ToList();
         var managedUnderCustom = httpsSites.Where(x => x.Host.Tls != TlsMode.Custom)
             .SelectMany(x => x.Domains)
@@ -1463,7 +1744,7 @@ public static partial class CaddyConfigGenerator
             // Otherwise a loaded custom certificate (e.g. *.example.com) silently replaces the managed certificate of
             // every ACME/Internal host it covers ("skipping automatic certificate management because one or more
             // matching certificates are already loaded"). Custom names stay unmanaged through skip_certificates.
-            // https://caddyserver.com/docs/automatic-https ; .../v2.11.4/modules/caddyhttp/autohttps.go
+            // https://caddyserver.com/docs/automatic-https ; .../v2.11.7/modules/caddyhttp/autohttps.go
             o["ignore_loaded_certificates"] = true;
         }
         return o;
@@ -1524,7 +1805,7 @@ public static partial class CaddyConfigGenerator
         // its own certificate when the covering wildcard host uses another TLS mode (ACME vs Internal: it would get
         // the other host's certificate and issuer), or when the wildcard is ACME without a DNS challenge (a public
         // wildcard cannot be issued then, and the exact host would never get any certificate).
-        // https://github.com/caddyserver/caddy/releases/tag/v2.10.0 ; .../v2.11.4/modules/caddytls/tls.go (Manage)
+        // https://github.com/caddyserver/caddy/releases/tag/v2.10.0 ; .../v2.11.7/modules/caddytls/tls.go (Manage)
         var managedWildcards = sites.Where(x => x.Host.Tls is TlsMode.Acme or TlsMode.Internal)
             .SelectMany(x => x.Domains.Where(IsWildcard).Select(w => (Wildcard: w, x.Host.Tls,
                 Issuable: x.Host.Tls == TlsMode.Internal || legacyDns || acmeNames.Any(a => a.Domain == w && a.Dns)))).ToList();
@@ -1586,7 +1867,7 @@ public static partial class CaddyConfigGenerator
             foreach (var iss in issuers)
             {
                 // Enabling the DNS challenge disables HTTP-01 and TLS-ALPN-01 (certmagic acmeclient.go), so their options
-                // are replaced. apps.tls.resolvers is NOT read by the ACME issuer in v2.11.4, hence resolvers on every
+                // are replaced. apps.tls.resolvers is NOT read by the ACME issuer in v2.11.7, hence resolvers on every
                 // issuer. docs/research/round3-dns01.md §1 ;
                 // https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/
                 iss!["challenges"] = new JsonObject { ["dns"] = dns.DeepClone() };
@@ -1639,7 +1920,7 @@ public static partial class CaddyConfigGenerator
     /// challenges.dns of the ACME issuers of DNS policies: the provider (name + fields typed per the catalog + secrets),
     /// ttl / propagation_delay / propagation_timeout as caddy.Duration strings ("30s"; -1 disables the propagation check),
     /// resolvers. https://caddyserver.com/docs/json/apps/tls/automation/policies/issuers/acme/challenges/dns/ ;
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddytls/automation.go (DNSChallengeConfig)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddytls/automation.go (DNSChallengeConfig)
     /// </summary>
     private static JsonObject DnsChallenge(CaddySettings s, Ctx ctx)
     {
@@ -1882,7 +2163,7 @@ public static partial class CaddyConfigGenerator
     /// prefix match, so http.log.access also matches every per-host http.log.access.&lt;name&gt;), request/response
     /// headers and TLS details removed by the filter encoder (nested fields are addressed with "&gt;"), rolled
     /// uncompressed so the tailer can finish a rotated file.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/logging/filterencoder.go ;
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/logging/filterencoder.go ;
     /// docs/research/round3-accesslog.md §2-3
     /// </summary>
     private static JsonObject StatsLog(AppPaths paths) => new()

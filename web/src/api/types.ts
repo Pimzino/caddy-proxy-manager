@@ -65,6 +65,9 @@ export interface HealthCheck {
 
 export interface ProxyLocation {
   path: string;
+  /** When set, the location matches by this URLPattern (e.g. "/books/:id") instead of the path prefix. Caddy v2.11.6+. */
+  urlPattern?: string | null;
+  urlPatternIgnoreCase?: boolean;
   upstreams: Upstream[];
   stripPrefix: boolean;
   upstreamTlsInsecure: boolean;
@@ -88,6 +91,10 @@ export interface SiteHostFields {
   accessListId?: string | null;
   blockExploits: boolean;
   accessLog: boolean;
+  /** Upload idle timeout of this host in seconds; null/absent = the value from Settings › Caddy. Caddy v2.11.6+. */
+  readIdleTimeoutSeconds?: number | null;
+  /** Download idle timeout of this host in seconds; null/absent = the value from Settings › Caddy. Caddy v2.11.6+. */
+  writeIdleTimeoutSeconds?: number | null;
   responseHeaders: HeaderOp[];
 
   upstreams: Upstream[];
@@ -258,6 +265,24 @@ export interface CaddySettings {
   defaultSite: DefaultSiteBehavior;
   defaultRedirectUrl?: string | null;
   trustedProxies: string[];
+  /** Largest request line plus headers Caddy accepts, in KiB; null/absent = Caddy default (16 KiB since v2.11.6). */
+  maxRequestHeaderKb?: number | null;
+  /** Abort an upload that makes no progress for this many seconds; null/absent = Caddy default (60). Caddy v2.11.6+. */
+  readIdleTimeoutSeconds?: number | null;
+  /** Abort a response whose client accepts no data for this many seconds; null/absent = Caddy default (60). Caddy v2.11.6+. */
+  writeIdleTimeoutSeconds?: number | null;
+  /** Abort an upload slower than this many bytes per second on average; null/absent = no minimum. Caddy v2.11.6+. */
+  readMinRateBytes?: number | null;
+  /** Abort a response the client reads slower than this many bytes per second on average; null/absent = no minimum. Caddy v2.11.6+. */
+  writeMinRateBytes?: number | null;
+  /** Client request headers with "_" or "." in the name that Caddy keeps instead of dropping; a trailing * is a prefix. Caddy v2.11.6+. */
+  keptRequestHeaders: string[];
+  /** Name of this proxy in the Proxy-Status header of a refused incremental message; null/absent = no header. Caddy v2.11.7+. */
+  proxyStatusName?: string | null;
+  /** Also start a new per-host access log file every this many days; null/absent = by size only. */
+  accessLogRollDays?: number | null;
+  /** Cookie names whose values are written as a short hash in per-host access logs. */
+  accessLogHashedCookies: string[];
   logLevel: string;
   adminListen: string;
   certificateStorePath?: string | null;

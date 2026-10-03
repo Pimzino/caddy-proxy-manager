@@ -10,7 +10,7 @@ namespace CaddyManager.Config.Tests;
 
 /// <summary>
 /// Real DNS-01 issuance end to end: settings and host are configured through the manager's HTTP API, the generated config
-/// is loaded into a real Caddy v2.11.4 built with caddy-dns/rfc2136, Caddy updates an authoritative DNS server (this
+/// is loaded into a real Caddy v2.11.7 built with caddy-dns/rfc2136, Caddy updates an authoritative DNS server (this
 /// test's <see cref="DnsTestServer"/>, TSIG-verified) and Pebble validates the TXT record through the same server.
 /// Artifact: dns01-issuance.json.
 /// </summary>

@@ -18,7 +18,7 @@ public sealed partial record CaddyVersion(int Major, int Minor, int Patch, strin
     /// only after reading the release notes of every version in between (https://github.com/caddyserver/caddy/releases):
     /// v2.11.0, for example, changed the Host header sent to HTTPS upstreams.
     /// </summary>
-    public const string Tested = "v2.11.4";
+    public const string Tested = "v2.11.7";
 
     public bool IsPreRelease => PreRelease is not null;
 

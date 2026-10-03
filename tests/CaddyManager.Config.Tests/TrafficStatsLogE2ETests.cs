@@ -21,7 +21,7 @@ public sealed class TrafficStatsLogE2ETests
     /// (5) the per-host access log loses its entries (e.g. an upper-case Host routed by the vars handler) or receives
     ///     other hosts' requests;
     /// (6) caddy.log (logs.default) receives access entries;
-    /// (7) Caddy rejects the writer options (roll_compression, mode) of v2.11.4's timberjack writer.
+    /// (7) Caddy rejects the writer options (roll_compression, mode) of v2.11.7's timberjack writer.
     /// </summary>
     [CaddyFact]
     public async Task Every_request_is_logged_once_filtered_and_per_host_logs_keep_working()

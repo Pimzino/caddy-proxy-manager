@@ -116,40 +116,74 @@ The **Headers** tab adds, replaces or removes HTTP headers.
 | Value | The value. Not used with **Delete**. Line breaks are not allowed. |
 
 - Rows are applied from top to bottom. For example, **Delete** `X-Test` followed by **Add** `X-Test` gives one `X-Test` header with the new value, and **Set** then **Add** on the same name sends one header with both values separated by a comma.
-- Caddy drops request headers from clients whose names contain an underscore, such as `SM_USER` or `X_Api_Key`. Headers you set here are still sent, even with underscores.
+- Caddy drops request headers from clients whose names contain an underscore or a dot, such as `SM_USER` or `X.Trace`, unless they are listed in **Request headers to keep** under [Settings › Caddy](caddy-settings.md#request-headers-to-keep). Headers you set here are still sent, even with such names.
 - Caddy adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` for the upstream itself.
 - If the host's access list has users and does not pass credentials to the upstream, the `Authorization` header is removed before the request reaches the upstream.
 
 ## Locations tab
 
-The **Locations** tab (proxy hosts only) sends a path prefix to different upstreams, for example `/api` to an API backend.
+The **Locations** tab (proxy hosts only) sends part of a host's requests to different upstreams, for example `/api` to an API backend. A location matches either a path prefix or a URL pattern.
 
-![The Locations tab of the host editor with two path locations](images/host-locations-tab.webp)
+![The Locations tab of the host editor with a path prefix location and a URL pattern location](images/host-locations-tab.webp)
 
 1. Select **Add location**.
-2. Enter the **Path prefix**, for example `/api`.
-3. Enter the upstreams for this path.
-4. Optionally turn on **Strip path prefix** or **Skip upstream certificate verification**.
+2. Leave **Match by** on **Path prefix** and enter the prefix, for example `/api`. Or choose **URL pattern** and enter a pattern, for example `/books/:id`.
+3. Enter the upstreams for this location.
+4. Optionally turn on **Strip path prefix** (path prefix only), **Ignore case** (URL pattern only) or **Skip upstream certificate verification**.
 
 | Field | Default | Description |
 |---|---|---|
+| Match by | Path prefix | **Path prefix** or **URL pattern**. |
 | Path prefix | `/` | Required. Must start with `/`, be unique on the host, and contain no `*` or spaces. A trailing `/` is ignored. |
+| URL pattern | empty | Required for **URL pattern**. See [URL patterns](#url-patterns). |
+| Ignore case | off | Shown for **URL pattern**. Matches `/Books/1` as well as `/books/1`. |
 | Upstreams | one `http` upstream on port 80 | Same rules as the host's upstreams. All must use the same scheme. |
-| Strip path prefix | off | Removes the prefix before forwarding: `/api/users` reaches the upstream as `/users`. |
+| Strip path prefix | off | Shown for **Path prefix**. Removes the prefix before forwarding: `/api/users` reaches the upstream as `/users`. |
 | Skip upstream certificate verification | off | Shown for `https` upstreams. Same as on the **Details** tab. |
 
-- A location `/api` matches `/api` and everything below `/api/`, but not `/apiv2`.
-- Locations are checked before the host's default upstreams, longest path first. A location `/` matches every request, so the default upstreams are never used.
+- A location `/api` matches `/api` and everything below `/api/`, but not `/apiv2`. Upper and lower case do not matter for a path prefix.
+- Locations are checked before the host's default upstreams: first the URL pattern locations in the order listed, then the path prefixes, longest first. A location `/` matches every request, so the default upstreams are never used.
 - Locations use the host's load balancing, **Host header sent to upstream**, request headers and NTLM setting.
 - Locations have no active health check.
 
+### URL patterns
+
+A URL pattern uses the URLPattern syntax that browsers use (https://urlpattern.spec.whatwg.org/). It needs Caddy `v2.11.6` or later; an older Caddy rejects the configuration when you save.
+
+| Pattern | Matches |
+|---|---|
+| `/books/:id` | `/books/42`, but not `/books` or `/books/42/pages`. `:id` stands for one path segment. |
+| `/files/*` | Everything below `/files/`. |
+| `/api/:version/users/*` | `/api/v2/users/7/orders`. |
+| `https://shop.example.com/cart/*` | The same as `/cart/*`, but only over HTTPS and for that host name. |
+
+- A pattern that starts with `/` applies to every domain of the host. A pattern with a scheme and a host name applies to that scheme and name only.
+- The pattern may not contain spaces. It must be unique on the host.
+- A pattern is case-sensitive unless **Ignore case** is on.
+- The request reaches the upstream with its path unchanged.
+- If Caddy cannot read the pattern, the change is not saved and Caddy's error is shown.
+
 ## Advanced tab
 
-![The Advanced tab of the host editor with the access log switch, custom Caddy routes and notes](images/host-advanced-tab.webp)
+![The Advanced tab of the host editor with the access log switch, the idle timeouts, custom Caddy routes and notes](images/host-advanced-tab.webp)
 
 ### Access log
 
-**Access log** is off by default. When on, Caddy writes each request for this host as JSON to `logs\access\<first domain>.log` in the Caddy Proxy Manager data folder. A wildcard name is written as `wildcard`, for example `wildcard.example.com.log`. Files roll over at 20 MB and the last 10 are kept. View them on the [Logs](logs.md) page.
+**Access log** is off by default. When on, Caddy writes each request for this host as JSON to `logs\access\<first domain>.log` in the Caddy Proxy Manager data folder. A wildcard name is written as `wildcard`, for example `wildcard.example.com.log`. Files roll over at 20 MB and the last 10 are kept. To also start a new file after a number of days, or to hide cookie values, see [Caddy settings](caddy-settings.md#access-logs). View them on the [Logs](logs.md) page.
+
+### Idle timeouts
+
+A host can have its own idle timeouts, for example a longer upload timeout for a backup target, or a shorter one for a public API.
+
+| Field | Default | Description |
+|---|---|---|
+| Upload idle timeout (seconds) | empty | How long a request body may stop arriving before Caddy aborts the request. `1` to `3600`. |
+| Download idle timeout (seconds) | empty | How long a client may stop reading a response before Caddy aborts it. `1` to `3600`. |
+
+- An empty field uses the value from **Settings › Caddy › Request limits and headers**, which is 60 seconds unless you changed it. The field shows that value in grey. See [Caddy settings](caddy-settings.md#idle-timeouts).
+- A value here replaces the global timeout for this host. It can be shorter or longer.
+- The minimum transfer rates from **Settings › Caddy** still apply to the host.
+- The fields need Caddy `v2.11.6` or later. With an older Caddy they are not applied, and saving shows a warning.
 
 ### Custom Caddy routes
 
@@ -161,7 +195,7 @@ The **Locations** tab (proxy hosts only) sends a path prefix to different upstre
 - The routes run after the access list, **Block common exploits**, the response headers and compression, and before the host's own handler (proxy, redirect, files or fixed response). A route that answers the request ends it.
 - Invalid routes make Caddy reject the whole configuration. The change is then not saved. See [When Caddy rejects the configuration](#when-caddy-rejects-the-configuration).
 - A `reverse_proxy` in the routes may not target the Caddy admin API on this server.
-- Caddy drops client request headers whose names contain an underscore, so a route that matches such a header never matches. Saving shows a warning.
+- Caddy drops client request headers whose names contain an underscore or a dot, so a route that matches such a header never matches. Saving shows a warning, unless the header is listed in **Request headers to keep** under [Settings › Caddy](caddy-settings.md#request-headers-to-keep).
 
 Example: answer `/health` with `ok`.
 

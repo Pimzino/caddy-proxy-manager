@@ -153,7 +153,7 @@ public sealed class ProxyBehaviourE2ETests
     /// <summary>
     /// "Delete X, then add X: v" header operations (research #48). Caddy applies one handler's operations in a fixed
     /// order — add, set, delete — not in the listed order, so the delete removed the value just added.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/headers/headers.go (ApplyTo)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/headers/headers.go (ApplyTo)
     /// Ways it could fail: (1) the response lacks the header the host added after deleting the upstream's value;
     /// (2) the upstream's value survives the delete; (3) the request header towards the upstream has the same
     /// problem (client value kept, or host value missing); (4) "set a, add b" does not send both values;
@@ -221,8 +221,8 @@ public sealed class ProxyBehaviourE2ETests
     /// <summary>
     /// Per-host access logs for a Host header in another letter case (research #55). Caddy routes "LOG.TEST" to the
     /// host (host matching ignores case) but picks the access logger with an exact, case-sensitive logger_names lookup
-    /// (logging.go v2.11.4), so the line went to the default log. The host now names its logger in the
-    /// access_logger_names variable. https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/logging.go
+    /// (logging.go v2.11.7), so the line went to the default log. The host now names its logger in the
+    /// access_logger_names variable. https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
     /// Ways it could fail: (1) the upper-case request is missing from the host's access log; (2) it is written to
     /// caddy.log (the process log) instead; (3) the lower-case request stops being logged; (4) another host's requests
     /// end up in this host's file; (5) the control (variable removed) still logs the upper-case request to the file.
@@ -285,7 +285,7 @@ public sealed class ProxyBehaviourE2ETests
 
     /// <summary>
     /// The plain-HTTP server lists only HTTP/1 (research #29). HTTP/2 needs TLS; Caddy skips "h2" on a cleartext
-    /// listener and logs a warning on every config load (server.go v2.11.4), noise that feeds the log-based alerts.
+    /// listener and logs a warning on every config load (server.go v2.11.7), noise that feeds the log-based alerts.
     /// Ways it could fail: (1) the warning "HTTP/2 skipped because it requires TLS" appears after a load; (2) plain
     /// HTTP stops being served; (3) the control (srv1 with h1+h2) does not log the warning.
     /// </summary>

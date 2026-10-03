@@ -124,10 +124,10 @@ public sealed class HttpServerE2ETests
     /// kept; (4) braces in the target are read as placeholders and silently removed; (5) a target without a query
     /// loses the request query; (7) percent-encoded '?', '#', '/' or spaces in the request path are decoded, which
     /// changes the URL (review round 2: "/x%3Fy%23z" became "/p/x?y#z?a=1"; {http.request.uri.path} is the decoded
-    /// req.URL.Path, replacer.go v2.11.4), with or without a target query; (6) the control (the previous expression
+    /// req.URL.Path, replacer.go v2.11.7), with or without a target query; (6) the control (the previous expression
     /// "{http.request.uri.path}?a=1&amp;{http.request.uri.query}") does not show the dangling '&amp;' and the decoding.
     /// https://caddyserver.com/docs/json/apps/http/#docs (placeholders) ;
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/replacer.go
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/replacer.go
     /// </summary>
     [CaddyFact]
     public async Task Redirect_host_preserves_path_and_merges_queries_without_stray_separators()
@@ -317,7 +317,7 @@ public sealed class HttpServerE2ETests
     }
 
     /// <summary>
-    /// Request headers with underscores (research #81, Caddy v2.11.4 GHSA-f59h-q822-g45g).
+    /// Request headers with underscores (research #81, Caddy v2.11.7 GHSA-f59h-q822-g45g).
     /// Ways it could fail: (1) the documented behaviour is wrong — client headers such as SM_USER still reach the
     /// upstream (then the UI note is misleading) or hyphenated headers are dropped too; (2) a header the host itself
     /// sets with an underscore (request header operation) is dropped as well (then the UI must forbid it);

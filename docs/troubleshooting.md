@@ -136,6 +136,17 @@ The streams become active when Caddy runs with the plugin. See [Streams](streams
 
 The manager does not add passive health checks, so a single failing request never takes a backend out of rotation. The manager reports an upstream as unhealthy only when the host has an active health check. A backend without one is not monitored and never raises **Upstream unhealthy**. To be alerted when a backend goes down, turn on **Enable health checks** in the host's **Active health check** section. See [Host options](host-options.md).
 
+## Clients get 431, or uploads and downloads are cut off
+
+Since Caddy `v2.11.6`, Caddy limits requests more strictly than before. After an update of Caddy you may see:
+
+- `431 Request Header Fields Too Large`: the request line and headers are larger than 16 KiB. This is common with Kerberos (Negotiate) sign-in for users in many groups, and with large cookies. Raise **Request header limit (KiB)**.
+- An upload that ends after a pause, logged with status `499`: the client sent nothing for a minute. Raise **Upload idle timeout (seconds)**.
+- A download that ends when the client stops reading for a minute. Raise **Download idle timeout (seconds)**.
+- An application no longer receives a request header with a dot in its name, such as `X.Trace`. Add it to **Request headers to keep**.
+
+All four are under **Settings › Caddy › Request limits and headers**. See [Caddy settings](caddy-settings.md#request-limits-and-headers).
+
 ## Clients are redirected to the wrong HTTPS port
 
 If Caddy listens on a non-standard HTTPS port behind NAT or port forwarding, HTTP-to-HTTPS redirects use that port. Set **Public HTTPS port** on **Settings › Caddy** to the port clients use, for example `443`. See [Caddy settings](caddy-settings.md).

@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace CaddyManager.Telemetry.Tests;
 
 /// <summary>
-/// End to end (TEL-4): steady traffic from many clients through a real Caddy v2.11.4 into the hosted ingester while
+/// End to end (TEL-4): steady traffic from many clients through a real Caddy v2.11.7 into the hosted ingester while
 /// viewers poll the traffic report several times a second. The statistics must go to their own database (manager.db is
 /// not written at all), counters must be saved every flush interval but the large sketches / top-clients documents only
 /// every blob interval, report polling must not add saves, and reports must still show the exact unique clients and top

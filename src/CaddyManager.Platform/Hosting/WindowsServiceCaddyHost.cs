@@ -14,12 +14,12 @@ namespace CaddyManager.Platform.Hosting;
 /// Production host: Caddy runs as its own Windows service "Caddy" (LocalSystem, automatic start,
 /// restart on failure) so it keeps serving even while the manager is stopped or updated.
 ///
-/// Caddy v2.11.4 can stay in START_PENDING although it serves: runner.Execute reports StartPending, and the
+/// Caddy v2.11.7 can stay in START_PENDING although it serves: runner.Execute reports StartPending, and the
 /// notify.Ready() that caddy.Run sent before Execute registered its status channel is lost (open upstream PR
-/// https://github.com/caddyserver/caddy/pull/8012; https://github.com/caddyserver/caddy/blob/v2.11.4/service_windows.go,
+/// https://github.com/caddyserver/caddy/pull/8012; https://github.com/caddyserver/caddy/blob/v2.11.7/service_windows.go,
 /// notify/notify_windows.go). The SCM then refuses every stop (1061/1052). This host therefore treats "the admin API
 /// answers" as started, nudges the SCM to RUNNING by re-posting the unchanged config to /load (caddy.Load always ends with
-/// notify.Ready(), https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go), and stops a service that still refuses
+/// notify.Ready(), https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go), and stops a service that still refuses
 /// through the admin API's /stop and, as the last resort, by ending its process (with the recovery actions suspended).
 /// Proven by CaddyServiceStartPendingE2ETests on the Windows CI runner.
 /// </summary>

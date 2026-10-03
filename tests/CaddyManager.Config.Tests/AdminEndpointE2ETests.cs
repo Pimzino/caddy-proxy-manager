@@ -8,7 +8,7 @@ namespace CaddyManager.Config.Tests;
 
 /// <summary>
 /// Caddy swaps its admin endpoint BEFORE provisioning/starting the apps of a new config and does not swap it back
-/// when the load fails (caddy.go v2.11.4 provisionContext → replaceLocalAdminServer), although the old sites keep
+/// when the load fails (caddy.go v2.11.7 provisionContext → replaceLocalAdminServer), although the old sites keep
 /// running (research #13). The manager must move the admin endpoint back after a rejected load.
 /// </summary>
 public sealed class AdminEndpointE2ETests

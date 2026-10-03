@@ -16,7 +16,7 @@ namespace CaddyManager.Platform.Tests;
 ///     declaration after a refactor, and CI silently falls back to something else (or fails with an unclear error).
 ///  3. The downloaded binary reports another version than the tag (wrong asset, cached file).
 ///  4. The local development binary (.dev/bin/caddy) is older/newer than the pin, so a developer's green run proves nothing.
-///  5. `caddy version` output changes ("v2.11.4 h1:..."), so the comparison always fails or always passes.
+///  5. `caddy version` output changes ("v2.11.7 h1:..."), so the comparison always fails or always passes.
 /// </summary>
 [Trait("Category", "Caddy")]
 public class CaddyPinE2ETests

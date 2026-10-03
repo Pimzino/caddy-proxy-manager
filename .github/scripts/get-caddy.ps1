@@ -44,7 +44,7 @@ $asset = $rel.assets | Where-Object name -eq "caddy_${ver}_windows_amd64.zip"
 $sums = $rel.assets | Where-Object name -eq "caddy_${ver}_checksums.txt"
 if (-not $asset) { throw "Release $tag has no caddy_${ver}_windows_amd64.zip." }
 # Never run an unverified binary: Caddy releases publish caddy_<ver>_checksums.txt (goreleaser, checksum
-# algorithm sha512: https://github.com/caddyserver/caddy/blob/v2.11.4/.goreleaser.yml). A release without it is
+# algorithm sha512: https://github.com/caddyserver/caddy/blob/v2.11.7/.goreleaser.yml). A release without it is
 # incomplete or not what we expect, so stop instead of silently skipping the SHA-512 check.
 if (-not $sums) {
     $msg = "Release $tag has no caddy_${ver}_checksums.txt asset; refusing to use caddy.exe without its SHA-512 check."

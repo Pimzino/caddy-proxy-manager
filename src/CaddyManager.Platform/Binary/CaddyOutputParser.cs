@@ -21,7 +21,7 @@ public static partial class CaddyOutputParser
 
     /// <summary>
     /// Parses `caddy version` output, e.g. "v2.11.4 h1:XKxk...=" → "v2.11.4".
-    /// Custom builds may print "v2.11.4 h1:..." as well; development builds print "(devel)".
+    /// Custom builds may print "v2.11.7 h1:..." as well; development builds print "(devel)".
     /// Returns null when the output has no recognisable version token.
     /// </summary>
     public static string? ParseVersion(string output)

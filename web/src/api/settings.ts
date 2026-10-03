@@ -25,7 +25,19 @@ export function caddySettingsInput(s: CaddySettings): CaddySettingsInput {
     ...rest
   } = s;
   // The API omits null values; keep the field explicit so clearing it is sent as null.
-  return { ...rest, publicHttpsPort: rest.publicHttpsPort ?? null };
+  return {
+    ...rest,
+    publicHttpsPort: rest.publicHttpsPort ?? null,
+    maxRequestHeaderKb: rest.maxRequestHeaderKb ?? null,
+    readIdleTimeoutSeconds: rest.readIdleTimeoutSeconds ?? null,
+    writeIdleTimeoutSeconds: rest.writeIdleTimeoutSeconds ?? null,
+    readMinRateBytes: rest.readMinRateBytes ?? null,
+    writeMinRateBytes: rest.writeMinRateBytes ?? null,
+    keptRequestHeaders: rest.keptRequestHeaders ?? [],
+    proxyStatusName: rest.proxyStatusName ?? null,
+    accessLogRollDays: rest.accessLogRollDays ?? null,
+    accessLogHashedCookies: rest.accessLogHashedCookies ?? [],
+  };
 }
 
 export function notificationSettingsInput(s: NotificationSettings): NotificationSettingsInput {

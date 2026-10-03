@@ -41,6 +41,8 @@ public static partial class ModelValidation
             l.Upstreams ??= new();
             foreach (var u in l.Upstreams) u.Host = (u.Host ?? "").Trim();
             l.Path = CaddyConfigGenerator.NormalizeLocationPath(l.Path);
+            l.UrlPattern = string.IsNullOrWhiteSpace(l.UrlPattern) ? null : l.UrlPattern.Trim();
+            if (l.UrlPattern is null) l.UrlPatternIgnoreCase = false;
         }
         foreach (var op in h.RequestHeaders.Concat(h.ResponseHeaders)) { op.Name = (op.Name ?? "").Trim(); op.Value ??= ""; }
         h.CertificateId = string.IsNullOrWhiteSpace(h.CertificateId) ? null : h.CertificateId.Trim();
@@ -79,6 +81,11 @@ public static partial class ModelValidation
         foreach (var d in h.Domains)
             if (!NetUtil.IsValidDomain(d)) v.Add("domains", $"'{d}' is not a valid host name (letters, digits, hyphens; a leading '*.' wildcard is allowed).");
 
+        if (h.ReadIdleTimeoutSeconds is int hostReadIdle && hostReadIdle is < 1 or > CaddyConfigGenerator.MaxIdleTimeoutSeconds)
+            v.Add("readIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty to use the value from Settings > Caddy.");
+        if (h.WriteIdleTimeoutSeconds is int hostWriteIdle && hostWriteIdle is < 1 or > CaddyConfigGenerator.MaxIdleTimeoutSeconds)
+            v.Add("writeIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty to use the value from Settings > Caddy.");
+
         switch (h.Kind)
         {
             case HostKind.Proxy:
@@ -87,8 +94,17 @@ public static partial class ModelValidation
                 for (var i = 0; i < h.Locations.Count; i++)
                 {
                     var l = h.Locations[i];
-                    if (!paths.Add(l.Path)) v.Add($"locations[{i}].path", $"Location '{l.Path}' is defined more than once.");
-                    if (l.Path.Contains('*') || l.Path.Contains(' ')) v.Add($"locations[{i}].path", "Location paths may not contain '*' or spaces.");
+                    if (l.UrlPattern is { } pattern)
+                    {
+                        if (CaddyConfigGenerator.UrlPatternError(pattern) is { } patternError) v.Add($"locations[{i}].urlPattern", patternError);
+                        else if (!paths.Add("pattern:" + pattern)) v.Add($"locations[{i}].urlPattern", $"The URL pattern '{pattern}' is defined more than once.");
+                        if (l.StripPrefix) v.Add($"locations[{i}].stripPrefix", "Strip path prefix is not available for a URL pattern location.");
+                    }
+                    else
+                    {
+                        if (!paths.Add(l.Path)) v.Add($"locations[{i}].path", $"Location '{l.Path}' is defined more than once.");
+                        if (l.Path.Contains('*') || l.Path.Contains(' ')) v.Add($"locations[{i}].path", "Location paths may not contain '*' or spaces.");
+                    }
                     ValidateUpstreams(v, $"locations[{i}].upstreams", l.Upstreams, required: true);
                 }
                 if (h.HealthCheck.Enabled)
@@ -296,6 +312,24 @@ public static partial class ModelValidation
         for (var i = 0; i < s.TrustedProxies.Count; i++)
             if (!NetUtil.IsValidCidr(s.TrustedProxies[i]) || s.TrustedProxies[i].Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
                 v.Add($"trustedProxies[{i}]", $"'{s.TrustedProxies[i]}' is not an IP address or CIDR range.");
+        if (s.MaxRequestHeaderKb is int headerKb && headerKb is < CaddyConfigGenerator.MinRequestHeaderKb or > CaddyConfigGenerator.MaxRequestHeaderKb)
+            v.Add("maxRequestHeaderKb", $"Enter {CaddyConfigGenerator.MinRequestHeaderKb} to {CaddyConfigGenerator.MaxRequestHeaderKb} KiB, or leave empty for Caddy's default.");
+        if (s.ReadIdleTimeoutSeconds is int readIdle && readIdle is < 1 or > CaddyConfigGenerator.MaxIdleTimeoutSeconds)
+            v.Add("readIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty for Caddy's default (1 minute).");
+        if (s.WriteIdleTimeoutSeconds is int writeIdle && writeIdle is < 1 or > CaddyConfigGenerator.MaxIdleTimeoutSeconds)
+            v.Add("writeIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty for Caddy's default (1 minute).");
+        if (s.ReadMinRateBytes is int readRate && readRate is < 1 or > CaddyConfigGenerator.MaxMinRateBytes)
+            v.Add("readMinRateBytes", $"Enter 1 to {CaddyConfigGenerator.MaxMinRateBytes} bytes per second, or leave empty for no minimum.");
+        if (s.WriteMinRateBytes is int writeRate && writeRate is < 1 or > CaddyConfigGenerator.MaxMinRateBytes)
+            v.Add("writeMinRateBytes", $"Enter 1 to {CaddyConfigGenerator.MaxMinRateBytes} bytes per second, or leave empty for no minimum.");
+        if (s.AccessLogRollDays is int rollDays && rollDays is < 1 or > CaddyConfigGenerator.MaxAccessLogRollDays)
+            v.Add("accessLogRollDays", $"Enter 1 to {CaddyConfigGenerator.MaxAccessLogRollDays} days, or leave empty to rotate by size only.");
+        for (var i = 0; i < s.AccessLogHashedCookies.Count; i++)
+            if (!CaddyConfigGenerator.IsCookieName(s.AccessLogHashedCookies[i]))
+                v.Add($"accessLogHashedCookies[{i}]", $"'{s.AccessLogHashedCookies[i]}' is not a cookie name (no spaces or any of ( ) < > @ , ; : \\ \" / [ ] ? = {{ }}).");
+        if (CaddyConfigGenerator.ProxyStatusNameError(s.ProxyStatusName) is { } proxyStatusError) v.Add("proxyStatusName", proxyStatusError);
+        for (var i = 0; i < s.KeptRequestHeaders.Count; i++)
+            if (CaddyConfigGenerator.KeptRequestHeaderError(s.KeptRequestHeaders[i]) is { } headerError) v.Add($"keptRequestHeaders[{i}]", headerError);
         if (s.DefaultSite == DefaultSiteBehavior.Redirect && !NetUtil.IsHttpUrl(s.DefaultRedirectUrl))
             v.Add("defaultRedirectUrl", "Enter the absolute http(s) URL unknown hosts are redirected to.");
         if (!string.IsNullOrWhiteSpace(s.CertificateStorePath) && !IsAbsolutePath(s.CertificateStorePath))

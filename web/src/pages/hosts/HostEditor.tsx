@@ -253,7 +253,15 @@ function HostEditorInner({ onClose, kind, host, initial, readOnly }: HostEditorP
               <LocationsTab form={form} set={set} errors={errors} />
             </TabPanel>
             <TabPanel idBase={idBase} value="advanced" active={tab === 'advanced'}>
-              <AdvancedTab form={form} set={set} errors={errors} locked={lockedRoutes} droppedRoutes={droppedRoutes} />
+              <AdvancedTab
+                form={form}
+                set={set}
+                errors={errors}
+                locked={lockedRoutes}
+                droppedRoutes={droppedRoutes}
+                globalReadIdle={caddySettings.data?.readIdleTimeoutSeconds ?? 60}
+                globalWriteIdle={caddySettings.data?.writeIdleTimeoutSeconds ?? 60}
+              />
             </TabPanel>
           </fieldset>
         </div>
@@ -862,8 +870,9 @@ function HeadersTab({ form, set, errors, kind }: { form: SiteHostFields; set: Se
             <>
               Sent to the upstream. Placeholders are allowed, e.g. <span className="mono">{'{http.request.remote.host}'}</span>.
               X-Forwarded-For/Proto/Host are added by Caddy automatically. Caddy drops request headers from clients whose names contain an
-              underscore (for example <span className="mono">SM_USER</span> or <span className="mono">X_Api_Key</span>) before they reach any
-              upstream or matcher; headers set here, including names with underscores, are still sent.
+              underscore or a dot (for example <span className="mono">SM_USER</span> or <span className="mono">X.Trace</span>) before they reach
+              any upstream or matcher, unless they are listed under Settings › Caddy › Request headers to keep; headers set here, including such
+              names, are still sent.
             </>
           }
         >
@@ -910,14 +919,14 @@ function LocationsTab({ form, set, errors }: { form: SiteHostFields; set: Setter
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-fg-subtle">
-        Send a path prefix to different upstream servers, e.g. <span className="mono">/api</span> to an API backend. Locations are
-        matched before the default upstreams.
+        Send a path prefix, or requests that fit a URL pattern, to different upstream servers, e.g. <span className="mono">/api</span> to an
+        API backend. Locations are matched before the default upstreams; URL pattern locations are checked first, in the order listed.
       </p>
       {form.locations.map((loc, i) => (
         <div key={i} className="rounded-md border border-border">
           <div className="flex items-center gap-2 border-b border-border bg-surface-2/60 px-3 py-2">
             <span className="text-sm font-medium text-fg">Location {i + 1}</span>
-            <span className="mono truncate text-xs text-fg-subtle">{loc.path}</span>
+            <span className="mono truncate text-xs text-fg-subtle">{loc.urlPattern != null ? loc.urlPattern : loc.path}</span>
             <div className="flex-1" />
             <Button
               size="sm"
@@ -929,21 +938,53 @@ function LocationsTab({ form, set, errors }: { form: SiteHostFields; set: Setter
             </Button>
           </div>
           <div className="flex flex-col gap-4 p-3">
-            <Field label="Path prefix" required error={errors[`locations.${i}.path`]} hint="Matches this path and everything below it.">
-              <Input mono placeholder="/api" value={loc.path} onChange={(e) => update(i, { path: e.target.value })} />
+            <Field label="Match by" className="max-w-xs">
+              <Select
+                value={loc.urlPattern != null ? 'pattern' : 'prefix'}
+                onChange={(e) =>
+                  update(i, e.target.value === 'pattern' ? { urlPattern: '', stripPrefix: false } : { urlPattern: null, urlPatternIgnoreCase: false })
+                }
+              >
+                <option value="prefix">Path prefix</option>
+                <option value="pattern">URL pattern</option>
+              </Select>
             </Field>
+            {loc.urlPattern != null ? (
+              <>
+                <Field
+                  label="URL pattern"
+                  required
+                  error={errors[`locations.${i}.urlPattern`]}
+                  hint="URLPattern syntax, as in browsers: :name matches one path segment, * matches anything. Start with / for any host, or with a scheme and host. Needs Caddy v2.11.6 or later."
+                >
+                  <Input mono placeholder="/books/:id" value={loc.urlPattern} onChange={(e) => update(i, { urlPattern: e.target.value })} />
+                </Field>
+                <SwitchField
+                  label="Ignore case"
+                  description="Match /Books/1 as well as /books/1."
+                  checked={!!loc.urlPatternIgnoreCase}
+                  onChange={(v) => update(i, { urlPatternIgnoreCase: v })}
+                />
+              </>
+            ) : (
+              <Field label="Path prefix" required error={errors[`locations.${i}.path`]} hint="Matches this path and everything below it.">
+                <Input mono placeholder="/api" value={loc.path} onChange={(e) => update(i, { path: e.target.value })} />
+              </Field>
+            )}
             <UpstreamList
               value={loc.upstreams}
               onChange={(v) => update(i, { upstreams: v })}
               errors={errors}
               prefix={`locations.${i}.upstreams`}
             />
-            <SwitchField
-              label="Strip path prefix"
-              description={`Forward ${loc.path || '/api'}/users as /users.`}
-              checked={loc.stripPrefix}
-              onChange={(v) => update(i, { stripPrefix: v })}
-            />
+            {loc.urlPattern == null && (
+              <SwitchField
+                label="Strip path prefix"
+                description={`Forward ${loc.path || '/api'}/users as /users.`}
+                checked={loc.stripPrefix}
+                onChange={(v) => update(i, { stripPrefix: v })}
+              />
+            )}
             {loc.upstreams.some((u) => u.scheme === 'https') && (
               <SwitchField
                 label="Skip upstream certificate verification"
@@ -980,10 +1021,15 @@ function AdvancedTab({
   errors,
   locked,
   droppedRoutes,
+  globalReadIdle,
+  globalWriteIdle,
 }: {
   form: SiteHostFields;
   set: Setter;
   errors: FieldErrors;
+  /** The idle timeouts from Settings › Caddy (or Caddy's 60 s), shown as placeholders. */
+  globalReadIdle: number;
+  globalWriteIdle: number;
   /** Not an administrator: raw routes are shown read-only. */
   locked: boolean;
   /** Duplicating a host with custom routes as a non-admin: the routes are not copied. */
@@ -1011,6 +1057,39 @@ function AdvancedTab({
           checked={form.accessLog}
           onChange={(v) => set('accessLog', v)}
         />
+      </Section>
+      <Section
+        title="Idle timeouts"
+        description="For this host only. Empty fields use the timeouts from Settings › Caddy. Needs Caddy v2.11.6 or later."
+      >
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Field
+            label="Upload idle timeout (seconds)"
+            error={errors.readIdleTimeoutSeconds}
+            hint="A request whose body stops arriving for this long is aborted."
+          >
+            <NumberInput
+              min={1}
+              max={3600}
+              placeholder={String(globalReadIdle)}
+              value={form.readIdleTimeoutSeconds}
+              onValueChange={(v) => set('readIdleTimeoutSeconds', Number.isNaN(v) ? null : v)}
+            />
+          </Field>
+          <Field
+            label="Download idle timeout (seconds)"
+            error={errors.writeIdleTimeoutSeconds}
+            hint="A response the client stops reading for this long is aborted."
+          >
+            <NumberInput
+              min={1}
+              max={3600}
+              placeholder={String(globalWriteIdle)}
+              value={form.writeIdleTimeoutSeconds}
+              onValueChange={(v) => set('writeIdleTimeoutSeconds', Number.isNaN(v) ? null : v)}
+            />
+          </Field>
+        </div>
       </Section>
       <Section
         title="Custom Caddy routes"

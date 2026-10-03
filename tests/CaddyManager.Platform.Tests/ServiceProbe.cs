@@ -12,7 +12,7 @@ namespace CaddyManager.Platform.Tests;
 ///   pfx &lt;file&gt; &lt;dispose 0|1&gt; &lt;outFile&gt; — loads a PFX with X509KeyStorageFlags.MachineKeySet like UiListener, writes the
 ///     CNG key file name, optionally disposes the certificate on ProcessExit (Program.cs), then Environment.Exit(1).
 ///   caddy-stub &lt;mode&gt; &lt;adminPort&gt; &lt;markerDir&gt; &lt;serviceName&gt; — a raw Win32 service (StartServiceCtrlDispatcher,
-///     SetServiceStatus) that reproduces Caddy v2.11.4's START_PENDING race (caddy PR #8012): it reports START_PENDING with
+///     SetServiceStatus) that reproduces Caddy v2.11.7's START_PENDING race (caddy PR #8012): it reports START_PENDING with
 ///     no accepted controls, like runner.Execute in service_windows.go when notify.Ready() ran before the status channel was
 ///     registered, and serves a fake admin API on 127.0.0.1:&lt;adminPort&gt;:
 ///       GET /config/ returns the config; POST /load reports RUNNING (accepting STOP and SHUTDOWN) in mode "nudge", like
@@ -20,8 +20,8 @@ namespace CaddyManager.Platform.Tests;
 ///       with code 0 without SERVICE_STOPPED (Caddy's exitProcess → os.Exit) except in "hung", which ignores it.
 ///       Mode "noadmin" serves no admin API at all. A SCM stop (possible only once RUNNING) reports STOPPED cleanly.
 ///     Every event (start, state reported, admin request with its Cache-Control header) is appended to markerDir\events.log.
-///     https://github.com/caddyserver/caddy/blob/v2.11.4/service_windows.go
-///     https://github.com/caddyserver/caddy/blob/v2.11.4/notify/notify_windows.go
+///     https://github.com/caddyserver/caddy/blob/v2.11.7/service_windows.go
+///     https://github.com/caddyserver/caddy/blob/v2.11.7/notify/notify_windows.go
 ///     https://github.com/caddyserver/caddy/pull/8012
 /// Built outside the repository (no Directory.Build.props) into %ProgramData%\cpm-e2e so LocalSystem can run it.
 /// </summary>
@@ -156,7 +156,7 @@ public static class ServiceProbe
             {
                 _handle = RegisterServiceCtrlHandlerEx(_name, _handler, IntPtr.Zero);
                 File.WriteAllText(Path.Combine(_markers, $"start-{Environment.ProcessId}.txt"), DateTime.UtcNow.ToString("O"));
-                // caddy v2.11.4 runner.Execute: status <- svc.Status{State: svc.StartPending} (Accepts 0); the Ready() that
+                // caddy v2.11.7 runner.Execute: status <- svc.Status{State: svc.StartPending} (Accepts 0); the Ready() that
                 // would follow was lost because it ran before notify.SetGlobalStatus.
                 Report(StartPending, 0);
                 if (_mode != "noadmin") new Thread(ServeAdmin) { IsBackground = true }.Start();
