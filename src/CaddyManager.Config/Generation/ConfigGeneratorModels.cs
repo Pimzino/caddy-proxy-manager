@@ -20,6 +20,11 @@ public sealed record ConfigGeneratorInput
     public IReadOnlyList<Certificate> Certificates { get; init; } = [];
     /// <summary>Caddy module IDs compiled into the installed binary; null when unknown (binary missing).</summary>
     public IReadOnlyCollection<string>? InstalledModules { get; init; }
+    /// <summary>
+    /// Version of the installed Caddy binary ("v2.11.7"), or null when unknown. Server options that an older Caddy does
+    /// not know are left out for it, because Caddy rejects a configuration with unknown fields.
+    /// </summary>
+    public string? InstalledVersion { get; init; }
     /// <summary>Plain-text EAB MAC key (already unprotected), or null.</summary>
     public string? EabMacKey { get; init; }
     /// <summary>Ids of custom certificates whose files are currently missing or unreadable.</summary>

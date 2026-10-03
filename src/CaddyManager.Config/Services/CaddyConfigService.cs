@@ -38,6 +38,7 @@ public sealed partial class CaddyConfigService(
 
     private readonly SemaphoreSlim _applyLock = new(1, 1);
     private volatile IReadOnlyCollection<string>? _modules;
+    private volatile string? _version;
     private volatile bool _modulesLoaded;
     private bool? _lastFailed;
 
@@ -89,6 +90,7 @@ public sealed partial class CaddyConfigService(
             AccessLists = store.Col<AccessList>().FindAll().ToList(),
             Certificates = certs,
             InstalledModules = _modules,
+            InstalledVersion = _version,
             EabMacKey = mac,
             AcmeIssuerJson = acmeIssuerJson,
             UnavailableCertificateIds = UnavailableCertificates(hosts, certs),
@@ -149,6 +151,7 @@ public sealed partial class CaddyConfigService(
             cts.CancelAfter(TimeSpan.FromSeconds(30));
             var installed = await bm.GetInstalledAsync(cts.Token);
             _modules = installed?.Modules.ToList();
+            _version = installed?.Version;
             _modulesLoaded = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -432,7 +435,7 @@ public sealed partial class CaddyConfigService(
     /// BEFORE provisioning the apps and does not restore it when provisioning fails (the old apps keep running), so
     /// the admin API now listens on the rejected config's address while caddy.json and the settings keep the old one.
     /// Re-load the last good config through the new address to move the admin endpoint back.
-    /// https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (provisionContext: replaceLocalAdminServer)
+    /// https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go (provisionContext: replaceLocalAdminServer)
     /// </summary>
     private async Task RestoreAdminEndpointAsync(CaddyAdminClient used, string rejectedJson, CancellationToken ct)
     {
@@ -467,7 +470,7 @@ public sealed partial class CaddyConfigService(
     /// listener. When the running config serves HTTP/3 with 0-RTT on an address the new config serves with 0-RTT off
     /// (e.g. after upgrading from a version that did not disable it), the new config is first loaded without HTTP/3
     /// on those servers, which releases the listener; the real load then creates a new one. Clients use HTTP/2
-    /// meanwhile. https://github.com/caddyserver/caddy/blob/v2.11.4/listeners.go
+    /// meanwhile. https://github.com/caddyserver/caddy/blob/v2.11.7/listeners.go
     /// </summary>
     private async Task ReleaseZeroRttQuicListenersAsync(CaddyAdminClient target, string json, CancellationToken ct)
     {
@@ -505,7 +508,7 @@ public sealed partial class CaddyConfigService(
         // The interim load must keep Caddy's admin API where it is: Caddy moves its admin endpoint to the loaded
         // config's admin.listen, so an interim copy with a NEW admin address sent the following real load (through
         // `target`, the old address) into the void, and the interim config (no HTTP/3) stayed live.
-        // https://github.com/caddyserver/caddy/blob/v2.11.4/caddy.go (replaceLocalAdminServer)
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go (replaceLocalAdminServer)
         if (running!["admin"] is JsonNode runningAdmin) interim["admin"] = runningAdmin.DeepClone();
         else interim.Remove("admin"); // Caddy's default admin address, where it runs now
         foreach (var name in affected)
@@ -616,17 +619,21 @@ public sealed partial class CaddyConfigService(
         try
         {
             await File.WriteAllTextAsync(tmp, json, ct);
-            string[] args = ["validate", "--config", tmp];
-            int exit;
-            string output;
-            if (bm is not null)
+            async Task<(int Exit, string Output)> RunValidate()
             {
-                (exit, output) = await bm.RunCaddyAsync(args, null, ct);
-            }
-            else
-            {
+                string[] args = ["validate", "--config", tmp];
+                if (bm is not null) return await bm.RunCaddyAsync(args, null, ct);
                 var r = await CaddyProcessRunner.RunAsync(paths.CaddyExe, args, environment: CaddyEnvironment(), timeout: TimeSpan.FromSeconds(120), ct: ct);
-                (exit, output) = (r.ExitCode, r.Combined);
+                return (r.ExitCode, r.Combined);
+            }
+            var (exit, output) = await RunValidate();
+            // Caddy v2.11.6 and later write the reason to the default log, which this configuration sends to caddy.log.
+            // The configuration was judged by the run above; this second run only makes Caddy print the reason.
+            if (exit != 0 && CaddyCliOutput.FindError(output) is null && CaddyCliOutput.WithDefaultLogOnStderr(json) is { } readable)
+            {
+                await File.WriteAllTextAsync(tmp, readable, ct);
+                var (exit2, output2) = await RunValidate();
+                if (exit2 != 0 && CaddyCliOutput.FindError(output2) is not null) output = output2;
             }
             output = Scrub(output);
             return exit == 0
@@ -690,46 +697,8 @@ public sealed partial class CaddyConfigService(
         File.Move(tmp, file, overwrite: true);
     }
 
-    private static (string Level, string Message) ParseLogLine(string line)
-    {
-        if (line.StartsWith('{'))
-        {
-            try
-            {
-                if (JsonNode.Parse(line) is JsonObject o)
-                {
-                    var level = o["level"]?.GetValue<string>() ?? "";
-                    var msg = o["msg"]?.GetValue<string>() ?? line;
-                    var file = o["file"]?.ToString();
-                    var ln = o["line"]?.ToString();
-                    var err = o["error"]?.ToString();
-                    if (file is not null) msg = $"{file}{(ln is null ? "" : ":" + ln)}: {msg}";
-                    if (err is not null) msg += ": " + err;
-                    return (level.ToLowerInvariant(), msg);
-                }
-            }
-            catch (JsonException)
-            {
-            }
-        }
-        return ("", line);
-    }
+    private static (string Level, string Message) ParseLogLine(string line) => CaddyCliOutput.ParseLogLine(line);
 
-    [GeneratedRegex(@"^\s*Error:\s*(.+)$", RegexOptions.Multiline)]
-    private static partial Regex CliErrorRegex();
-
-    /// <summary>Picks the human readable "Error: ..." line from caddy CLI output.</summary>
-    internal static string ExtractCliError(string output)
-    {
-        if (string.IsNullOrWhiteSpace(output)) return "Caddy reported an error without details.";
-        var m = CliErrorRegex().Matches(output);
-        if (m.Count > 0) return m[^1].Groups[1].Value.Trim();
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = lines.Length - 1; i >= 0; i--)
-        {
-            var (level, msg) = ParseLogLine(lines[i]);
-            if (level is "error" or "fatal" or "") return msg;
-        }
-        return lines[^1];
-    }
+    /// <summary>Picks the human readable reason from caddy CLI output (<see cref="CaddyCliOutput"/>).</summary>
+    internal static string ExtractCliError(string output) => CaddyCliOutput.ExtractError(output);
 }

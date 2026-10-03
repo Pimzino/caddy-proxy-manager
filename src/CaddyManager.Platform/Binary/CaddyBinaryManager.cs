@@ -674,6 +674,37 @@ public sealed partial class CaddyBinaryManager(
         return (r.ExitCode, r.Combined);
     }
 
+    /// <summary>
+    /// Why `caddy validate` rejected the current configuration file. Caddy v2.11.6 and later write the reason to the
+    /// default log, which the generated configuration sends to caddy.log, so the output of the failed run does not
+    /// carry it: a second run on a copy whose default log is stderr prints it (<see cref="CaddyCliOutput"/>).
+    /// </summary>
+    private async Task<string> ValidationFailureAsync(string exe, string output, CancellationToken ct)
+    {
+        if (CaddyCliOutput.FindError(output) is { } reason) return reason;
+        string? copy = null;
+        try
+        {
+            if (CaddyCliOutput.WithDefaultLogOnStderr(await File.ReadAllTextAsync(paths.CaddyConfigFile, ct)) is { } readable)
+            {
+                copy = Path.Combine(Path.GetDirectoryName(paths.CaddyConfigFile)!, $"validate-{Guid.NewGuid():N}.json");
+                await File.WriteAllTextAsync(copy, readable, ct);
+                var again = await RunBinaryAsync(exe, ["validate", "--config", copy], null, TimeSpan.FromSeconds(90), ct);
+                if (again.ExitCode != 0 && CaddyCliOutput.FindError(again.Combined) is { } found) return found;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TimeoutException)
+        {
+            logger.LogDebug(ex, "Could not re-run caddy validate to read the reason");
+        }
+        finally
+        {
+            if (copy is not null)
+                try { File.Delete(copy); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return output;
+    }
+
     private Task<ProcessResult> RunBinaryAsync(string exe, IEnumerable<string> args, string? stdin, TimeSpan timeout, CancellationToken ct) =>
         ProcessRunner.RunAsync(exe, args, new ProcessOptions
         {
@@ -971,7 +1002,7 @@ public sealed partial class CaddyBinaryManager(
                 var val = await RunBinaryAsync(staged.Path, ["validate", "--config", paths.CaddyConfigFile], null, TimeSpan.FromSeconds(90), ct);
                 if (val.ExitCode != 0)
                     throw new InvalidOperationException(
-                        $"The new Caddy binary rejected the current configuration, so nothing was changed:\n{Trim(val.Combined, 2000)}");
+                        $"The new Caddy binary rejected the current configuration, so nothing was changed:\n{Trim(await ValidationFailureAsync(staged.Path, val.Combined, ct), 2000)}");
                 log("Configuration is valid with the new binary");
             }
 
