@@ -335,6 +335,9 @@ public sealed class Caddy2117FeaturesE2ETests
         var report = E2EArtifacts.Report(nameof(Minimum_transfer_rates_cut_trickling_uploads));
         await using var upstream = await RecordingBackend.StartAsync(https: false, custom: async ctx =>
         {
+            // Kestrel answers 408 itself when a request body arrives slower than 240 bytes/s after 5 s; these tests
+            // send slower than that on purpose, and only Caddy may cut them.
+            ctx.Features.Get<Microsoft.AspNetCore.Server.Kestrel.Core.Features.IHttpMinRequestBodyDataRateFeature>()!.MinDataRate = null;
             using var body = new MemoryStream();
             await ctx.Request.Body.CopyToAsync(body, ctx.RequestAborted);
             await ctx.Response.WriteAsync($"received {body.Length}");
@@ -457,6 +460,9 @@ public sealed class Caddy2117FeaturesE2ETests
         var report = E2EArtifacts.Report(nameof(Host_idle_timeouts_replace_the_global_ones_for_that_host));
         await using var upstream = await RecordingBackend.StartAsync(https: false, custom: async ctx =>
         {
+            // Kestrel answers 408 itself when a request body arrives slower than 240 bytes/s after 5 s; these tests
+            // send slower than that on purpose, and only Caddy may cut them.
+            ctx.Features.Get<Microsoft.AspNetCore.Server.Kestrel.Core.Features.IHttpMinRequestBodyDataRateFeature>()!.MinDataRate = null;
             using var body = new MemoryStream();
             await ctx.Request.Body.CopyToAsync(body, ctx.RequestAborted);
             await ctx.Response.WriteAsync($"received {body.Length}");

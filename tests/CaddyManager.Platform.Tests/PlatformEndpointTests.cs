@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using CaddyManager.Core;
+using CaddyManager.Platform.Binary;
 using CaddyManager.Core.Contracts;
 using CaddyManager.Core.Infrastructure;
 using CaddyManager.Core.Models;
@@ -156,7 +157,7 @@ public class PlatformEndpointTests
 
         var status = (await c.GetFromJsonAsync<CaddyStatus>("/api/caddy/status", JsonDefaults.Api, ct))!;
         Assert.Equal(CaddyRunState.Running, status.State);
-        Assert.Equal("v2.11.4", status.Version);
+        Assert.Equal(CaddyVersion.Tested, status.Version);
         Assert.Empty(Directory.GetFileSystemEntries(api.Env.Paths.CaddyStagingDir));
 
         // Proxy settings for Caddy: validation, then a change restarts the running Caddy with the new environment.

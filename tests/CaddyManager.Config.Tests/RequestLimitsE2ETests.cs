@@ -196,6 +196,8 @@ public sealed class RequestLimitsE2ETests
             switch (ctx.Request.Path.Value)
             {
                 case "/upload":
+                    // Kestrel's own minimum request body rate (240 bytes/s after 5 s) must not answer for Caddy.
+                    ctx.Features.Get<Microsoft.AspNetCore.Server.Kestrel.Core.Features.IHttpMinRequestBodyDataRateFeature>()!.MinDataRate = null;
                     using (var body = new MemoryStream())
                     {
                         await ctx.Request.Body.CopyToAsync(body, ctx.RequestAborted);
