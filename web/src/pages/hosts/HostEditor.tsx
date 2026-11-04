@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { AlertTriangle, Globe, KeyRound, Lock, LockOpen, Plus, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
 import { ApiError } from '@/api/client';
 import { useAccessLists, useBinaryOverview, useCaddySettings, useCertificates, useDnsProviders, useSaveHost } from '@/api/hooks';
-import type { HeaderOp, HostKind, ProxyLocation, SiteHost, SiteHostFields } from '@/api/types';
+import type { AccessLogLevel, HeaderOp, HostKind, ProxyLocation, SiteHost, SiteHostFields } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
 import {
@@ -1015,6 +1015,63 @@ function LocationsTab({ form, set, errors }: { form: SiteHostFields; set: Setter
 
 // ---------------------------------------------------------------- Advanced
 
+const ACCESS_LOG_LEVELS: { value: AccessLogLevel; label: string }[] = [
+  { value: 'debug', label: 'Debug (not logged)' },
+  { value: 'info', label: 'Info' },
+  { value: 'warn', label: 'Warning' },
+  { value: 'error', label: 'Error' },
+];
+
+function AccessLogLevelRules({ form, set, errors }: { form: SiteHostFields; set: Setter; errors: FieldErrors }) {
+  const rules = form.accessLogLevels;
+  const update = (i: number, patch: Partial<SiteHostFields['accessLogLevels'][number]>) =>
+    set('accessLogLevels', rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <Field
+      label="Log level by path"
+      error={errors.accessLogLevels}
+      hint="Requests whose path matches are logged at this level instead of Info (Error for 5xx responses). Debug leaves them out of the access log, for example health checks; traffic statistics still count them. /api/* matches everything below /api, *.php the end of paths, * every request. The first matching rule wins. Needs Caddy v2.11.8 or later."
+    >
+      <div className="flex flex-col gap-2">
+        {rules.map((r, i) => (
+          <div key={i} className="flex flex-col gap-1">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_170px_32px]">
+              <Input
+                mono
+                aria-label={`Path of log level rule ${i + 1}`}
+                placeholder="/healthz"
+                invalid={!!errors[`accessLogLevels.${i}.path`]}
+                value={r.path}
+                onChange={(e) => update(i, { path: e.target.value })}
+              />
+              <Select aria-label={`Level of log level rule ${i + 1}`} value={r.level} onChange={(e) => update(i, { level: e.target.value as AccessLogLevel })}>
+                {ACCESS_LOG_LEVELS.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </Select>
+              <Button
+                variant="ghost"
+                iconOnly
+                aria-label={`Remove log level rule ${i + 1}`}
+                icon={<Trash2 size={14} />}
+                onClick={() => set('accessLogLevels', rules.filter((_, j) => j !== i))}
+              />
+            </div>
+            {errors[`accessLogLevels.${i}.path`] && <p className="text-xs text-danger">{errors[`accessLogLevels.${i}.path`]}</p>}
+          </div>
+        ))}
+        <div>
+          <Button size="sm" icon={<Plus size={14} />} onClick={() => set('accessLogLevels', [...rules, { path: '', level: 'debug' }])}>
+            Add rule
+          </Button>
+        </div>
+      </div>
+    </Field>
+  );
+}
+
 function AdvancedTab({
   form,
   set,
@@ -1057,6 +1114,7 @@ function AdvancedTab({
           checked={form.accessLog}
           onChange={(v) => set('accessLog', v)}
         />
+        {form.accessLog && <AccessLogLevelRules form={form} set={set} errors={errors} />}
       </Section>
       <Section
         title="Idle timeouts"

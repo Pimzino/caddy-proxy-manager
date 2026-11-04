@@ -147,6 +147,16 @@ Since Caddy `v2.11.6`, Caddy limits requests more strictly than before. After an
 
 All four are under **Settings › Caddy › Request limits and headers**. See [Caddy settings](caddy-settings.md#request-limits-and-headers).
 
+## Changes are refused after updating to Caddy v2.11.8
+
+Caddy `v2.11.8` checks configurations more strictly. A setting it used to ignore can now make it reject the configuration. The change is then not saved, and Caddy's reason is shown. Check:
+
+- **TLS connection policy (JSON object)** under **Settings › Caddy**: unknown names in `curves`, `protocol_min` or `protocol_max`, such as `TLS1.3` instead of `tls1.3`.
+- **Custom Caddy routes** and the JSON fields under **Settings › Caddy**: an `ip_mask` log filter size outside `0`–`32` for IPv4 or `0`–`128` for IPv6, and `http_basic` accounts whose user names are the same once placeholders such as `{env.USER}` are replaced.
+- In [Caddyfile mode](configuration.md#caddyfile-mode): more than one `expression` line in one named matcher (combine them with `&&`). Caddyfiles also change in other ways, for example the order of `handle_errors` blocks and of `vars`, and `try_files` entries that end in `/`. Read Caddy's release notes before you update: https://github.com/caddyserver/caddy/releases/tag/v2.11.8
+
+Caddy `v2.11.8` also answers requests with an invalid host name, such as `..` or a name with `/`, with `400 Bad Request` before any host handles them.
+
 ## Clients are redirected to the wrong HTTPS port
 
 If Caddy listens on a non-standard HTTPS port behind NAT or port forwarding, HTTP-to-HTTPS redirects use that port. Set **Public HTTPS port** on **Settings › Caddy** to the port clients use, for example `443`. See [Caddy settings](caddy-settings.md).

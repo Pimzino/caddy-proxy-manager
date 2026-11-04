@@ -155,8 +155,8 @@ public class BinaryInspectionTests
         Assert.Equal(CaddyVersion.Tested, installed.Version);
         Assert.Equal(env.Paths.CaddyExe, installed.Path);
         Assert.Empty(installed.Plugins);
-        // Standard modules of the tested release (v2.11.7 added http.handlers.timeouts, http.matchers.url_pattern and the set_cookie log filter).
-        Assert.Equal(135, installed.Modules.Count);
+        // Standard modules of the tested release (v2.11.8 added tls.handshake_match.not).
+        Assert.Equal(136, installed.Modules.Count);
         Assert.Contains("http.handlers.reverse_proxy", installed.Modules);
         Assert.DoesNotContain("layer4", installed.Modules);
         Assert.NotNull(installed.InstalledAt);

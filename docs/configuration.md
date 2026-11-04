@@ -109,6 +109,7 @@ The hosts are created together and applied. If any draft is invalid, or a domain
 | `encode` | Compression on. |
 | `header` (response headers) | Response header rules. |
 | `log` | Access log on. |
+| `log_level` with a path matcher, or without a matcher | Rules under **Log level by path**. A `log_level` without a matcher becomes a rule for `*`. Caddy lets the last matching line win, so the rules are listed in reverse order. |
 | `tls internal` | Internal TLS. |
 
 Sites served over HTTPS get ACME certificates. A site that is also served over plain HTTP becomes one host with **Force HTTPS** off.

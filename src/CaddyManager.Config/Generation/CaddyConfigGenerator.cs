@@ -30,6 +30,10 @@ public static partial class CaddyConfigGenerator
     public const string ProxyStatusMinVersion = "v2.11.7";
     /// <summary>First Caddy release with read_idle_timeout, write_idle_timeout, expected_underscore_headers and expected_dot_headers.</summary>
     public const string RequestLimitsMinVersion = "v2.11.6";
+    /// <summary>First Caddy release that reads the log_level request variable (access log level per request).</summary>
+    public const string LogLevelMinVersion = "v2.11.8";
+    /// <summary>Most access log level rules per host.</summary>
+    public const int MaxAccessLogLevelRules = 50;
     public const string Layer4Module = "layer4";
     public const string Layer4Plugin = "github.com/mholt/caddy-l4";
     public const string CertificateTagPrefix = "cpm-";
@@ -441,14 +445,18 @@ public static partial class CaddyConfigGenerator
         var routes = new JsonArray();
         var stripAuthorization = false;
 
-        // 0. access log: pick the host's logger explicitly. The server's logger_names lookup is an exact,
+        // 0. access log: pick the host's logger explicitly. Up to v2.11.7 the server's logger_names lookup is an exact,
         // case-sensitive map lookup on the Host header, so "ECHO.TEST" (routed here case-insensitively) was logged to
-        // the default log instead of this host's file. https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
+        // the default log instead of this host's file (v2.11.8 ignores case, caddy PR #8176; older binaries still need this).
+        // https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
         if (h.AccessLog)
+        {
             routes.Add(new JsonObject
             {
                 ["handle"] = new JsonArray(new JsonObject { ["handler"] = "vars", ["access_logger_names"] = new JsonArray(AccessLoggerPrefix + h.Id) }),
             });
+            AddAccessLogLevels(routes, site, ctx);
+        }
 
         // 1. access list
         if (!string.IsNullOrEmpty(h.AccessListId))
@@ -921,6 +929,42 @@ public static partial class CaddyConfigGenerator
         {
             ["handle"] = new JsonArray(ReverseProxy(upstreams, h.UpstreamTlsInsecure, h, stripAuthorization, includeHealthCheck: true, site, ctx)),
         });
+    }
+
+    /// <summary>
+    /// SiteHost.AccessLogLevels: one route per rule that sets the request variable log_level, which Caddy v2.11.8+ uses as
+    /// the level of the request's access log entry instead of INFO (ERROR for 5xx). The routes come right after the
+    /// host's logger selection, before access lists and rewrites, so they see the path as the client sent it. A later
+    /// vars handler overwrites an earlier one, so the rules are emitted in reverse: the first matching rule wins. An older
+    /// Caddy ignores the variable, so the rules are left out there with a warning.
+    /// https://github.com/caddyserver/caddy/pull/8201 ; https://github.com/caddyserver/caddy/blob/v2.11.8/modules/caddyhttp/server.go (logRequest)
+    /// </summary>
+    private static void AddAccessLogLevels(JsonArray routes, Site site, Ctx ctx)
+    {
+        var rules = site.Host.AccessLogLevels.Where(r => AccessLogLevelPathError(r.Path) is null).ToList();
+        if (rules.Count == 0) return;
+        if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, LogLevelMinVersion))
+        {
+            ctx.Warn($"Host '{site.Domains[0]}': access log levels by path need Caddy {LogLevelMinVersion} or later (installed: {ctx.Input.InstalledVersion}); requests are logged at their usual level.");
+            return;
+        }
+        for (var i = rules.Count - 1; i >= 0; i--)
+            routes.Add(new JsonObject
+            {
+                ["match"] = new JsonArray(new JsonObject { ["path"] = new JsonArray(rules[i].Path.Trim()) }),
+                ["handle"] = new JsonArray(new JsonObject { ["handler"] = "vars", ["log_level"] = rules[i].Level.ToString().ToUpperInvariant() }),
+            });
+    }
+
+    /// <summary>Why a path of an access log level rule is not a usable Caddy path matcher, or null.</summary>
+    public static string? AccessLogLevelPathError(string? path)
+    {
+        var p = (path ?? "").Trim();
+        if (p.Length == 0) return "Enter a path, for example /healthz or /api/*.";
+        if (p.Length > 1024) return "The path is too long (at most 1024 characters).";
+        if (p.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))) return "A path may not contain spaces.";
+        if (!p.StartsWith('/') && !p.StartsWith('*')) return "Start the path with / (or * to match the end of paths, e.g. *.php).";
+        return null;
     }
 
     /// <summary>
@@ -1499,10 +1543,11 @@ public static partial class CaddyConfigGenerator
     /// </summary>
     /// <summary>
     /// Per-host idle timeouts (SiteHost.ReadIdleTimeoutSeconds / WriteIdleTimeoutSeconds).
-    /// Caddy's per-route "timeouts" handler only takes effect when the matching server-wide timeout is disabled: the
-    /// server-wide one is applied after it on every read and write and so takes precedence, and two handlers in one
-    /// chain behave the same way. So as soon as one enabled host sets its own value for a direction, that direction
-    /// is planned per host: the servers get read_idle_timeout / write_idle_timeout "-1s", and EVERY request route (each
+    /// Up to v2.11.7 Caddy's per-route "timeouts" handler only takes effect when the matching server-wide timeout is
+    /// disabled: the server-wide one is applied after it on every read and write and so takes precedence, and two
+    /// handlers in one chain behave the same way. v2.11.8 gives the handler (the innermost one) precedence (caddy PR
+    /// #8121); the plan below works with both, so v2.11.6 and v2.11.7 keep working. As soon as one enabled host sets
+    /// its own value for a direction, that direction is planned per host: the servers get read_idle_timeout / write_idle_timeout "-1s", and EVERY request route (each
     /// host, the HTTPS redirects, the default site) starts with exactly one "timeouts" handler carrying the host's
     /// value, or the global one (CaddySettings, else Caddy's 1 minute) and the global minimum rate. Requests Caddy
     /// answers before the routes run (ACME HTTP-01 challenges) have no idle timeout then; they have no body to stall.
@@ -2162,7 +2207,9 @@ public static partial class CaddyConfigGenerator
     /// Compact access log of every HTTP request for the Telemetry module: all access loggers (include is a dot-boundary
     /// prefix match, so http.log.access also matches every per-host http.log.access.&lt;name&gt;), request/response
     /// headers and TLS details removed by the filter encoder (nested fields are addressed with "&gt;"), rolled
-    /// uncompressed so the tailer can finish a rotated file.
+    /// uncompressed so the tailer can finish a rotated file. Level DEBUG: since v2.11.8 a request can be logged at DEBUG
+    /// (log_level variable, SiteHost.AccessLogLevels or advanced routes) and must still be counted; the access loggers
+    /// write nothing but request entries.
     /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/logging/filterencoder.go ;
     /// docs/research/round3-accesslog.md §2-3
     /// </summary>
@@ -2188,7 +2235,7 @@ public static partial class CaddyConfigGenerator
                 ["request>tls"] = new JsonObject { ["filter"] = "delete" },
             },
         },
-        ["level"] = "INFO",
+        ["level"] = "DEBUG",
         ["include"] = new JsonArray("http.log.access"),
     };
 

@@ -271,8 +271,8 @@ public static class WindowsServiceManager
     /// <summary>
     /// Starts the service and waits until it is Running. Throws with a descriptive message when it stops again.
     /// <paramref name="isServing"/> (optional) is asked while the service is START_PENDING: when it returns true the start
-    /// counts as done although the SCM has not seen RUNNING yet (Caddy v2.11.7 can stay START_PENDING while it serves,
-    /// https://github.com/caddyserver/caddy/pull/8012).
+    /// counts as done although the SCM has not seen RUNNING yet (Caddy up to v2.11.7 can stay START_PENDING while it
+    /// serves, https://github.com/caddyserver/caddy/pull/8012; fixed in v2.11.8 by caddy PR #8274).
     /// </summary>
     public static async Task<ServiceStartOutcome> StartAsync(string name, TimeSpan timeout, CancellationToken ct = default,
         Func<CancellationToken, Task<bool>>? isServing = null)

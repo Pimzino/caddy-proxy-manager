@@ -55,7 +55,7 @@ Take a checkpoint of every VM before starting so each section can start from a c
 | 3.2 | Log on afterwards; Server › Events | No *Caddy down* alert for the boot; readiness *Pending reboot* is Pass (unless Windows Update queued one). |
 | 3.3 | With UI HTTPS enabled (Settings › Management UI), reboot 3 times and use *Restart* from the UI 3 times. Count `C:\ProgramData\Microsoft\Crypto\Keys` and `\RSA\MachineKeys` before and after. | No growth (the UI certificate's key file is removed at exit). |
 | 3.4 | Server › Restart manager | UI back within ~15 s; System log shows event 7031/7034 for *Caddy Proxy Manager* (expected: the restart uses the recovery actions). |
-| 3.5 | After each boot of 3.3: `sc.exe queryex Caddy`, then Caddy › Service & Updates. | `RUNNING`, or `START_PENDING` with Caddy serving (caddy PR #8012); the UI shows *Running* in both cases and Events has no *Caddy down*. Note which one you saw. |
+| 3.5 | After each boot of 3.3: `sc.exe queryex Caddy`, then Caddy › Service & Updates. | `RUNNING` with Caddy `v2.11.8` or later (caddy PR #8274 fixed the race). With an older Caddy also `START_PENDING` with Caddy serving (caddy PR #8012); the UI shows *Running* in both cases and Events has no *Caddy down*. Note which one you saw. |
 | 3.6 | If 3.5 showed `START_PENDING`: `sc.exe stop Caddy`; then Caddy › Service & Updates › *Restart*; then *Stop*, *Start*. | `sc stop` fails with 1061/1052 (the upstream bug); the UI restart/stop/start succeed within ~20 s; afterwards `sc.exe queryex Caddy` shows `RUNNING` and `sc.exe qfailure Caddy` still lists restart 5 s / 5 s / 30 s; the System log has no unexpected Caddy restart. |
 
 ## 4. Readiness checks and fixes

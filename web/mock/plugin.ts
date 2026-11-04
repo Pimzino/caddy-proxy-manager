@@ -429,6 +429,7 @@ const BLANK_HOST: SiteHostFields = {
   compression: true,
   blockExploits: false,
   accessLog: false,
+  accessLogLevels: [],
   responseHeaders: [],
   upstreams: [],
   loadBalancing: 'roundRobin',

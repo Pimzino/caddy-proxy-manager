@@ -19,7 +19,7 @@ using Microsoft.Extensions.Options;
 namespace CaddyManager.Telemetry.Tests;
 
 /// <summary>
-/// End to end: a real Caddy v2.11.7 runs the configuration the Config module generates for three proxy hosts and writes
+/// End to end: a real Caddy v2.11.8 runs the configuration the Config module generates for three proxy hosts and writes
 /// the stats access log through the generated cpm_stats sink (roll_size_mb lowered to 1 so it rotates several times), a
 /// known mix of requests goes through it, and the ingester — stopped, restarted and "crashed" while traffic keeps
 /// flowing — must end up with exactly the numbers the client sent. Artifact: traffic-ingest.json.

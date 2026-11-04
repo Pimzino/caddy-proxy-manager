@@ -107,7 +107,7 @@ The rules are chosen so that ordinary applications keep working (for example `?n
 The **Headers** tab adds, replaces or removes HTTP headers.
 
 - **Request headers** (proxy hosts only) are sent to the upstream. Caddy placeholders are allowed, for example `{http.request.remote.host}`.
-- **Response headers** (all kinds) are sent to clients, for example security headers or removing `Server`. They also apply to error responses, such as `401`, `502`, `503` and `404`, and they also act on headers sent by the upstream.
+- **Response headers** (all kinds) are sent to clients, for example security headers or removing `Server`. Caddy placeholders are allowed, for example `{time.now.rfc3339}` for the current time such as `2026-11-04T09:43:25Z` (Caddy `v2.11.8` or later). They also apply to error responses, such as `401`, `502`, `503` and `404`, and they also act on headers sent by the upstream.
 
 | Field | Description |
 |---|---|
@@ -165,11 +165,29 @@ A URL pattern uses the URLPattern syntax that browsers use (https://urlpattern.s
 
 ## Advanced tab
 
-![The Advanced tab of the host editor with the access log switch, the idle timeouts, custom Caddy routes and notes](images/host-advanced-tab.webp)
+![The Advanced tab of the host editor with the access log switch, log level rules, the idle timeouts, custom Caddy routes and notes](images/host-advanced-tab.webp)
 
 ### Access log
 
 **Access log** is off by default. When on, Caddy writes each request for this host as JSON to `logs\access\<first domain>.log` in the Caddy Proxy Manager data folder. A wildcard name is written as `wildcard`, for example `wildcard.example.com.log`. Files roll over at 20 MB and the last 10 are kept. To also start a new file after a number of days, or to hide cookie values, see [Caddy settings](caddy-settings.md#access-logs). View them on the [Logs](logs.md) page.
+
+### Log level by path
+
+With **Access log** on, **Log level by path** sets the level of the log entries for requests whose path matches. Caddy writes requests at `info`, and responses with a `5xx` status at `error`. A rule replaces that level, whatever the status.
+
+| Level | Effect |
+|---|---|
+| Debug (not logged) | The request is left out of the access log, for example a load balancer's health check. |
+| Info | Written as `info`, also for `5xx` responses. |
+| Warning | Written as `warn`, for example requests to an admin area, so that a log collector can pick them out. |
+| Error | Written as `error`. |
+
+- A path is matched like a Caddy path matcher, and letter case is ignored: `/healthz` matches only that path, `/api/*` everything below `/api`, `*.php` paths that end in `.php`, and `*` every request. A path starts with `/` or `*` and has no spaces.
+- The first rule that matches wins. Put specific paths before general ones, for example `/api/private/*` before `/api/*`.
+- The rules see the path the client sent, before **Strip path prefix** or other rewrites.
+- [Traffic statistics](traffic-statistics.md) count every request, including those left out with **Debug**.
+- Up to 50 rules per host. Each path may appear only once.
+- The rules need Caddy `v2.11.8` or later. With an older Caddy they are not applied, and saving shows a warning.
 
 ### Idle timeouts
 
@@ -218,7 +236,7 @@ Caddy's JSON reference: https://caddyserver.com/docs/json/apps/http/servers/rout
 
 For each request to a host, Caddy runs these steps in order:
 
-1. Access log (if on).
+1. Access log (if on), with its log level rules.
 2. Access list.
 3. Block common exploits.
 4. Response headers and HSTS.
