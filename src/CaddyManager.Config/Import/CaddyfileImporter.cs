@@ -267,6 +267,8 @@ public static class CaddyfileImporter
             case "vars" when h.Count == 2 && h["root"] is JsonValue:
                 site.StaticRoot = Str(h["root"]);
                 return true;
+            case "vars" when h.Count == 2 && LogLevel(h) is { } level:
+                return AddLogLevel(d, ["*"], level);
             case "encode":
                 d.Compression = true;
                 return true;
@@ -355,6 +357,11 @@ public static class CaddyfileImporter
             return true;
         }
 
+        // log_level <path matcher> <level> → access log level rules
+        if (m["path"] is JsonArray levelPaths && handle.Count == 1 && handle[0] is JsonObject vars && Str(vars["handler"]) == "vars" &&
+            vars.Count == 2 && LogLevel(vars) is { } level && levelPaths.Select(Str).ToList() is var ps && ps.All(x => x is not null))
+            return AddLogLevel(site.Host, ps!, level);
+
         // path prefix + (strip) + reverse_proxy → location
         if (m["path"] is JsonArray paths && paths.Count == 1 && Str(paths[0]) is { } p && p.StartsWith('/') && p.EndsWith("/*", StringComparison.Ordinal) && !p[..^2].Contains('*'))
         {
@@ -395,6 +402,24 @@ public static class CaddyfileImporter
         List<HeaderOp> RequestHeaders, string? HostHeader, List<HeaderOp> ResponseHeaders);
 
     private static readonly string[] ProxyNotMappable = ["dynamic_upstreams", "handle_response", "rewrite", "request_buffers", "response_buffers"];
+
+    /// <summary>The level of a log_level vars handler (Caddy v2.11.8 "log_level" directive), or null.</summary>
+    private static AccessLogLevel? LogLevel(JsonObject vars) =>
+        Str(vars["log_level"]) is { } s && Enum.TryParse<AccessLogLevel>(s, ignoreCase: true, out var level) && Enum.IsDefined(level) ? level : null;
+
+    /// <summary>
+    /// Adds access log level rules from a log_level route. Caddy applies every matching route, so the LAST matching
+    /// log_level wins, while the host's rules use the first match: routes are read in order and their rules go to the
+    /// front, and a path that already has a rule (from a later route) keeps it. False when a path is not usable.
+    /// </summary>
+    private static bool AddLogLevel(SiteHost d, List<string> paths, AccessLogLevel level)
+    {
+        if (paths.Count == 0 || paths.Any(p => CaddyConfigGenerator.AccessLogLevelPathError(p) is not null)) return false;
+        d.AccessLogLevels.InsertRange(0, paths
+            .Where(p => !d.AccessLogLevels.Any(r => string.Equals(r.Path, p, StringComparison.OrdinalIgnoreCase)))
+            .Select(p => new AccessLogLevelRule { Path = p, Level = level }));
+        return true;
+    }
 
     private static bool TryReverseProxy(JsonObject rp, string label, ImportContext ctx, out ProxyParts parts)
     {

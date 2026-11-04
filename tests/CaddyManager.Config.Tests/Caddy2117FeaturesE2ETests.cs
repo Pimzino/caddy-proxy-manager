@@ -325,9 +325,10 @@ public sealed class Caddy2117FeaturesE2ETests
     ///     is never cut; (2) the CONTROL is missing: the same trickle is cut without a minimum rate too, so (1) would
     ///     prove nothing; (3) Caddy rejects the configuration; (4) a Caddy older than v2.11.6 gets the rate fields and
     ///     rejects the whole configuration; (5) a rate of 0 or below is stored through the API.
-    /// Also recorded (CONTROL (6)): Caddy's per-route "timeouts" handler does not shorten the idle timeout while the
-    /// server-wide timeout is active. That is why per-host timeouts switch the server-wide one off (next test); if
-    /// this control starts to cut the upload, a Caddy release changed the precedence and that design can be simplified.
+    /// Also recorded (CONTROL (6)): up to v2.11.7 Caddy's per-route "timeouts" handler did not shorten the idle timeout
+    /// while the server-wide timeout was active. That is why per-host timeouts switch the server-wide one off (next test).
+    /// Since v2.11.8 the handler takes precedence (caddy PR #8121), so with the tested release the upload IS cut; the
+    /// design stays because Caddy v2.11.6 and v2.11.7, which the console still supports, need it.
     /// </summary>
     [CaddyFact]
     public async Task Minimum_transfer_rates_cut_trickling_uploads()
@@ -391,15 +392,15 @@ public sealed class Caddy2117FeaturesE2ETests
             };
         }
 
-        // (6) CONTROL: a "timeouts" handler of 1 s in front of the host, server-wide timeout at its default: an upload
-        // that pauses for 4 s is NOT cut.
+        // (6) CONTROL: a "timeouts" handler of 1 s in front of the host, server-wide timeout at its default: since
+        // v2.11.8 an upload that pauses for 4 s is cut by the handler (up to v2.11.7 it was not).
         var withHandler = await c.RunningConfigAsync();
         var hostRoutes = JsonWalk.Handlers(withHandler["apps"]!["http"]!["servers"]![CaddyConfigGenerator.HttpServerName], "subroute").First()["routes"]!.AsArray();
         hostRoutes.Insert(0, new JsonObject { ["handle"] = new JsonArray(new JsonObject { ["handler"] = "timeouts", ["read_timeout"] = 1_000_000_000L }) });
         await c.LoadRawAsync(withHandler);
         var perRoute = await UploadAsync("normal.test", 1000, 500, TimeSpan.Zero, TimeSpan.FromSeconds(4));
         report["perRouteTimeoutsHandler1sStalled4s"] = perRoute;
-        Assert.True(perRoute["completed"]!.GetValue<bool>(), "Caddy's per-route timeouts handler now takes effect: " + perRoute.ToJsonString());
+        Assert.False(perRoute["completed"]!.GetValue<bool>(), "Caddy's per-route timeouts handler no longer takes precedence: " + perRoute.ToJsonString());
 
         // (2) CONTROL: 20 bytes every 300 ms for 6 s is never idle for the 2 s timeout, so it completes.
         c.UpdateSettings(s => s.ReadIdleTimeoutSeconds = 2);

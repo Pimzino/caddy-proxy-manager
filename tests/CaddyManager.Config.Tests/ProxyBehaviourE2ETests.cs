@@ -220,12 +220,13 @@ public sealed class ProxyBehaviourE2ETests
 
     /// <summary>
     /// Per-host access logs for a Host header in another letter case (research #55). Caddy routes "LOG.TEST" to the
-    /// host (host matching ignores case) but picks the access logger with an exact, case-sensitive logger_names lookup
-    /// (logging.go v2.11.7), so the line went to the default log. The host now names its logger in the
+    /// host (host matching ignores case) but up to v2.11.7 picks the access logger with an exact, case-sensitive
+    /// logger_names lookup (logging.go v2.11.7), so the line went to the default log. The host names its logger in the
     /// access_logger_names variable. https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/logging.go
     /// Ways it could fail: (1) the upper-case request is missing from the host's access log; (2) it is written to
     /// caddy.log (the process log) instead; (3) the lower-case request stops being logged; (4) another host's requests
-    /// end up in this host's file; (5) the control (variable removed) still logs the upper-case request to the file.
+    /// end up in this host's file. Also recorded (5): without the variable, v2.11.8 logs the upper-case request to the
+    /// file as well (logger_names ignores case since caddy PR #8176); the variable stays for older Caddy binaries.
     /// </summary>
     [CaddyFact]
     public async Task Upper_case_host_names_are_logged_to_the_hosts_access_log()
@@ -278,7 +279,7 @@ public sealed class ProxyBehaviourE2ETests
         Assert.True(await Logged("/control-lower")); // the file is written, so a missing line is not a timing issue
         var controlLogged = Read(file).Contains("/control-marker");
         report["controlUpperCaseInHostLog"] = controlLogged;
-        Assert.False(controlLogged);
+        Assert.True(controlLogged, "Caddy's logger_names lookup is case-sensitive again (it ignores case since v2.11.8)");
 
         E2EArtifacts.Write("access-log-upper-case-host.json", report);
     }

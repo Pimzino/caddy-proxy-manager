@@ -336,6 +336,73 @@ async function urlPatternScenario() {
 }
 
 /**
+ * "Log level by path" on the host editor's Advanced tab (Caddy v2.11.8+ log_level).
+ * Ways it could fail: the field shows while the access log is off, or is missing while it is on; an empty path, a path
+ * without a leading / or *, or the same path twice (in another case) is saved; the chosen level is not saved, or the
+ * rules come back in another order; the stored rules do not show when the host is opened again.
+ */
+async function logLevelsScenario() {
+  const S = 'log-levels';
+  await scenario(S, {}, async ({ mock, page }) => {
+    const find = async () => (await mock.api<SiteHost[]>('GET', '/api/hosts')).find((h) => h.domains.includes('app.example.com'))!;
+    const path = (i: number) => `__e2e.one('input[aria-label="Path of log level rule ${i}"]', undefined, __e2e.dialog())`;
+    const level = (i: number) => `__e2e.one('select[aria-label="Level of log level rule ${i}"]', undefined, __e2e.dialog())`;
+    const save = async () => page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    const open = async () => {
+      await page.goto(`${mock.base}/hosts/proxy`, `__e2e.has('app.example.com')`, 'the proxy hosts list');
+      await page.eval(`__e2e.one('tr', 'app.example.com').click()`);
+      await page.waitFor('the host editor', `!!__e2e.dialog() && __e2e.withText('[role="tab"]', 'Advanced').length > 0`);
+      await page.eval(`__e2e.click('[role="tab"]', 'Advanced', __e2e.dialog())`);
+      await page.waitFor('the Advanced tab', `__e2e.withText('label', 'Access log', __e2e.dialog()).length > 0`);
+    };
+    await open();
+    await check(S, ['LOGLEVEL-1'], 'with the access log on, the field shows with no rules; it hides when the access log is turned off', async () => {
+      const on = await page.eval(`[__e2e.withText('label', 'Log level by path', __e2e.dialog()).length, __e2e.all('input[aria-label^="Path of log level rule"]', __e2e.dialog()).length]`);
+      await page.eval(`__e2e.control('Access log', __e2e.dialog()).click()`);
+      await page.waitFor('the field to hide', `__e2e.withText('label', 'Log level by path', __e2e.dialog()).length === 0`);
+      await page.eval(`__e2e.control('Access log', __e2e.dialog()).click()`);
+      await page.waitFor('the field to come back', `__e2e.withText('label', 'Log level by path', __e2e.dialog()).length === 1`);
+      return eq(on, [1, 0], 'label count, rule count');
+    });
+
+    await page.eval(`__e2e.click('button', 'Add rule', __e2e.dialog())`);
+    await page.eval(`__e2e.set(${path(1)}, 'healthz')`);
+    await save();
+    await check(S, ['LOGLEVEL-2'], 'a path without a leading / or * is refused before saving', async () => {
+      await page.waitFor('the path error', `__e2e.has('Start the path with / (or * to match the end of paths, e.g. *.php).')`);
+      return eq((await find()).accessLogLevels ?? [], [], 'stored rules');
+    });
+    await page.eval(`__e2e.set(${path(1)}, '/healthz')`);
+    await page.eval(`__e2e.click('button', 'Add rule', __e2e.dialog())`);
+    await page.eval(`__e2e.set(${path(2)}, '/HEALTHZ')`);
+    await save();
+    await check(S, ['LOGLEVEL-3'], 'the same path twice, in another case, is refused before saving', async () => {
+      await page.waitFor('the duplicate error', `__e2e.has('The path /HEALTHZ has more than one rule.')`);
+      return eq((await find()).accessLogLevels ?? [], [], 'stored rules');
+    });
+    await page.eval(`__e2e.set(${path(2)}, ' /api/* ')`);
+    await page.eval(`__e2e.set(${level(2)}, 'warn')`);
+    await page.eval(`__e2e.click('button', 'Add rule', __e2e.dialog())`);
+    await page.eval(`__e2e.set(${path(3)}, '')`);
+    await save();
+    await check(S, ['LOGLEVEL-4'], 'an empty path is refused before saving', async () => {
+      await page.waitFor('the empty path error', `__e2e.has('Enter a path, for example /healthz or /api/*.')`);
+      return eq((await find()).accessLogLevels ?? [], [], 'stored rules');
+    });
+    await page.eval(`__e2e.click('button[aria-label="Remove log level rule 3"]', undefined, __e2e.dialog())`);
+    await save();
+    await page.waitFor('the editor to close after saving', `!document.querySelector('[aria-modal="true"]')`, 10_000);
+    await check(S, ['LOGLEVEL-5'], 'the saved host carries the rules in order, with trimmed paths and their levels', async () =>
+      eq((await find()).accessLogLevels, [{ path: '/healthz', level: 'debug' }, { path: '/api/*', level: 'warn' }], 'stored rules'),
+    );
+    await open();
+    await check(S, ['LOGLEVEL-6'], 'opening the host again shows the stored rules', async () =>
+      eq(await page.eval(`[[${path(1)}.value, ${level(1)}.value], [${path(2)}.value, ${level(2)}.value]]`), [['/healthz', 'debug'], ['/api/*', 'warn']], 'rules in the editor'),
+    );
+  });
+}
+
+/**
  * Settings › Caddy › Request limits and headers (server options of Caddy v2.11.6+).
  * Ways it could fail: the section is missing; the placeholders do not show Caddy's defaults; out-of-range numbers or a
  * header name Caddy would refuse reach the API; valid values are not saved as typed; an emptied field is not sent as
@@ -1191,6 +1258,7 @@ try {
   await settingsScenario();
   await requestLimitsScenario();
   await urlPatternScenario();
+  await logLevelsScenario();
   await dnsOnlyScenarios();
   await serversScenario();
   await brandingScenario();

@@ -73,6 +73,15 @@ export interface ProxyLocation {
   upstreamTlsInsecure: boolean;
 }
 
+/** Severity of an access log entry. "debug" entries are left out of the host's access log. */
+export type AccessLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** Access log level for requests whose path matches (Caddy path matcher, case-insensitive). Caddy v2.11.8+. */
+export interface AccessLogLevelRule {
+  path: string;
+  level: AccessLogLevel;
+}
+
 export interface SiteHostFields {
   kind: HostKind;
   enabled: boolean;
@@ -91,6 +100,8 @@ export interface SiteHostFields {
   accessListId?: string | null;
   blockExploits: boolean;
   accessLog: boolean;
+  /** Access log level by path (only used with accessLog); the first matching rule wins. */
+  accessLogLevels: AccessLogLevelRule[];
   /** Upload idle timeout of this host in seconds; null/absent = the value from Settings › Caddy. Caddy v2.11.6+. */
   readIdleTimeoutSeconds?: number | null;
   /** Download idle timeout of this host in seconds; null/absent = the value from Settings › Caddy. Caddy v2.11.6+. */

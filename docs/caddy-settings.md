@@ -174,6 +174,7 @@ Rules and hints:
 
 - For DNS providers, prefer the **ACME challenge** section (see [ACME settings](acme.md)). The ACME issuer field cannot set `module`.
 - The TLS connection policy cannot set `match` or `certificate_selection`; the manager controls them.
+- Since Caddy `v2.11.8`, Caddy rejects names in `curves`, `protocol_min` and `protocol_max` that it does not know, such as `TLS1.3` instead of `tls1.3`. Older versions ignored them. The change is then not saved, and Caddy's reason is shown.
 - **Extra apps** cannot contain `http`, `tls`, `pki` or `layer4`; the manager generates those. Use the host, stream and certificate pages instead. Because this field is not encrypted, keep DNS credentials for certificates in the ACME fields.
 - When the installed Caddy lacks the module that a DNS provider or an extra app needs, a warning appears with a link to the [Plugins](plugins.md) page. Without the plugin, Caddy rejects the configuration.
 - Client-certificate authentication in the TLS connection policy applies to every HTTPS site on this server, including sites that browsers without a client certificate use. The CA file must be readable by LocalSystem.

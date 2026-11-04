@@ -35,6 +35,8 @@ public static partial class ModelValidation
         h.RequestHeaders ??= new();
         h.ResponseHeaders ??= new();
         h.HealthCheck ??= new();
+        h.AccessLogLevels ??= new();
+        foreach (var r in h.AccessLogLevels) r.Path = (r.Path ?? "").Trim();
         foreach (var u in h.Upstreams) u.Host = (u.Host ?? "").Trim();
         foreach (var l in h.Locations)
         {
@@ -85,6 +87,16 @@ public static partial class ModelValidation
             v.Add("readIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty to use the value from Settings > Caddy.");
         if (h.WriteIdleTimeoutSeconds is int hostWriteIdle && hostWriteIdle is < 1 or > CaddyConfigGenerator.MaxIdleTimeoutSeconds)
             v.Add("writeIdleTimeoutSeconds", $"Enter 1 to {CaddyConfigGenerator.MaxIdleTimeoutSeconds} seconds, or leave empty to use the value from Settings > Caddy.");
+        if (h.AccessLogLevels.Count > CaddyConfigGenerator.MaxAccessLogLevelRules)
+            v.Add("accessLogLevels", $"At most {CaddyConfigGenerator.MaxAccessLogLevelRules} log level rules per host.");
+        var levelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < h.AccessLogLevels.Count; i++)
+        {
+            var rule = h.AccessLogLevels[i];
+            if (!Enum.IsDefined(rule.Level)) v.Add($"accessLogLevels[{i}].level", "Choose Debug, Info, Warning or Error.");
+            if (CaddyConfigGenerator.AccessLogLevelPathError(rule.Path) is { } pathError) v.Add($"accessLogLevels[{i}].path", pathError);
+            else if (!levelPaths.Add(rule.Path.Trim())) v.Add($"accessLogLevels[{i}].path", $"The path '{rule.Path.Trim()}' has more than one rule.");
+        }
 
         switch (h.Kind)
         {

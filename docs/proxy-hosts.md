@@ -132,6 +132,9 @@ Turn on **Enable health checks** to let Caddy request a path on each upstream on
 
 **Compression** is on by default. Caddy compresses responses with zstd or gzip when the client supports it.
 
+- Since Caddy `v2.11.8`, a client's `Cache-Control: no-transform` request header no longer turns compression off. A response with `Cache-Control: no-transform` from the upstream is still sent uncompressed.
+- Responses that Caddy could compress carry `Vary: Accept-Encoding`, also when they are sent uncompressed, so caches keep the versions apart.
+
 ## Other tabs
 
 - **TLS**, **Access**, **Headers** and **Advanced** work the same for every host kind. See [Host options](host-options.md).

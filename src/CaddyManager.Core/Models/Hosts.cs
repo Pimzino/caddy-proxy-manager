@@ -87,6 +87,20 @@ public sealed class ProxyLocation
     public bool UpstreamTlsInsecure { get; set; }
 }
 
+/// <summary>Severity of an access log entry (Caddy's log_level variable).</summary>
+public enum AccessLogLevel { Debug, Info, Warn, Error }
+
+/// <summary>
+/// Access log level for the requests whose path matches (Caddy v2.11.8+ log_level). Debug entries are left out of the
+/// host's access log (it records Info and above); traffic statistics still count them.
+/// </summary>
+public sealed class AccessLogLevelRule
+{
+    /// <summary>Caddy path matcher: "/healthz" (exact), "/api/*" (prefix), "*.php" (suffix) or "*" (every request); case-insensitive.</summary>
+    public string Path { get; set; } = "";
+    public AccessLogLevel Level { get; set; } = AccessLogLevel.Debug;
+}
+
 public sealed class SiteHost : Entity
 {
     public HostKind Kind { get; set; } = HostKind.Proxy;
@@ -120,6 +134,8 @@ public sealed class SiteHost : Entity
     public bool BlockExploits { get; set; }
     /// <summary>Write an access log for this host to logs/access/{firstDomain}.log.</summary>
     public bool AccessLog { get; set; }
+    /// <summary>Overrides the access log level of matching requests (only used with AccessLog); the first matching rule wins.</summary>
+    public List<AccessLogLevelRule> AccessLogLevels { get; set; } = new();
     public List<HeaderOp> ResponseHeaders { get; set; } = new();
 
     // ---- Proxy

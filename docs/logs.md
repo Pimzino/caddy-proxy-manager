@@ -25,6 +25,7 @@ Open **Server › Logs** and choose a tab.
 - **Turning them on.** Access logs exist only for hosts where you turn on **Access log** on the host's **Advanced** tab. See [Host options](host-options.md).
   - Each host writes to a file named after its first domain.
   - Caddy starts a new file at 20 MB and keeps 10 old files.
+  - Requests that match a **Debug** rule under **Log level by path** are not written. See [Log level by path](host-options.md#log-level-by-path).
 - **Choosing a host.** Pick the host in the host selector.
 - **No access logs yet.** If no host has an access log, the tab shows **No access logs yet**.
 - **Not hidden.** Access log lines are shown as they are written; secrets are not replaced.

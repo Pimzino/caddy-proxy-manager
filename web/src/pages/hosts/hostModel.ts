@@ -96,6 +96,7 @@ export function newHost(kind: HostKind): SiteHostFields {
     accessListId: null,
     blockExploits: false,
     accessLog: false,
+    accessLogLevels: [],
     readIdleTimeoutSeconds: null,
     writeIdleTimeoutSeconds: null,
     responseHeaders: [],
@@ -132,6 +133,7 @@ export function toFields(h: SiteHost): SiteHostFields {
     locations: (rest.locations ?? []).map((l) => ({ ...l, upstreams: l.upstreams ?? [] })),
     requestHeaders: rest.requestHeaders ?? [],
     responseHeaders: rest.responseHeaders ?? [],
+    accessLogLevels: rest.accessLogLevels ?? [],
     domains: rest.domains ?? [],
     acmeChallenge: rest.acmeChallenge ?? 'default',
   };
@@ -154,6 +156,7 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     accessListId: trimOrNull(h.accessListId),
     readIdleTimeoutSeconds: h.readIdleTimeoutSeconds == null || Number.isNaN(h.readIdleTimeoutSeconds) ? null : h.readIdleTimeoutSeconds,
     writeIdleTimeoutSeconds: h.writeIdleTimeoutSeconds == null || Number.isNaN(h.writeIdleTimeoutSeconds) ? null : h.writeIdleTimeoutSeconds,
+    accessLogLevels: h.accessLogLevels.map((r) => ({ ...r, path: r.path.trim() })),
     upstreams: cleanUpstreams(h.upstreams),
     locations: h.locations.map((l) =>
       l.urlPattern != null
@@ -237,6 +240,18 @@ export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {})
     });
     validateHeaders(h.requestHeaders, 'requestHeaders', e);
   }
+  // Mirrors ModelValidation (CaddyConfigGenerator.AccessLogLevelPathError).
+  const levelPaths = new Set<string>();
+  h.accessLogLevels.forEach((r, i) => {
+    const p = r.path.trim();
+    const key = `accessLogLevels.${i}.path`;
+    if (!p) e[key] = 'Enter a path, for example /healthz or /api/*.';
+    else if (/\s/.test(p)) e[key] = 'A path may not contain spaces.';
+    else if (!p.startsWith('/') && !p.startsWith('*')) e[key] = 'Start the path with / (or * to match the end of paths, e.g. *.php).';
+    else if (levelPaths.has(p.toLowerCase())) e[key] = `The path ${p} has more than one rule.`;
+    levelPaths.add(p.toLowerCase());
+  });
+  if (h.accessLogLevels.length > 50) e.accessLogLevels = 'At most 50 log level rules per host.';
   for (const key of ['readIdleTimeoutSeconds', 'writeIdleTimeoutSeconds'] as const) {
     const v = h[key];
     if (v != null && !Number.isNaN(v) && !(Number.isInteger(v) && v >= 1 && v <= 3600)) e[key] = 'Enter 1 to 3600 seconds, or leave empty.';
@@ -280,6 +295,7 @@ const TAB_OF_FIELD: Record<string, HostTab> = {
   locations: 'locations',
   advancedRoutesJson: 'advanced',
   accessLog: 'advanced',
+  accessLogLevels: 'advanced',
   readIdleTimeoutSeconds: 'advanced',
   writeIdleTimeoutSeconds: 'advanced',
   notes: 'advanced',

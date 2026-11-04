@@ -14,9 +14,10 @@ namespace CaddyManager.Platform.Hosting;
 /// Production host: Caddy runs as its own Windows service "Caddy" (LocalSystem, automatic start,
 /// restart on failure) so it keeps serving even while the manager is stopped or updated.
 ///
-/// Caddy v2.11.7 can stay in START_PENDING although it serves: runner.Execute reports StartPending, and the
-/// notify.Ready() that caddy.Run sent before Execute registered its status channel is lost (open upstream PR
-/// https://github.com/caddyserver/caddy/pull/8012; https://github.com/caddyserver/caddy/blob/v2.11.7/service_windows.go,
+/// Caddy up to v2.11.7 can stay in START_PENDING although it serves: runner.Execute reports StartPending, and the
+/// notify.Ready() that caddy.Run sent before Execute registered its status channel is lost (caddy PR #8012; fixed in
+/// v2.11.8 by https://github.com/caddyserver/caddy/pull/8274, which keeps a status reported before the channel exists.
+/// The handling below stays for older binaries an admin may pin; https://github.com/caddyserver/caddy/blob/v2.11.7/service_windows.go,
 /// notify/notify_windows.go). The SCM then refuses every stop (1061/1052). This host therefore treats "the admin API
 /// answers" as started, nudges the SCM to RUNNING by re-posting the unchanged config to /load (caddy.Load always ends with
 /// notify.Ready(), https://github.com/caddyserver/caddy/blob/v2.11.7/caddy.go), and stops a service that still refuses
@@ -123,7 +124,7 @@ public sealed class WindowsServiceCaddyHost(AppPaths paths, CaddyHostSupport sup
         if (state == CaddyRunState.Running && status == ServiceControllerStatus.StartPending && DateTime.UtcNow - _lastPendingWarning > TimeSpan.FromMinutes(30))
         {
             _lastPendingWarning = DateTime.UtcNow;
-            logger.LogWarning("Caddy serves, but its Windows service still reports START_PENDING (Caddy issue #8012). " +
+            logger.LogWarning("Caddy serves, but its Windows service still reports START_PENDING (Caddy issue #8012, fixed in Caddy v2.11.8). " +
                               "The manager handles it on the next start/stop; `sc stop {Name}` is refused until then", ServiceName);
         }
         if (state == CaddyRunState.Unknown && status == ServiceControllerStatus.StartPending)

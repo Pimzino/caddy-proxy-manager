@@ -52,7 +52,7 @@ End-to-end tests (real Caddy, real sockets, real processes) write a JSON artifac
 (`Category=WindowsE2E`, `WindowsService`) run on the elevated `windows-latest` runner: throw-away services against
 the real Service Control Manager, firewall rules in a unique group, the WinHTTP proxy, the Event Log source, DPAPI,
 PowerShell facts. They restore what they change. `CaddyServiceStartPendingE2ETests` reproduces Caddy's
-START_PENDING race (caddy PR #8012) with a stub service (`caddy-stub` in `ServiceProbe.cs`) and runs 10 start/stop
+START_PENDING race of Caddy up to `v2.11.7` (caddy PR #8012, fixed in `v2.11.8` by PR #8274) with a stub service (`caddy-stub` in `ServiceProbe.cs`) and runs 10 start/stop
 cycles of the real Caddy binary as a throw-away service; `CaddyReadyNudgeE2ETests` checks the "re-post the unchanged
 config" nudge against real Caddy on every OS. `installer/test-msi.ps1` installs, restarts, repairs and uninstalls
 the built MSI on the runner (artifact `cpm-msi-test.json`). What only a real server can show (domain, GPO, Microsoft
