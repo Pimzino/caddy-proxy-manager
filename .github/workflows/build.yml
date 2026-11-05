@@ -85,9 +85,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./.github/scripts/get-caddy.ps1 -Which tested
 
+      # Go for the Caddy builds with plugins in get-e2e-tools.ps1: caddyserver.com's build server cannot pin the Caddy
+      # version of a custom build, so the script compiles CaddyVersion.Tested itself. Caddy v2.11.8's go.mod needs Go
+      # 1.26.0 or newer. No go.sum in this repository, so setup-go's module cache has nothing to key on: off.
+      # https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: false
+
       # Pebble (test ACME CA, digest-verified) and Caddy CaddyVersion.Tested built with caddy-dns/rfc2136 + cloudflare for
       # the DNS-01 issuance and secret-scrubbing E2E tests (Config). The tests never download on CI (CPM_E2E_NO_DOWNLOAD).
-      - name: Download E2E tools (Pebble, Caddy with caddy-dns)
+      - name: E2E tools (Pebble, Caddy built with caddy-dns)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

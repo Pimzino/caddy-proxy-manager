@@ -47,6 +47,11 @@ differs; `GetCaddyScriptE2ETests` runs the script with `pwsh` against a local mo
 release notes before bumping the constant. On macOS, run tests with `DYLD_LIBRARY_PATH=/opt/homebrew/lib` for the
 QUIC/HTTP/3 tests.
 
+The DNS-01, secret-scrubbing and cluster tests also need Caddy builds with plugins (`.dev/bin/caddy-rfc2136`,
+`.dev/bin/caddy-plugins`) and Pebble. Run `pwsh .github/scripts/get-e2e-tools.ps1` (needs Go): it compiles
+`CaddyVersion.Tested` with the plugins, because caddyserver.com's build server always builds the newest Caddy tag for a
+custom build, and checks that each binary reports that version and lists the plugin modules. CI runs the same script.
+
 End-to-end tests (real Caddy, real sockets, real processes) write a JSON artifact per test to `CPM_E2E_ARTIFACTS`
 (CI uploads `TestResults/e2e`) or `e2e-artifacts/` next to the test binaries. Windows-only suites
 (`Category=WindowsE2E`, `WindowsService`) run on the elevated `windows-latest` runner: throw-away services against
