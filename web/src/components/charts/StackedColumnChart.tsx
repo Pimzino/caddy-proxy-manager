@@ -166,7 +166,7 @@ export function StackedColumnChart({
           }))}
           footer={
             <>
-              <span className="font-semibold text-fg tabular-nums">{formatValue(totals[hover])}</span> {totalLabel}
+              <span className="font-medium text-fg tabular-nums">{formatValue(totals[hover])}</span> {totalLabel}
             </>
           }
         />

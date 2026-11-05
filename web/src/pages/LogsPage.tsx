@@ -191,19 +191,19 @@ function LogFrame({
         <Button
           size="sm"
           variant={prefs.auto ? 'primary' : 'secondary'}
-          icon={prefs.auto ? <Pause size={13} /> : <Play size={13} />}
+          icon={prefs.auto ? <Pause size={14} /> : <Play size={14} />}
           onClick={() => prefs.setAuto(!prefs.auto)}
           aria-pressed={prefs.auto}
         >
           {prefs.auto ? 'Auto-refresh on' : 'Auto-refresh'}
         </Button>
-        <Button size="sm" iconOnly aria-label="Refresh now" icon={<RefreshCw size={13} />} onClick={() => void query.refetch()} />
+        <Button size="sm" iconOnly aria-label="Refresh now" icon={<RefreshCw size={14} />} onClick={() => void query.refetch()} />
         <Button
           size="sm"
           iconOnly
           aria-label="Download shown lines"
           title="Download shown lines"
-          icon={<Download size={13} />}
+          icon={<Download size={14} />}
           disabled={lines.length === 0}
           onClick={() => saveBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' }), downloadName)}
         />
@@ -281,7 +281,7 @@ function PrettyLine({ line }: { line: string }) {
       <span className="text-fg-subtle" title={toDate(ts)?.toISOString()}>
         {formatTs(ts)}{' '}
       </span>
-      {lvl && <span className={cn('font-semibold uppercase', LEVEL_CLASS[lvl])}>{lvl.padEnd(5)} </span>}
+      {lvl && <span className={cn('font-medium uppercase', LEVEL_CLASS[lvl])}>{lvl.padEnd(5)} </span>}
       {/* Access entries: the logger (http.log.access.cpm_access_<id>) and "handled request" repeat on every line. */}
       {!req && typeof logger === 'string' && <span className="text-accent-text">{logger} </span>}
       {!req && typeof msg === 'string' && <span className="text-fg">{msg} </span>}
@@ -332,7 +332,7 @@ function LogViewer({ lines, pretty, wrap, loading, emptyText }: { lines: string[
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       }}
       className={cn(
-        'mono h-[calc(100dvh-330px)] min-h-[320px] overflow-auto bg-code px-4 py-2 text-[12px] leading-[1.65]',
+        'mono h-[calc(100dvh-330px)] min-h-[320px] overflow-auto bg-code px-4 py-2 text-xs leading-5',
         wrap ? 'break-all whitespace-pre-wrap' : 'whitespace-pre',
       )}
     >

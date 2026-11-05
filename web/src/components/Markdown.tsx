@@ -50,7 +50,7 @@ export function Markdown({ source, className }: { source: string; className?: st
       i--;
       blocks.push(
         <div key={key++} className="my-3 overflow-x-auto">
-          <table className="w-full border-collapse text-left text-[13px]">
+          <table className="w-full border-collapse text-left text-sm">
             <thead>
               <tr>
                 {head.map((c, j) => (
@@ -83,7 +83,7 @@ export function Markdown({ source, className }: { source: string; className?: st
     if (h || isSummary) {
       flushList();
       blocks.push(
-        <p key={key++} className="mt-3 mb-1 font-semibold text-fg first:mt-0">
+        <p key={key++} className="mt-3 mb-1 font-medium text-fg first:mt-0">
           {inline(h ? h[2] : line.trim())}
         </p>,
       );

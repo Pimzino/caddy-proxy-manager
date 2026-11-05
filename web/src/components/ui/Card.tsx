@@ -23,7 +23,7 @@ export function CardHeader({
       {icon && <span className="text-fg-subtle">{icon}</span>}
       {/* basis-56: on narrow screens the actions wrap below the title instead of squeezing it */}
       <div className="min-w-0 flex-1 basis-56">
-        <h2 className="text-sm font-semibold text-fg">{title}</h2>
+        <h2 className="text-sm font-medium text-fg">{title}</h2>
         {description && <p className="mt-0.5 text-xs text-fg-subtle">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -48,7 +48,7 @@ export function PageHeader({
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-lg font-semibold tracking-tight text-fg">{title}</h1>
+        <h1 className="text-lg font-medium text-fg">{title}</h1>
         {description && <p className="mt-0.5 max-w-3xl text-sm text-fg-subtle">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}

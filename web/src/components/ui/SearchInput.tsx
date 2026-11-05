@@ -38,7 +38,7 @@ export function SearchInput({
             className="flex h-6 w-6 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg"
             aria-label="Clear search"
           >
-            <X size={13} />
+            <X size={14} />
           </button>
         ) : undefined
       }

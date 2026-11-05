@@ -33,10 +33,10 @@ export function SecretJsonInput({
       return (
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border-strong bg-surface-2 px-2.5 text-sm text-fg-muted">
-            <KeyRound size={13} aria-hidden />
+            <KeyRound size={14} aria-hidden />
             <span className="truncate">Configured — stored encrypted, not shown</span>
           </div>
-          <Button icon={<Pencil size={13} />} onClick={() => onChange('\u0000')} disabled={disabled}>
+          <Button icon={<Pencil size={14} />} onClick={() => onChange('\u0000')} disabled={disabled}>
             Replace
           </Button>
           <Button variant="danger-ghost" onClick={() => onChange('')} disabled={disabled}>
@@ -52,7 +52,7 @@ export function SecretJsonInput({
         <div className="flex h-8 min-w-0 flex-1 items-center rounded-md border border-dashed border-danger/40 bg-danger-soft px-2.5 text-sm text-danger">
           Will be removed when you save
         </div>
-        <Button icon={<Undo2 size={13} />} onClick={() => onChange(undefined)} disabled={disabled}>
+        <Button icon={<Undo2 size={14} />} onClick={() => onChange(undefined)} disabled={disabled}>
           Undo
         </Button>
       </div>

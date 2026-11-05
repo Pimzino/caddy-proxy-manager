@@ -137,7 +137,7 @@ export function Segmented<T extends string>({
               refs.current[next]?.focus();
             }}
             className={cn(
-              'rounded-[5px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+              'rounded-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-ring',
               size === 'sm' ? 'h-6 px-2 text-xs' : 'h-7 px-2.5 text-sm',
               selected ? 'bg-surface text-fg shadow-xs' : 'text-fg-muted hover:text-fg',
             )}

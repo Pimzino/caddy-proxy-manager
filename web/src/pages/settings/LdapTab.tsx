@@ -298,11 +298,11 @@ function TestDialog({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-3 rounded-md border border-border p-3">
             {result.ok ? (
               <p className="flex items-center gap-1.5 text-sm font-medium text-success">
-                <CheckCircle2 size={15} aria-hidden /> Sign-in succeeded
+                <CheckCircle2 size={14} aria-hidden /> Sign-in succeeded
               </p>
             ) : (
               <p className="flex items-center gap-1.5 text-sm font-medium text-danger">
-                <XCircle size={15} aria-hidden /> Sign-in failed
+                <XCircle size={14} aria-hidden /> Sign-in failed
               </p>
             )}
             {result.error && <p className="text-sm break-words text-fg-muted">{result.error}</p>}

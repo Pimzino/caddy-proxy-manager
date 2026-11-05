@@ -177,7 +177,7 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
                     {p}
                   </span>
                   {installed.has(p) ? (
-                    <Badge tone="success" icon={<Check size={11} />}>
+                    <Badge tone="success" icon={<Check size={12} />}>
                       Installed
                     </Badge>
                   ) : (
@@ -261,7 +261,7 @@ function PluginsEditor({ overview, onJob }: { overview: BinaryOverview; onJob: (
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-0.5 text-xs text-accent-text hover:underline"
                           >
-                            Repository <ExternalLink size={11} aria-hidden />
+                            Repository <ExternalLink size={12} aria-hidden />
                           </a>
                         )}
                       </div>

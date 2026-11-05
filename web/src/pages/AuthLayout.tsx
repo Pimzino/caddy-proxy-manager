@@ -9,7 +9,7 @@ export function AuthLayout({ title, description, children, footer }: { title: st
           <Logo className="h-24" />
         </div>
         <div className="rounded-lg border border-border bg-surface p-6 shadow-xs">
-          <h1 className="text-base font-semibold text-fg">{title}</h1>
+          <h1 className="text-base font-medium text-fg">{title}</h1>
           {description && <p className="mt-1 text-sm text-fg-subtle">{description}</p>}
           <div className="mt-5">{children}</div>
         </div>

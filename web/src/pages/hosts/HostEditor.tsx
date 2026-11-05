@@ -280,7 +280,7 @@ function Section({ title, description, children }: { title: string; description?
   return (
     <section className="flex flex-col gap-4 border-t border-border pt-5 first:border-t-0 first:pt-0">
       <div>
-        <h3 className="text-sm font-semibold text-fg">{title}</h3>
+        <h3 className="text-sm font-medium text-fg">{title}</h3>
         {description && <p className="mt-0.5 text-xs text-fg-subtle">{description}</p>}
       </div>
       {children}
@@ -560,7 +560,7 @@ function NtlmField({ checked, onChange, error }: { checked: boolean; onChange: (
           <span className="inline-flex flex-wrap items-center gap-2">
             Upstream uses Windows authentication (NTLM)
             {missing && (
-              <Badge tone="warning" icon={<AlertTriangle size={11} aria-hidden />} title={`The installed Caddy binary has no ${NTLM_MODULE} module`}>
+              <Badge tone="warning" icon={<AlertTriangle size={12} aria-hidden />} title={`The installed Caddy binary has no ${NTLM_MODULE} module`}>
                 Plugin not installed
               </Badge>
             )}

@@ -276,7 +276,7 @@ function StandaloneIntro({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void
           <Network size={18} aria-hidden />
         </span>
         <div className="min-w-0 flex-1 text-sm">
-          <h2 className="font-semibold text-fg">Run several servers as one cluster</h2>
+          <h2 className="font-medium text-fg">Run several servers as one cluster</h2>
           <p className="mt-1 max-w-3xl text-fg-muted">
             Add another Windows server that runs Caddy Proxy Manager as a <em>node</em>. This server becomes the <em>primary</em>: you
             keep editing sites here and every change is pushed to the nodes, which keep serving with their last configuration when the

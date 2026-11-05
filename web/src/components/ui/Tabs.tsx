@@ -78,7 +78,7 @@ export function Tabs<T extends string>({
             {!!t.badge && (
               <span
                 className={cn(
-                  'ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold',
+                  'ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-xs font-medium',
                   t.badgeTone === 'neutral' ? 'bg-surface-3 text-fg-muted' : 'bg-danger text-white dark:text-[#1a0808]',
                 )}
                 aria-label={t.badgeTone === 'neutral' ? `${t.badge} items` : `${t.badge} errors`}

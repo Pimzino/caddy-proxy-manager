@@ -116,7 +116,7 @@ export default function UsersPage() {
                           {u.name}
                           {self && <span className="text-xs font-normal text-fg-subtle">(you)</span>}
                           {isDirectory(u) && (
-                            <Badge tone="info" icon={<BookUser size={11} aria-hidden />} title="Signs in with the directory (LDAP); role from group membership">
+                            <Badge tone="info" icon={<BookUser size={12} aria-hidden />} title="Signs in with the directory (LDAP); role from group membership">
                               Directory
                             </Badge>
                           )}

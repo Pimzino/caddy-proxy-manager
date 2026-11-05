@@ -291,7 +291,7 @@ export default function CertificatesPage() {
                         {issuerName(c.issuer)}
                       </p>
                       {c.notes && (
-                        <p className="truncate text-xs text-fg-muted italic" title={c.notes}>
+                        <p className="truncate text-xs text-fg-muted" title={c.notes}>
                           {c.notes}
                         </p>
                       )}

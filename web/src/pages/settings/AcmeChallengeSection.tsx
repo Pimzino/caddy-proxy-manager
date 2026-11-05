@@ -128,7 +128,7 @@ export function AcmeChallengeSection({
 
 function InstalledBadge({ installed }: { installed: boolean }) {
   return installed ? (
-    <Badge tone="success" icon={<Check size={11} />}>
+    <Badge tone="success" icon={<Check size={12} />}>
       Installed
     </Badge>
   ) : (
@@ -244,7 +244,7 @@ function ProviderPicker({
               aria-controls={`${id}-list`}
               aria-activedescendant={options.length ? `${id}-opt-${active}` : undefined}
               aria-autocomplete="list"
-              leading={<Search size={13} />}
+              leading={<Search size={14} />}
               placeholder="Search, e.g. cloudflare, route53, azure…"
               value={q}
               onChange={(e) => {
@@ -269,7 +269,7 @@ function ProviderPicker({
                   onClick={() => pick(p)}
                   className={cn('flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm', i === active && 'bg-surface-2')}
                 >
-                  <Check size={13} className={cn('shrink-0 text-accent-text', !isSelected && 'invisible')} aria-hidden />
+                  <Check size={14} className={cn('shrink-0 text-accent-text', !isSelected && 'invisible')} aria-hidden />
                   {p ? (
                     <>
                       <span className="truncate text-fg">{p.label}</span>
@@ -322,7 +322,7 @@ function ProviderDetails({
         <InstalledBadge installed={provider.installed} />
         <span className="mono text-xs text-fg-subtle">{provider.module}</span>
         <a href={provider.docsUrl} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-0.5 text-xs text-accent-text hover:underline">
-          Documentation <ExternalLink size={11} aria-hidden />
+          Documentation <ExternalLink size={12} aria-hidden />
         </a>
       </div>
       {provider.notes && <p className="-mt-2 text-xs text-fg-subtle">{provider.notes}</p>}

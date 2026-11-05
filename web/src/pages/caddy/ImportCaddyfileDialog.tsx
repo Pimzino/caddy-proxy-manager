@@ -283,7 +283,7 @@ function Inner({ onClose, initialText }: { onClose: () => void; initialText: str
           {result.unmapped.length > 0 && (
             <section className="flex flex-col gap-2">
               <div>
-                <h3 className="text-sm font-semibold text-fg">Unmapped snippets ({result.unmapped.length})</h3>
+                <h3 className="text-sm font-medium text-fg">Unmapped snippets ({result.unmapped.length})</h3>
                 <p className="text-xs text-fg-subtle">
                   Not imported. Recreate them with host settings, custom routes (Advanced tab) or global settings after the import.
                 </p>

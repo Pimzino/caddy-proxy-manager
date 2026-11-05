@@ -45,7 +45,7 @@ export function CaddyStatusPill() {
       <StatusDot tone={info.tone} label={info.label} pulse={info.pulse} className="truncate" />
       {version && <span className="mono hidden text-xs text-fg-muted md:inline">{version}</span>}
       {update && (
-        <span className="hidden items-center gap-1 rounded-full bg-accent-soft px-1.5 text-xs font-medium text-accent-text md:inline-flex">
+        <span className="hidden items-center gap-1 text-xs font-medium text-accent-text md:inline-flex">
           <ArrowUpCircle size={12} aria-hidden />
           Update available
         </span>

@@ -138,7 +138,7 @@ function Report({ report }: { report: ReadinessReport }) {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="flex min-w-0 flex-col gap-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-fg">Checks</h2>
+            <h2 className="text-sm font-medium text-fg">Checks</h2>
             <Segmented
               aria-label="Filter checks"
               size="sm"
@@ -172,7 +172,7 @@ function SummaryTile({ tone, label, value }: { tone: Tone; label: string; value:
     <div className="flex items-center gap-3 rounded-lg border border-border bg-surface px-4 py-3 shadow-xs">
       <span className={cn('h-8 w-1 rounded-full', { success: 'bg-success', warning: 'bg-warning', danger: 'bg-danger', info: 'bg-info', neutral: 'bg-neutral', accent: 'bg-accent' }[tone])} aria-hidden />
       <div>
-        <p className="text-xl font-semibold tabular-nums text-fg">{value}</p>
+        <p className="text-xl font-medium tabular-nums text-fg">{value}</p>
         <p className="text-xs text-fg-subtle">{label}</p>
       </div>
     </div>
@@ -185,7 +185,7 @@ function CheckGroup({ category, checks }: { category: string; checks: ReadinessC
   return (
     <Card>
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <h3 className="text-sm font-semibold text-fg">{category}</h3>
+        <h3 className="text-sm font-medium text-fg">{category}</h3>
         <span className="text-xs text-fg-subtle">{pluralize(checks.length, 'check')}</span>
         <div className="flex-1" />
         {fails > 0 && <Badge tone="danger">{fails} failed</Badge>}
@@ -240,7 +240,7 @@ function CheckRow({ check }: { check: ReadinessCheck }) {
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {check.fixable && isAdmin && (check.status === 'fail' || check.status === 'warn') && (
-            <Button size="sm" icon={<Wrench size={13} />} loading={fix.isPending} onClick={() => void applyFix()}>
+            <Button size="sm" icon={<Wrench size={14} />} loading={fix.isPending} onClick={() => void applyFix()}>
               Fix
             </Button>
           )}
@@ -252,7 +252,7 @@ function CheckRow({ check }: { check: ReadinessCheck }) {
               aria-expanded={open}
               aria-controls={panelId}
               aria-label={open ? `Hide details for ${check.title}` : `Show details for ${check.title}`}
-              icon={<ChevronRight size={15} className={cn('transition-transform', open && 'rotate-90')} />}
+              icon={<ChevronRight size={14} className={cn('transition-transform', open && 'rotate-90')} />}
               onClick={() => setOpen(!open)}
             />
           )}
@@ -262,20 +262,20 @@ function CheckRow({ check }: { check: ReadinessCheck }) {
         <div id={panelId} className="flex flex-col gap-3 border-t border-dashed border-border bg-surface-2/40 px-4 py-3 pl-11">
           {check.details && (
             <div>
-              <p className="mb-1 text-xs font-medium text-fg-subtle uppercase">Details</p>
+              <p className="mb-1 text-xs font-medium text-fg-subtle">Details</p>
               <pre className="mono text-xs leading-relaxed break-words whitespace-pre-wrap text-fg">{check.details}</pre>
             </div>
           )}
           {check.remediation && (
             <div>
-              <p className="mb-1 text-xs font-medium text-fg-subtle uppercase">Remediation</p>
+              <p className="mb-1 text-xs font-medium text-fg-subtle">Remediation</p>
               <p className="text-sm whitespace-pre-line text-fg-muted">{check.remediation}</p>
             </div>
           )}
           {check.script && (
             <CodeBlock code={check.script} title="PowerShell (run as Administrator)" language="powershell" maxHeight={260} />
           )}
-          <p className="mono text-[11px] text-fg-subtle">{check.id}</p>
+          <p className="mono text-xs text-fg-subtle">{check.id}</p>
         </div>
       )}
     </li>
@@ -321,7 +321,7 @@ function MachineCard({ machine }: { machine: MachineInfo }) {
         />
         {machine.networkProfiles.length > 0 && (
           <div>
-            <p className="mb-2 text-xs font-medium text-fg-subtle uppercase">Network profiles</p>
+            <p className="mb-2 text-xs font-medium text-fg-subtle">Network profiles</p>
             <ul className="flex flex-col gap-2">
               {machine.networkProfiles.map((p) => (
                 <li key={p.interfaceAlias + p.name} className="flex items-center justify-between gap-2 text-sm">

@@ -19,7 +19,7 @@ export function SeverityBadge({ severity }: { severity: EventSeverity }) {
   const m = severityMeta[severity] ?? severityMeta.info;
   const Icon = m.icon;
   return (
-    <Badge tone={m.tone} icon={<Icon size={11} />}>
+    <Badge tone={m.tone} icon={<Icon size={12} />}>
       {m.label}
     </Badge>
   );
@@ -128,7 +128,7 @@ function EventRow({ e, now, open, onToggle }: { e: EventEntry; now: number; open
         <TD className="mono text-xs text-fg-muted">{e.category}</TD>
         <TD className="max-w-[560px]">
           <p className="break-words text-fg">{e.message}</p>
-          {e.key && <p className="mono truncate text-[11px] text-fg-subtle">{e.key}</p>}
+          {e.key && <p className="mono truncate text-xs text-fg-subtle">{e.key}</p>}
         </TD>
         <TD>
           {e.notified ? (

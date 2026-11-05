@@ -21,7 +21,7 @@ export function EmptyState({
           {icon}
         </div>
       )}
-      <h3 className="text-sm font-semibold text-fg">{title}</h3>
+      <h3 className="text-sm font-medium text-fg">{title}</h3>
       {description && <p className="mt-1 max-w-md text-sm text-fg-subtle">{description}</p>}
       {action && <div className="mt-4 flex gap-2">{action}</div>}
     </div>

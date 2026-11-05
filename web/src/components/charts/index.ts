@@ -3,7 +3,6 @@ export * from './format';
 export * from './Meter';
 export * from './parts';
 export * from './ProportionBar';
-export * from './Sparkline';
 export * from './StackedColumnChart';
 export * from './StatTile';
 export * from './TimeSeriesChart';

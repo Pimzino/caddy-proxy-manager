@@ -78,7 +78,7 @@ export function ChartTooltip({
         {rows.map((r) => (
           <li key={r.key} className="flex items-center gap-2 whitespace-nowrap">
             {r.kind === 'swatch' ? <SwatchKey color={r.color} /> : <LineKey color={r.color} />}
-            <span className="font-semibold text-fg tabular-nums">{r.value}</span>
+            <span className="font-medium text-fg tabular-nums">{r.value}</span>
             <span className="text-fg-muted">{r.label}</span>
           </li>
         ))}
@@ -148,10 +148,10 @@ export function ChartCard({
     <section className={cn('flex min-w-0 flex-col rounded-lg border border-border bg-surface shadow-xs', className)}>
       <header className="flex flex-wrap items-start gap-x-3 gap-y-1 px-4 pt-3">
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-fg">{title}</h3>
+          <h3 className="text-sm font-medium text-fg">{title}</h3>
           {description && <p className="text-xs text-fg-subtle">{description}</p>}
         </div>
-        {value !== undefined && <div className="text-right text-sm font-semibold text-fg">{value}</div>}
+        {value !== undefined && <div className="text-right text-sm font-medium text-fg">{value}</div>}
         {actions}
         {table && (
           <button

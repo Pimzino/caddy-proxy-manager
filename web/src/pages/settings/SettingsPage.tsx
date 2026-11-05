@@ -748,7 +748,7 @@ function UpdatesForm({ settings }: { settings: BinarySettings }) {
             actions={
               <Button
                 size="sm"
-                icon={<RefreshCw size={13} />}
+                icon={<RefreshCw size={14} />}
                 onClick={() => {
                   openManagerUpdate();
                   if (canOperate && settings.checkManagerUpdates) checkManager.mutate();

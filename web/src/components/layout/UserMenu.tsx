@@ -65,7 +65,7 @@ export function UserMenu() {
             aria-label={`User menu for ${user.name} (${resolved} theme)`}
             className="inline-flex h-8 items-center gap-2 rounded-md px-1.5 text-sm text-fg hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring"
           >
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold text-accent-text">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-xs font-medium text-accent-text">
               {initials}
             </span>
             <span className="hidden max-w-[10rem] truncate lg:inline">{user.name}</span>

@@ -44,10 +44,10 @@ const VOID = new Set(['br', 'hr']);
 
 const CLASSES: Record<string, string> = {
   p: 'my-2 first:mt-0 last:mb-0',
-  h1: 'mt-4 mb-2 text-base font-semibold text-fg first:mt-0',
-  h2: 'mt-4 mb-2 text-[15px] font-semibold text-fg first:mt-0',
-  h3: 'mt-3 mb-1.5 text-sm font-semibold text-fg first:mt-0',
-  h4: 'mt-3 mb-1 text-sm font-semibold text-fg first:mt-0',
+  h1: 'mt-4 mb-2 text-base font-medium text-fg first:mt-0',
+  h2: 'mt-4 mb-2 text-md font-medium text-fg first:mt-0',
+  h3: 'mt-3 mb-1.5 text-sm font-medium text-fg first:mt-0',
+  h4: 'mt-3 mb-1 text-sm font-medium text-fg first:mt-0',
   h5: 'mt-3 mb-1 text-sm font-medium text-fg first:mt-0',
   h6: 'mt-3 mb-1 text-sm font-medium text-fg-subtle first:mt-0',
   ul: 'my-2 list-disc space-y-1 pl-5',
@@ -65,7 +65,7 @@ const CLASSES: Record<string, string> = {
   pre: 'mono my-2 overflow-x-auto rounded-md bg-code p-3 text-xs leading-relaxed text-fg',
   blockquote: 'my-2 border-l-2 border-border-strong pl-3 text-fg-subtle',
   a: 'text-accent-text hover:underline',
-  table: 'w-full border-collapse text-left text-[13px]',
+  table: 'w-full border-collapse text-left text-sm',
   th: 'border border-border bg-surface-2 px-2.5 py-1.5 font-medium text-fg',
   td: 'border border-border px-2.5 py-1.5 align-top',
   details: 'my-2 rounded-md border border-border px-3 py-2 [&[open]>summary]:mb-2',

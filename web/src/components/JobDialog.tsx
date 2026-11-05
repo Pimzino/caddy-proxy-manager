@@ -44,15 +44,15 @@ function JobDialogInner({ jobId, onClose, title }: { jobId: string; onClose: () 
       description={job.data ? `Started ${formatDateTime(job.data.startedAt)}` : undefined}
       headerExtra={
         state === 'running' ? (
-          <Badge tone="info" icon={<Spinner size={10} />}>
+          <Badge tone="info" icon={<Spinner size={12} />}>
             Running
           </Badge>
         ) : state === 'succeeded' ? (
-          <Badge tone="success" icon={<CheckCircle2 size={11} />}>
+          <Badge tone="success" icon={<CheckCircle2 size={12} />}>
             Succeeded
           </Badge>
         ) : state === 'failed' ? (
-          <Badge tone="danger" icon={<XCircle size={11} />}>
+          <Badge tone="danger" icon={<XCircle size={12} />}>
             Failed
           </Badge>
         ) : null
@@ -86,7 +86,7 @@ function JobDialogInner({ jobId, onClose, title }: { jobId: string; onClose: () 
         tabIndex={0}
         aria-label="Job log"
         aria-live="polite"
-        className="mono h-80 overflow-auto rounded-md border border-border bg-code p-3 text-[12px] leading-[1.6] whitespace-pre-wrap text-fg"
+        className="mono h-80 overflow-auto rounded-md border border-border bg-code p-3 text-xs leading-5 whitespace-pre-wrap text-fg"
       >
         {log || (job.isPending ? 'Waiting for output…' : 'No output yet.')}
       </pre>

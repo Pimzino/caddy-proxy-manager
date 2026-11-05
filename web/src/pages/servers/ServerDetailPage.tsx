@@ -176,7 +176,7 @@ function ServerDetail({ s, refreshError }: { s: ServerSummary; refreshError: unk
 
         {s.status !== 'pending' && (
           <section aria-labelledby="traffic-heading" className="mt-2 flex flex-col gap-3">
-            <h2 id="traffic-heading" className="text-base font-semibold text-fg">
+            <h2 id="traffic-heading" className="text-base font-medium text-fg">
               Traffic
             </h2>
             <TrafficSection serverId={s.id} range={range} host={host} onRangeChange={setRange} onHostChange={setHost} />
@@ -277,7 +277,7 @@ function LiveSection({ s }: { s: ServerSummary }) {
   return (
     <section aria-labelledby="live-heading" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="live-heading" className="text-base font-semibold text-fg">
+        <h2 id="live-heading" className="text-base font-medium text-fg">
           Resource usage
         </h2>
         <p className="text-xs text-fg-subtle">
@@ -357,7 +357,7 @@ function LiveSection({ s }: { s: ServerSummary }) {
 
       {latest && latest.disks.length > 0 && (
         <Card>
-          <CardHeader title="Disks" icon={<HardDrive size={15} />} />
+          <CardHeader title="Disks" icon={<HardDrive size={14} />} />
           <ul className="grid grid-cols-1 gap-x-8 gap-y-4 px-4 py-4 md:grid-cols-2 xl:grid-cols-3">
             {latest.disks.map((d) => {
               const used = d.totalBytes - d.freeBytes;
@@ -438,16 +438,16 @@ function CaddyCard({ s, local, now }: { s: ServerSummary; local?: ServerSummary;
     <Card>
       <CardHeader
         title="Caddy"
-        icon={<Server size={15} />}
+        icon={<Server size={14} />}
         actions={
           <>
             {canOperate && (
-              <Button size="sm" icon={<RotateCw size={13} />} loading={restart.isPending} disabled={!reachable} onClick={() => void doRestart()}>
+              <Button size="sm" icon={<RotateCw size={14} />} loading={restart.isPending} disabled={!reachable} onClick={() => void doRestart()}>
                 Restart
               </Button>
             )}
             {isAdmin && (
-              <Button size="sm" icon={<ArrowUpCircle size={13} />} loading={update.isPending} disabled={!reachable} onClick={() => void doUpdate()}>
+              <Button size="sm" icon={<ArrowUpCircle size={14} />} loading={update.isPending} disabled={!reachable} onClick={() => void doUpdate()}>
                 Update Caddy
               </Button>
             )}
@@ -528,10 +528,10 @@ function SyncCard({ s, now, onSync, syncing }: { s: ServerSummary; now: number; 
       <CardHeader
         title="Configuration sync"
         description="Sites, certificates and Caddy settings pushed from this server."
-        icon={<RefreshCw size={15} />}
+        icon={<RefreshCw size={14} />}
         actions={
           canOperate && (
-            <Button size="sm" icon={<RefreshCw size={13} />} loading={syncing} disabled={s.status === 'pending'} onClick={onSync}>
+            <Button size="sm" icon={<RefreshCw size={14} />} loading={syncing} disabled={s.status === 'pending'} onClick={onSync}>
               Sync now
             </Button>
           )

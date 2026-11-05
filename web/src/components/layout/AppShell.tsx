@@ -55,7 +55,7 @@ export function AppShell() {
           Skip to content
         </a>
         <aside
-          className={cn('hidden shrink-0 transition-[width] duration-150 lg:block', collapsed ? 'w-14' : 'w-60')}
+          className={cn('hidden shrink-0 lg:block', collapsed ? 'w-14' : 'w-60')}
           aria-label="Sidebar"
         >
           <Sidebar collapsed={collapsed} onToggleCollapsed={toggleCollapsed} version={system.data?.version} />
@@ -102,7 +102,7 @@ export function AppShell() {
               aria-label="Help for this page (opens the documentation in a new tab)"
               title="Help"
             >
-              <CircleHelp size={17} aria-hidden />
+              <CircleHelp size={16} aria-hidden />
             </a>
             <UserMenu />
           </header>

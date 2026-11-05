@@ -69,7 +69,7 @@ export function CodeBlock({
           <Button
             size="xs"
             variant="ghost"
-            icon={<Download size={13} />}
+            icon={<Download size={14} />}
             onClick={() => saveBlob(new Blob([code], { type: 'text/plain;charset=utf-8' }), filename)}
           >
             Download
@@ -79,7 +79,7 @@ export function CodeBlock({
       </div>
       <pre
         className={cn(
-          'mono overflow-auto p-3 text-[12.5px] leading-[1.6] text-fg',
+          'mono overflow-auto p-3 text-xs leading-5 text-fg',
           wrap ? 'break-all whitespace-pre-wrap' : 'whitespace-pre',
         )}
         style={{ maxHeight: maxHeight === 'none' ? undefined : maxHeight }}

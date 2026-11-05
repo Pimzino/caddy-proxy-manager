@@ -169,7 +169,7 @@ function Body({ info, onClose }: { info: ManagerUpdateInfo; onClose: () => void 
         )}
         {githubUrl && (
           <a href={githubUrl} target="_blank" rel="noopener noreferrer" className={buttonClasses({ variant: 'ghost' })} data-testid="view-on-github">
-            View on GitHub <ExternalLink size={13} aria-hidden />
+            View on GitHub <ExternalLink size={14} aria-hidden />
           </a>
         )}
       </div>
@@ -191,7 +191,7 @@ function Body({ info, onClose }: { info: ManagerUpdateInfo; onClose: () => void 
       </div>
 
       <section aria-labelledby="mu-changes">
-        <h3 id="mu-changes" className="mb-2 text-sm font-semibold text-fg">
+        <h3 id="mu-changes" className="mb-2 text-sm font-medium text-fg">
           What’s changed since {vText(info.currentVersion)}
         </h3>
         <div className="flex flex-col gap-2">
@@ -269,7 +269,7 @@ function Footer({ info }: { info: ManagerUpdateInfo | undefined }) {
         {check.isError && <span className="block text-danger">{errorMessage(check.error)}</span>}
       </p>
       {canOperate && info?.enabled !== false && (
-        <Button size="sm" icon={<RefreshCw size={13} />} loading={check.isPending} onClick={() => check.mutate()}>
+        <Button size="sm" icon={<RefreshCw size={14} />} loading={check.isPending} onClick={() => check.mutate()}>
           Check now
         </Button>
       )}

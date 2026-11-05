@@ -35,7 +35,7 @@ export function ManagerUpdateCallout({ className, dismissible }: { className?: s
           </Button>
           {msi && (
             <a href={msi.downloadUrl} className={buttonClasses({ variant: 'primary', size: 'sm' })} title={`${msi.name} · ${formatBytes(msi.size)}`}>
-              <Download size={13} aria-hidden />
+              <Download size={14} aria-hidden />
               Download installer
             </a>
           )}

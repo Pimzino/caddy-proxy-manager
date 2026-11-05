@@ -267,11 +267,11 @@ function RevisionsView() {
                 </TD>
                 <TD>
                   {r.success ? (
-                    <Badge tone="success" icon={<CheckCircle2 size={11} />}>
+                    <Badge tone="success" icon={<CheckCircle2 size={12} />}>
                       Applied
                     </Badge>
                   ) : (
-                    <Badge tone="danger" icon={<XCircle size={11} />}>
+                    <Badge tone="danger" icon={<XCircle size={12} />}>
                       Rejected
                     </Badge>
                   )}
@@ -396,15 +396,15 @@ function CaddyfileView({ settings, onImport }: { settings: CaddySettings; onImpo
           {isAdmin && (
             <>
               {canEdit && (
-                <Button size="sm" variant="ghost" icon={<Import size={13} />} onClick={onImport} title="Convert site blocks into managed hosts">
+                <Button size="sm" variant="ghost" icon={<Import size={14} />} onClick={onImport} title="Convert site blocks into managed hosts">
                   Import as hosts…
                 </Button>
               )}
-              <Button size="sm" icon={<FileCheck2 size={13} />} onClick={runAdapt} loading={adapt.isPending} disabled={!text.trim()}>
+              <Button size="sm" icon={<FileCheck2 size={14} />} onClick={runAdapt} loading={adapt.isPending} disabled={!text.trim()}>
                 Adapt &amp; validate
               </Button>
               {canEdit && (
-                <Button size="sm" variant="primary" icon={<Save size={13} />} onClick={() => void persist()} loading={save.isPending} disabled={!dirty}>
+                <Button size="sm" variant="primary" icon={<Save size={14} />} onClick={() => void persist()} loading={save.isPending} disabled={!dirty}>
                   {mode === 'caddyfile' ? 'Save & apply' : 'Save'}
                 </Button>
               )}

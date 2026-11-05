@@ -43,9 +43,9 @@ export function Sidebar({
           return (
             <div key={group.label} className={cn(gi > 0 && (compact ? 'mt-2 border-t border-border pt-2' : 'mt-4'))}>
               {!compact && (
-                <p className="mb-1 px-2 text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">{group.label}</p>
+                <p className="mb-1 px-2 text-xs font-medium text-fg-subtle">{group.label}</p>
               )}
-              <ul className="flex flex-col gap-px">
+              <ul className="flex flex-col gap-0.5">
                 {items.map((item) => {
                   const Icon = item.icon;
                   return (

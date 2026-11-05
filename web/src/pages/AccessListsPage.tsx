@@ -302,7 +302,7 @@ function AccessListEditor({ list, readOnly, onClose }: { list?: AccessList; read
 
           <section className="flex flex-col gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-fg">IP rules</h3>
+              <h3 className="text-sm font-medium text-fg">IP rules</h3>
               <p className="mt-0.5 text-xs text-fg-subtle">
                 Evaluated top to bottom; the first matching rule wins. If no rule matches, the client is{' '}
                 <strong className="font-medium text-fg-muted">{hasAllow ? 'denied' : 'allowed'}</strong>
@@ -375,7 +375,7 @@ function AccessListEditor({ list, readOnly, onClose }: { list?: AccessList; read
 
           <section className="flex flex-col gap-3 border-t border-border pt-5">
             <div>
-              <h3 className="text-sm font-semibold text-fg">Basic authentication users</h3>
+              <h3 className="text-sm font-medium text-fg">Basic authentication users</h3>
               <p className="mt-0.5 text-xs text-fg-subtle">Browsers prompt for these credentials. Passwords are stored as bcrypt hashes.</p>
             </div>
             {users.map((u, i) => {
@@ -415,7 +415,7 @@ function AccessListEditor({ list, readOnly, onClose }: { list?: AccessList; read
           </section>
 
           <section className="flex flex-col gap-4 border-t border-border pt-5">
-            <h3 className="text-sm font-semibold text-fg">Behaviour</h3>
+            <h3 className="text-sm font-medium text-fg">Behaviour</h3>
             <RadioCards
               aria-label="How rules and users combine"
               value={satisfyAny ? 'any' : 'all'}

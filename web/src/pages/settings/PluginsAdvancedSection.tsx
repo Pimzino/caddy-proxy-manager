@@ -40,7 +40,7 @@ export function validatePluginFields(f: CaddySettingsInput): FieldErrors {
 export function HiddenValue() {
   return (
     <div className="flex h-8 items-center gap-2 rounded-md border border-border-strong bg-surface-2 px-2.5 text-sm text-fg-subtle">
-      <EyeOff size={13} aria-hidden />
+      <EyeOff size={14} aria-hidden />
       Hidden — only administrators can view this value
     </div>
   );

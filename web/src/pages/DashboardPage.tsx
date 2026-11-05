@@ -21,7 +21,7 @@ import { useCaddyAction, useCluster, useDashboard, useIsManagedNode, useRunReadi
 import type { Dashboard } from '@/api/types';
 import { useAuth } from '@/auth';
 import { useFeedback } from '@/components/feedback';
-import { Sparkline, formatBytesShort, formatCount, formatRatio } from '@/components/charts';
+import { formatBytesShort, formatCount, formatRatio } from '@/components/charts';
 import { caddyStateInfo } from '@/components/layout/CaddyStatusPill';
 import { ManagerUpdateCallout } from '@/components/ManagerUpdateCallout';
 import { useOpenManagerUpdate } from '@/components/ManagerUpdateDialog';
@@ -74,8 +74,8 @@ export default function DashboardPage() {
         }
       />
       {dash.isPending ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 6 }, (_, i) => (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 8 }, (_, i) => (
             <Card key={i} className="p-4">
               <Skeleton className="mb-3 h-4 w-32" />
               <Skeleton className="mb-2 h-7 w-24" />
@@ -126,7 +126,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
               <Button
                 size="sm"
                 variant="primary"
-                icon={<Play size={13} />}
+                icon={<Play size={14} />}
                 loading={start.isPending}
                 onClick={() =>
                   start.mutate('start', {
@@ -158,10 +158,10 @@ function DashboardBody({ d }: { d: Dashboard }) {
         </Callout>
       )}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <StatCard icon={<Server size={15} />} title="Caddy service" to="/caddy/service" tone={info.tone}>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={<Server size={14} />} title="Caddy service" to="/caddy/service" tone={info.tone}>
           <div className="flex items-center gap-2">
-            <StatusDot tone={info.tone} label={info.label} pulse={info.pulse} className="text-lg font-semibold" />
+            <StatusDot tone={info.tone} label={info.label} pulse={info.pulse} className="text-lg font-medium" />
           </div>
           <p className="mt-1 text-sm text-fg-subtle">
             {d.caddy.state === 'running' && d.caddy.startedAt
@@ -173,8 +173,8 @@ function DashboardBody({ d }: { d: Dashboard }) {
           </p>
         </StatCard>
 
-        <StatCard icon={<ArrowUpCircle size={15} />} title="Caddy version" to="/caddy/service" tone={d.binary.updateAvailable ? 'info' : d.binary.installed ? 'success' : 'neutral'}>
-          <p className="mono text-lg font-semibold text-fg">{d.binary.installed?.version ?? 'Not installed'}</p>
+        <StatCard icon={<ArrowUpCircle size={14} />} title="Caddy version" to="/caddy/service" tone={d.binary.updateAvailable ? 'info' : d.binary.installed ? 'success' : 'neutral'}>
+          <p className="mono text-lg font-medium text-fg tabular-nums">{d.binary.installed?.version ?? 'Not installed'}</p>
           <p className="mt-1 text-sm text-fg-subtle">
             {d.binary.updateAvailable && d.binary.latest ? (
               <span className="font-medium text-accent-text">Update available: {d.binary.latest.version}</span>
@@ -187,8 +187,8 @@ function DashboardBody({ d }: { d: Dashboard }) {
           </p>
         </StatCard>
 
-        <StatCard icon={<ArrowLeftRight size={15} />} title="Sites" to="/hosts/proxy" tone={d.counts.hostsDisabled > 0 ? 'neutral' : 'accent'}>
-          <p className="text-lg font-semibold text-fg tabular-nums">
+        <StatCard icon={<ArrowLeftRight size={14} />} title="Sites" to="/hosts/proxy" tone={d.counts.hostsDisabled > 0 ? 'neutral' : 'accent'}>
+          <p className="text-lg font-medium text-fg tabular-nums">
             {formatNumber(hostsTotal)} <span className="text-sm font-normal text-fg-subtle">{hostsTotal === 1 ? 'host' : 'hosts'}</span>
             {d.counts.streams > 0 && (
               <>
@@ -204,12 +204,12 @@ function DashboardBody({ d }: { d: Dashboard }) {
         </StatCard>
 
         <StatCard
-          icon={<ShieldCheck size={15} />}
+          icon={<ShieldCheck size={14} />}
           title="Certificates"
           to="/certificates"
           tone={d.counts.certificatesExpiring > 0 ? 'warning' : 'success'}
         >
-          <p className="text-lg font-semibold text-fg tabular-nums">{formatNumber(d.counts.certificates)}</p>
+          <p className="text-lg font-medium text-fg tabular-nums">{formatNumber(d.counts.certificates)}</p>
           <p className="mt-1 text-sm">
             {d.counts.certificatesExpiring > 0 ? (
               <span className="font-medium text-warning">{d.counts.certificatesExpiring} expiring soon</span>
@@ -220,10 +220,10 @@ function DashboardBody({ d }: { d: Dashboard }) {
           </p>
         </StatCard>
 
-        <StatCard icon={<ClipboardCheck size={15} />} title="Server readiness" to="/readiness" tone={readinessTone}>
+        <StatCard icon={<ClipboardCheck size={14} />} title="Server readiness" to="/readiness" tone={readinessTone}>
           {d.readiness ? (
             <>
-              <div className="flex items-baseline gap-4 text-lg font-semibold tabular-nums">
+              <div className="flex items-baseline gap-4 text-lg font-medium tabular-nums">
                 <span className="text-success">{d.readiness.pass} <span className="text-xs font-normal text-fg-subtle">pass</span></span>
                 <span className={d.readiness.warn ? 'text-warning' : 'text-fg-subtle'}>{d.readiness.warn} <span className="text-xs font-normal text-fg-subtle">warn</span></span>
                 <span className={d.readiness.fail ? 'text-danger' : 'text-fg-subtle'}>{d.readiness.fail} <span className="text-xs font-normal text-fg-subtle">fail</span></span>
@@ -232,14 +232,14 @@ function DashboardBody({ d }: { d: Dashboard }) {
             </>
           ) : (
             <>
-              <p className="text-lg font-semibold text-fg-muted">Not checked yet</p>
+              <p className="text-lg font-medium text-fg-muted">Not checked yet</p>
               <p className="mt-1 text-sm text-fg-subtle">Run the checks to verify firewall, ports and connectivity.</p>
             </>
           )}
         </StatCard>
 
-        <StatCard icon={<HeartPulse size={15} />} title="Upstream health" to="/caddy/service" tone={d.upstreams.unhealthy > 0 ? 'danger' : d.upstreams.total > 0 ? 'success' : 'neutral'}>
-          <p className="text-lg font-semibold text-fg tabular-nums">
+        <StatCard icon={<HeartPulse size={14} />} title="Upstream health" to="/caddy/service" tone={d.upstreams.unhealthy > 0 ? 'danger' : d.upstreams.total > 0 ? 'success' : 'neutral'}>
+          <p className="text-lg font-medium text-fg tabular-nums">
             {d.upstreams.total - d.upstreams.unhealthy}/{d.upstreams.total} <span className="text-sm font-normal text-fg-subtle">healthy</span>
           </p>
           <p className="mt-1 text-sm">
@@ -258,8 +258,8 @@ function DashboardBody({ d }: { d: Dashboard }) {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <Card>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-fg">
-              <Activity size={15} className="text-fg-subtle" aria-hidden /> Recent events
+            <h2 className="flex items-center gap-2 text-sm font-medium text-fg">
+              <Activity size={14} className="text-fg-subtle" aria-hidden /> Recent events
             </h2>
             <Link to="/events" className="text-sm text-accent-text hover:underline">
               View all
@@ -290,18 +290,18 @@ function DashboardBody({ d }: { d: Dashboard }) {
         <div className="flex flex-col gap-4">
           <Card>
             <div className="border-b border-border px-4 py-3">
-              <h2 className="text-sm font-semibold text-fg">Quick links</h2>
+              <h2 className="text-sm font-medium text-fg">Quick links</h2>
             </div>
             <ul className="py-1">
-              <QuickLink to="/caddy/config" icon={<Braces size={15} />} label="View running configuration" />
-              <QuickLink to="/logs" icon={<ScrollText size={15} />} label="Caddy logs" />
-              <QuickLink to="/certificates" icon={<ShieldCheck size={15} />} label="Certificates" />
-              <QuickLink to="/readiness" icon={<ClipboardCheck size={15} />} label="Readiness report" />
+              <QuickLink to="/caddy/config" icon={<Braces size={14} />} label="View running configuration" />
+              <QuickLink to="/logs" icon={<ScrollText size={14} />} label="Caddy logs" />
+              <QuickLink to="/certificates" icon={<ShieldCheck size={14} />} label="Certificates" />
+              <QuickLink to="/readiness" icon={<ClipboardCheck size={14} />} label="Readiness report" />
             </ul>
           </Card>
           <Card>
             <div className="border-b border-border px-4 py-3">
-              <h2 className="text-sm font-semibold text-fg">System</h2>
+              <h2 className="text-sm font-medium text-fg">System</h2>
             </div>
             <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-2 px-4 py-3 text-sm">
               <dt className="text-fg-subtle">Server</dt>
@@ -332,7 +332,7 @@ function DashboardBody({ d }: { d: Dashboard }) {
   );
 }
 
-/** Requests of the last 24 h on this server, with a sparkline of the hourly series. */
+/** Requests of the last 24 h on this server. */
 function TrafficCard() {
   const traffic = useTraffic('local', 'day');
   const d = traffic.data;
@@ -342,49 +342,36 @@ function TrafficCard() {
   const errorRate = t && t.requests ? errors / t.requests : 0;
   const tone: Tone = !t ? 'neutral' : serverErrorRate >= 0.05 ? 'danger' : errorRate >= 0.1 ? 'warning' : 'accent';
   return (
-    <StatCard icon={<ChartLine size={15} />} title="Traffic (24 h)" to="/traffic" tone={tone}>
+    <StatCard icon={<ChartLine size={14} />} title="Traffic (24 h)" to="/traffic" tone={tone}>
       {traffic.isPending ? (
         <Skeleton className="h-12 w-full" />
       ) : !d ? (
         <>
-          <p className="text-lg font-semibold text-fg-muted">Unavailable</p>
+          <p className="text-lg font-medium text-fg-muted">Unavailable</p>
           <p className="mt-1 text-sm text-fg-subtle">Statistics could not be loaded.</p>
         </>
       ) : !t ? (
         <>
-          <p className="text-lg font-semibold text-fg-muted">Statistics disabled</p>
+          <p className="text-lg font-medium text-fg-muted">Statistics disabled</p>
           <p className="mt-1 text-sm text-fg-subtle">Turn on traffic statistics in Settings › Caddy.</p>
         </>
       ) : (
-        <div className="flex items-end gap-4">
-          <div className="min-w-0 shrink-0">
-            <p className="text-lg font-semibold text-fg" title={`${formatNumber(t.requests)} requests`}>
-              {formatCount(t.requests)} <span className="text-sm font-normal text-fg-subtle">requests</span>
-            </p>
-            <p className="mt-1 text-sm text-fg-subtle">
-              {formatCount(t.uniqueClients)} clients · {formatBytesShort(t.bytesOut)} out
-              {t.requests > 0 && (
-                <>
-                  {' · '}
-                  <span className={serverErrorRate >= 0.05 ? 'font-medium text-danger' : undefined}>{formatRatio(errorRate)} errors</span>
-                </>
-              )}
-            </p>
-          </div>
-          {d.series.length > 1 && (
-            <div className="min-w-0 flex-1">
-              <Sparkline
-                values={d.series.map((p) => p.requests)}
-                x={d.series.map((p) => Date.parse(p.at))}
-                height={40}
-                focusable={false}
-                formatValue={(v) => `${formatCount(v)} requests`}
-                formatX={(ms) => formatDateTime(new Date(ms).toISOString())}
-                ariaLabel="Requests per hour over the last 24 hours"
-              />
-            </div>
-          )}
-        </div>
+        <>
+          <p className="text-lg font-medium text-fg tabular-nums" title={`${formatNumber(t.requests)} requests`}>
+            {formatCount(t.requests)} <span className="text-sm font-normal text-fg-subtle">requests</span>
+          </p>
+          <p className="mt-1 text-sm text-fg-subtle tabular-nums">
+            {formatCount(t.uniqueClients)} clients · {formatBytesShort(t.bytesOut)} out
+            {t.requests > 0 && (
+              <>
+                {' · '}
+                <span className={tone === 'danger' ? 'font-medium text-danger' : tone === 'warning' ? 'font-medium text-warning' : undefined}>
+                  {formatRatio(errorRate)} errors
+                </span>
+              </>
+            )}
+          </p>
+        </>
       )}
     </StatCard>
   );
@@ -405,27 +392,27 @@ function ServersCard() {
   const isNode = cluster.data?.role === 'node';
   const tone: Tone = down.length ? 'danger' : pending.length || outOfSync.length || rotation.length ? 'warning' : nodes.length ? 'success' : 'neutral';
   return (
-    <StatCard icon={<Network size={15} />} title="Servers" to="/servers" tone={tone}>
+    <StatCard icon={<Network size={14} />} title="Servers" to="/servers" tone={tone}>
       {servers.isPending ? (
         <Skeleton className="h-12 w-full" />
       ) : servers.isError ? (
         <>
-          <p className="text-lg font-semibold text-fg-muted">Unavailable</p>
+          <p className="text-lg font-medium text-fg-muted">Unavailable</p>
           <p className="mt-1 text-sm text-fg-subtle">The server list could not be loaded.</p>
         </>
       ) : isNode ? (
         <>
-          <p className="text-lg font-semibold text-fg">Cluster node</p>
+          <p className="text-lg font-medium text-fg">Cluster node</p>
           <p className="mt-1 text-sm text-fg-subtle">Managed by {cluster.data?.primaryName ?? 'the primary'}</p>
         </>
       ) : nodes.length === 0 ? (
         <>
-          <p className="text-lg font-semibold text-fg">Standalone</p>
+          <p className="text-lg font-medium text-fg">Standalone</p>
           <p className="mt-1 text-sm text-fg-subtle">Add servers to manage them from here as one cluster.</p>
         </>
       ) : (
         <>
-          <p className="text-lg font-semibold text-fg tabular-nums">
+          <p className="text-lg font-medium text-fg tabular-nums">
             {online.length}/{list.length} <span className="text-sm font-normal text-fg-subtle">online</span>
           </p>
           <p className="mt-1 truncate text-sm">
@@ -449,22 +436,16 @@ function ServersCard() {
   );
 }
 
-const toneBar: Record<Tone, string> = {
-  success: 'bg-success',
-  warning: 'bg-warning',
-  danger: 'bg-danger',
-  info: 'bg-info',
-  neutral: 'bg-border-strong',
-  accent: 'bg-accent',
-};
-
 function StatCard({ icon, title, to, tone, children }: { icon: ReactNode; title: string; to: string; tone: Tone; children: ReactNode }) {
   return (
     <Link
       to={to}
       className="group relative block overflow-hidden rounded-lg border border-border bg-surface p-4 pl-5 shadow-xs transition-colors hover:border-border-strong focus-visible:outline-2 focus-visible:outline-ring"
     >
-      <span className={cn('absolute inset-y-0 left-0 w-1', toneBar[tone])} aria-hidden />
+      {/* Only a card that needs attention gets a coloured edge, so a healthy dashboard stays quiet. */}
+      {(tone === 'warning' || tone === 'danger') && (
+        <span className={cn('absolute inset-y-0 left-0 w-1', tone === 'danger' ? 'bg-danger' : 'bg-warning')} aria-hidden />
+      )}
       <div className="mb-2 flex items-center justify-between gap-2 text-sm text-fg-muted">
         <span className="flex items-center gap-1.5 font-medium">
           <span className="text-fg-subtle">{icon}</span>

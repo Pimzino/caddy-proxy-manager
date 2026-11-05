@@ -68,7 +68,7 @@ export default function DocsPage() {
           <Link to="/docs" className="flex shrink-0 items-center gap-2.5 rounded-md" aria-label="Documentation home">
             <LogoMark className="h-8 w-8" />
             <span className="hidden flex-col leading-tight sm:flex">
-              <span className="text-sm font-semibold text-fg">Caddy Proxy Manager</span>
+              <span className="text-sm font-medium text-fg">Caddy Proxy Manager</span>
               <span className="text-xs text-fg-subtle">Documentation</span>
             </span>
           </Link>
@@ -80,9 +80,9 @@ export default function DocsPage() {
               aria-label="Search the documentation"
               aria-keyshortcuts="Control+K /"
             >
-              <Search size={15} className="shrink-0" aria-hidden />
+              <Search size={14} className="shrink-0" aria-hidden />
               <span className="flex-1 truncate">Search the docs…</span>
-              <kbd className="mono hidden rounded border border-border bg-surface px-1.5 text-[11px] text-fg-subtle sm:inline">Ctrl K</kbd>
+              <kbd className="mono hidden rounded border border-border bg-surface px-1.5 text-xs text-fg-subtle sm:inline">Ctrl K</kbd>
             </button>
           </div>
           <ThemeButton />
@@ -98,7 +98,7 @@ export default function DocsPage() {
           <div className="absolute inset-0 animate-fade-in bg-overlay" onClick={() => setDrawerOpen(false)} aria-hidden />
           <div className="relative flex h-full w-80 max-w-[85vw] animate-slide-left flex-col border-r border-border bg-sidebar shadow-pop">
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-              <span className="text-sm font-semibold text-fg">Documentation</span>
+              <span className="text-sm font-medium text-fg">Documentation</span>
               <button
                 type="button"
                 onClick={() => setDrawerOpen(false)}
@@ -137,7 +137,7 @@ function DocsNav({ current, onNavigate }: { current: string; onNavigate?: () => 
     <nav aria-label="Documentation pages" className="flex flex-col gap-6">
       {docGroups.map((g) => (
         <div key={g.label}>
-          <p className="mb-1.5 px-2 text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">{g.label}</p>
+          <p className="mb-1.5 px-2 text-xs font-medium text-fg-subtle">{g.label}</p>
           <ul className="flex flex-col gap-px border-l border-border">
             {g.pages.map((p) => {
               const active = p.slug === current;
@@ -175,14 +175,14 @@ function Article({ page }: { page: DocPage }) {
   return (
     <article className="mx-auto max-w-3xl" aria-labelledby="doc-title">
       <nav aria-label="Breadcrumb" className="mb-3 flex items-center gap-1.5 text-xs text-fg-subtle">
-        <BookOpen size={13} aria-hidden />
+        <BookOpen size={14} aria-hidden />
         <Link to="/docs" className="hover:text-fg">
           Docs
         </Link>
         <ChevronRight size={12} aria-hidden />
         <span>{page.group}</span>
       </nav>
-      <h1 id="doc-title" className="text-[1.875rem] leading-tight font-semibold tracking-tight text-fg">
+      <h1 id="doc-title" className="text-[1.875rem] leading-tight font-medium text-fg">
         {page.title}
       </h1>
       <DocMarkdown blocks={body} />
@@ -250,8 +250,8 @@ function Toc({ page }: { page: DocPage }) {
   return (
     <aside className="hidden w-56 shrink-0 xl:block" aria-label="On this page">
       <div className="sticky top-14 max-h-[calc(100dvh-3.5rem)] overflow-y-auto py-8 pl-4">
-        <p className="mb-2 text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">On this page</p>
-        <ul className="flex flex-col gap-0.5 border-l border-border text-[13px]">
+        <p className="mb-2 text-xs font-medium text-fg-subtle">On this page</p>
+        <ul className="flex flex-col gap-0.5 border-l border-border text-sm">
           {headings.map((h) => (
             <li key={h.id}>
               <a
@@ -277,7 +277,7 @@ function NotFound({ slug }: { slug: string }) {
   return (
     <div className="mx-auto flex max-w-xl flex-col items-center py-20 text-center">
       <FileQuestion size={28} className="text-fg-subtle" aria-hidden />
-      <h1 id="doc-title" className="mt-4 text-xl font-semibold text-fg">
+      <h1 id="doc-title" className="mt-4 text-xl font-medium text-fg">
         Page not found
       </h1>
       <p className="mt-2 text-sm text-fg-muted">
@@ -372,12 +372,12 @@ function SearchDialog({ onClose }: { onClose: () => void }) {
             aria-label="Search the documentation"
             aria-controls="doc-search-results"
             aria-activedescendant={hits[selected] ? `doc-hit-${selected}` : undefined}
-            className="h-12 min-w-0 flex-1 bg-transparent text-[0.9375rem] text-fg outline-none placeholder:text-fg-subtle [&::-webkit-search-cancel-button]:hidden"
+            className="h-12 min-w-0 flex-1 bg-transparent text-md text-fg outline-none placeholder:text-fg-subtle [&::-webkit-search-cancel-button]:hidden"
             role="combobox"
             aria-expanded={hits.length > 0}
             aria-autocomplete="list"
           />
-          <kbd className="mono rounded border border-border px-1.5 text-[11px] text-fg-subtle">Esc</kbd>
+          <kbd className="mono rounded border border-border px-1.5 text-xs text-fg-subtle">Esc</kbd>
         </div>
         {query.trim() === '' ? (
           <p className="px-4 py-6 text-center text-sm text-fg-subtle">Type to search every page of the documentation.</p>
@@ -410,7 +410,7 @@ function SearchDialog({ onClose }: { onClose: () => void }) {
             ))}
           </ul>
         )}
-        <div className="flex items-center gap-3 border-t border-border px-3 py-2 text-[11px] text-fg-subtle">
+        <div className="flex items-center gap-3 border-t border-border px-3 py-2 text-xs text-fg-subtle">
           <span>↑↓ to choose</span>
           <span>Enter to open</span>
           <span className="ml-auto">{query.trim() ? `${hits.length} result${hits.length === 1 ? '' : 's'}` : ''}</span>

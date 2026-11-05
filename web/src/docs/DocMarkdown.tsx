@@ -111,23 +111,23 @@ function Heading({ level, id, children }: { level: number; id: string; children:
     </a>
   );
   const common = 'group scroll-mt-20 text-fg';
-  if (level === 1) return <h1 id={id} className={cn(common, 'text-[1.75rem] leading-tight font-semibold tracking-tight')}>{children}</h1>;
+  if (level === 1) return <h1 id={id} className={cn(common, 'text-[1.75rem] leading-tight font-medium')}>{children}</h1>;
   if (level === 2)
     return (
-      <h2 id={id} className={cn(common, 'mt-11 mb-3 border-b border-border pb-2 text-xl font-semibold tracking-tight')}>
+      <h2 id={id} className={cn(common, 'mt-11 mb-3 border-b border-border pb-2 text-xl font-medium')}>
         {children}
         {anchor}
       </h2>
     );
   if (level === 3)
     return (
-      <h3 id={id} className={cn(common, 'mt-8 mb-2 text-[1.0625rem] font-semibold')}>
+      <h3 id={id} className={cn(common, 'mt-8 mb-2 text-[1.0625rem] font-medium')}>
         {children}
         {anchor}
       </h3>
     );
   return (
-    <h4 id={id} className={cn(common, 'mt-6 mb-1.5 text-[0.9375rem] font-semibold')}>
+    <h4 id={id} className={cn(common, 'mt-6 mb-1.5 text-md font-medium')}>
       {children}
       {anchor}
     </h4>
@@ -182,14 +182,14 @@ function Blocks({ blocks, nested = false }: { blocks: Block[]; nested?: boolean 
           case 'table':
             return (
               <div key={i} className="my-5 overflow-x-auto rounded-md border border-border">
-                <table className="w-full border-collapse text-left text-[0.8125rem] leading-relaxed">
+                <table className="w-full border-collapse text-left text-sm leading-relaxed">
                   <thead className="bg-surface-2">
                     <tr>
                       {b.head.map((c, k) => (
                         <th
                           key={k}
                           scope="col"
-                          className="border-b border-border px-3 py-2 align-bottom font-semibold whitespace-nowrap text-fg"
+                          className="border-b border-border px-3 py-2 align-bottom font-medium whitespace-nowrap text-fg"
                           style={{ textAlign: b.align[k] ?? undefined }}
                         >
                           <InlineNodes nodes={c} />
@@ -225,7 +225,7 @@ function Blocks({ blocks, nested = false }: { blocks: Block[]; nested?: boolean 
                   {a.icon}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-fg">{a.title}</p>
+                  <p className="font-medium text-fg">{a.title}</p>
                   <div className="text-fg-muted [&>*:first-child]:mt-0.5 [&>*:last-child]:mb-0">
                     <Blocks blocks={b.c} nested />
                   </div>
@@ -259,7 +259,7 @@ function DocImage({ src, alt, figure = false }: { src: string; alt: string; figu
   if (!img)
     return (
       <span className="my-4 flex items-center gap-2 rounded-md border border-dashed border-border px-3 py-2 text-sm text-fg-subtle">
-        <ImageOff size={15} aria-hidden /> Missing image: {src}
+        <ImageOff size={14} aria-hidden /> Missing image: {src}
       </span>
     );
   const pair = (cls: string) => (
@@ -309,7 +309,7 @@ function DocImage({ src, alt, figure = false }: { src: string; alt: string; figu
 /** A documentation page body. The first-level heading is rendered by the caller (with the breadcrumb). */
 export function DocMarkdown({ blocks }: { blocks: Block[] }) {
   return (
-    <div className="text-[0.9375rem] leading-7 break-words text-fg-muted">
+    <div className="text-md leading-7 break-words text-fg-muted">
       <Blocks blocks={blocks} />
     </div>
   );

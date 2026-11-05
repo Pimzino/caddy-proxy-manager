@@ -359,7 +359,7 @@ export function TlsBadge({ host, certName }: { host: Pick<SiteHost, 'tls' | 'cer
       return (
         <Badge
           tone="success"
-          icon={<Globe size={11} />}
+          icon={<Globe size={12} />}
           title={host.acmeChallenge === 'dns' ? 'ACME with the DNS-01 challenge' : host.acmeChallenge === 'http' ? 'ACME with the HTTP-01 / TLS-ALPN-01 challenge' : undefined}
         >
           {host.acmeChallenge === 'dns' ? 'ACME · DNS' : 'ACME'}
@@ -367,19 +367,19 @@ export function TlsBadge({ host, certName }: { host: Pick<SiteHost, 'tls' | 'cer
       );
     case 'internal':
       return (
-        <Badge tone="info" icon={<ShieldCheck size={11} />}>
+        <Badge tone="info" icon={<ShieldCheck size={12} />}>
           Internal
         </Badge>
       );
     case 'custom':
       return (
-        <Badge tone="accent" icon={<KeyRound size={11} />} title={certName} className="max-w-[200px]">
+        <Badge tone="accent" icon={<KeyRound size={12} />} title={certName} className="max-w-[200px]">
           Custom{certName ? `: ${certName}` : ''}
         </Badge>
       );
     case 'none':
       return (
-        <Badge tone="warning" icon={<LockOpen size={11} />}>
+        <Badge tone="warning" icon={<LockOpen size={12} />}>
           HTTP only
         </Badge>
       );

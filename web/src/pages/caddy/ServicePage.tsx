@@ -160,14 +160,14 @@ function ServiceCard({ status, error, loading }: { status?: CaddyStatus; error: 
           status?.binaryInstalled && (
             <>
               {running ? (
-                <Button size="sm" icon={<Square size={13} />} onClick={() => void run('stop', 'Caddy stopped')} loading={action.isPending && action.variables === 'stop'}>
+                <Button size="sm" icon={<Square size={14} />} onClick={() => void run('stop', 'Caddy stopped')} loading={action.isPending && action.variables === 'stop'}>
                   Stop
                 </Button>
               ) : (
                 <Button
                   size="sm"
                   variant="primary"
-                  icon={<Play size={13} />}
+                  icon={<Play size={14} />}
                   onClick={() => void run('start', 'Caddy started')}
                   loading={action.isPending && action.variables === 'start'}
                   disabled={isService && !status.serviceInstalled}
@@ -175,7 +175,7 @@ function ServiceCard({ status, error, loading }: { status?: CaddyStatus; error: 
                   Start
                 </Button>
               )}
-              <Button size="sm" icon={<RotateCw size={13} />} onClick={() => void run('restart', 'Caddy restarted')} loading={action.isPending && action.variables === 'restart'}>
+              <Button size="sm" icon={<RotateCw size={14} />} onClick={() => void run('restart', 'Caddy restarted')} loading={action.isPending && action.variables === 'restart'}>
                 Restart
               </Button>
               {isAdmin && isService && (
@@ -335,7 +335,7 @@ function BinaryCard({ onJob, onPickVersion, onUpload }: { onJob: (id: string) =>
             {canOperate && (
               <Button
                 size="sm"
-                icon={<RefreshCw size={13} />}
+                icon={<RefreshCw size={14} />}
                 loading={check.isPending}
                 onClick={() =>
                   check.mutate(undefined, {
@@ -493,7 +493,7 @@ function BinaryCard({ onJob, onPickVersion, onUpload }: { onJob: (id: string) =>
             />
             {isAdmin && o.installed && !o.updateAvailable && (
               <div>
-                <Button size="sm" icon={<Download size={13} />} onClick={() => void startInstall()} loading={install.isPending}>
+                <Button size="sm" icon={<Download size={14} />} onClick={() => void startInstall()} loading={install.isPending}>
                   Reinstall {o.latest?.version ?? 'latest'}
                 </Button>
               </div>

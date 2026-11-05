@@ -51,7 +51,7 @@ export function Meter({
       className={cn('w-full overflow-hidden rounded-full', size === 'sm' ? 'h-1.5' : 'h-2', className)}
       style={{ background: `color-mix(in srgb, ${fill} 18%, transparent)` }}
     >
-      <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${pct}%`, background: fill }} />
+      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: fill }} />
     </div>
   );
 }

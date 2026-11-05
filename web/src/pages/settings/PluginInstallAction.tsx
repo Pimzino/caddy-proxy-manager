@@ -124,7 +124,7 @@ function PluginInstallAction({
       <Button
         size="sm"
         variant="primary"
-        icon={<Hammer size={13} />}
+        icon={<Hammer size={14} />}
         loading={save.isPending || install.isPending}
         disabled={binary.isPending || state === 'running'}
         onClick={() => void run()}

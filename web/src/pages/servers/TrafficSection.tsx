@@ -253,7 +253,6 @@ function TrafficBody({
     { id: '4xx', label: '4xx client errors', color: S_4XX, values: d.series.map((p) => p.status4xx) },
     { id: '5xx', label: '5xx server errors', color: S_5XX, values: d.series.map((p) => p.status5xx) },
   ];
-  const errorRate = d.series.map((p) => (p.requests ? ((p.status4xx + p.status5xx) / p.requests) * 100 : 0));
 
   const maxHostRequests = Math.max(1, ...d.topHosts.map((h) => h.requests));
   const maxClientRequests = Math.max(1, ...d.topClients.map((c) => c.requests));
@@ -266,31 +265,26 @@ function TrafficBody({
           label="Requests"
           value={<span title={formatNumber(t.requests)}>{formatCount(t.requests)}</span>}
           detail={rangeText}
-          trend={{ values: requests.values as number[], x, formatValue: (v) => `${formatCount(v)} requests`, formatX: fmtX }}
         />
         <StatTile
           label="Unique clients"
           value={<span title={formatNumber(t.uniqueClients)}>{formatCount(t.uniqueClients)}</span>}
           detail="distinct client IPs"
-          trend={{ values: clients.values as number[], x, formatValue: (v) => `${formatCount(v)} clients`, formatX: fmtX }}
         />
         <StatTile
           label="Data in"
           value={formatBytesShort(t.bytesIn)}
           detail="request bodies"
-          trend={{ values: bytes[0].values as number[], x, formatValue: formatBytesShort, formatX: fmtX }}
         />
         <StatTile
           label="Data out"
           value={formatBytesShort(t.bytesOut)}
           detail="response bodies"
-          trend={{ values: bytes[1].values as number[], x, formatValue: formatBytesShort, formatX: fmtX }}
         />
         <StatTile
           label="Error rate"
           value={t.requests ? formatRatio(errors / t.requests) : '—'}
           detail={`4xx ${t.requests ? formatRatio(t.status4xx / t.requests) : '—'} · 5xx ${t.requests ? formatRatio(t.status5xx / t.requests) : '—'}`}
-          trend={{ values: errorRate, x, formatValue: (v) => `${v.toFixed(v < 1 ? 2 : 1)}% errors`, formatX: fmtX }}
         />
         <StatTile label="Avg. duration" value={t.requests ? formatMs(t.avgDurationMs) : '—'} detail="time to last response byte" />
       </div>
@@ -515,7 +509,7 @@ function TrafficBody({
         </Card>
         {d.notes.length > 0 && (
           <Card className="min-w-0 self-start">
-            <CardHeader title="About these numbers" icon={<Info size={15} />} />
+            <CardHeader title="About these numbers" icon={<Info size={14} />} />
             <ul className="list-disc space-y-1.5 py-3 pr-4 pl-8 text-sm text-fg-muted">
               {d.notes.map((n, i) => (
                 <li key={i}>{n}</li>

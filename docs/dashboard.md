@@ -37,8 +37,21 @@ Some notices appear above the cards only when they apply:
 | Certificates | Number of certificates, how many are expiring soon, and the number of access lists. | **Certificates** |
 | Server readiness | Pass, warn and fail counts of the last readiness run, and when it ran. **Not checked yet** until the checks have run once. | **Readiness** |
 | Upstream health | How many health-checked backends are healthy, and how many are unhealthy. | **Caddy › Service & Updates** |
-| Traffic (24 h) | Requests in the last 24 hours on this server, unique clients, data sent, the error rate, and a chart of requests per hour. | **Traffic** |
+| Traffic (24 h) | Requests in the last 24 hours on this server, unique clients, data sent, and the error rate. | **Traffic** |
 | Servers | This server's role in a cluster and whether its nodes are online and in sync. | **Servers** |
+
+### Attention bars
+
+A card that needs attention gets a coloured bar on its left edge: red for a problem, amber for a warning. Cards without a problem have no bar.
+
+| Card | Red bar | Amber bar |
+|---|---|---|
+| Caddy service | Caddy is stopped. | Caddy is starting or stopping, or the manager cannot reach Caddy's admin API. |
+| Certificates | — | Certificates are expiring soon. |
+| Server readiness | A check failed. | A check warned. |
+| Upstream health | A backend is unhealthy. | — |
+| Traffic (24 h) | 5xx responses are 5 % or more of the requests. | 4xx and 5xx responses together are 10 % or more. |
+| Servers | A server is not responding. | A node is waiting to join, out of sync, or waiting for a key rotation. |
 
 ### Certificates card
 
@@ -59,10 +72,7 @@ It shows `0/0` and **No health-checked upstreams** when there are none, or when 
 
 ### Traffic (24 h) card
 
-The coloured bar on the left of the card warns about errors:
-
-- It turns red when 5xx responses are 5 % or more of the requests.
-- It turns amber when 4xx and 5xx responses together are 10 % or more.
+The error rate turns red or amber together with the card's bar (see [Attention bars](#attention-bars)).
 
 The card shows **Statistics disabled** when traffic statistics are turned off. It also shows this when the Caddy configuration is in Caddyfile mode, because statistics are not collected in that mode. The card refreshes every minute.
 

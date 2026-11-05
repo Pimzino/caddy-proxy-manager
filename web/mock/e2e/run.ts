@@ -530,6 +530,32 @@ async function serversScenario() {
 
     await page.goto(`${mock.base}/`, `__e2e.has('Run readiness checks')`, 'the dashboard');
     await check(S, ['WEB-8'], 'the dashboard of a primary keeps “Add proxy host”', async () => ((await page.eval<boolean>(`__e2e.withText('button', 'Add proxy host').length > 0`)) ? undefined : 'missing'));
+    // Only cards that need attention carry a coloured edge; healthy cards stay plain. The mock has expiring
+    // certificates, a failed readiness check, an unhealthy upstream and an offline node; Caddy and traffic are fine.
+    await check(S, ['WEB-11'], 'dashboard cards get a red or amber edge only when they need attention', async () => {
+      await page.waitFor('the Traffic and Servers cards', `__e2e.has('requests') && __e2e.has('online')`, 10_000);
+      const bars = await page.eval<Record<string, string | null>>(`(() => {
+        const colour = (v) => { const p = document.createElement('span'); p.style.background = 'var(' + v + ')'; document.body.append(p); const c = getComputedStyle(p).backgroundColor; p.remove(); return c; };
+        const red = colour('--danger'), amber = colour('--warning');
+        const cards = [...document.querySelectorAll('main a.group')];
+        return Object.fromEntries(cards.map((a) => {
+          const bar = a.querySelector(':scope > span.absolute');
+          const c = bar && getComputedStyle(bar).backgroundColor;
+          return [__e2e.norm(a.querySelector('div').textContent), !bar ? null : c === red ? 'red' : c === amber ? 'amber' : c];
+        }));
+      })()`);
+      return eq(bars, {
+        'Caddy service': null,
+        'Caddy version': null,
+        Sites: null,
+        Certificates: 'amber',
+        'Server readiness': 'red',
+        'Upstream health': 'red',
+        'Traffic (24 h)': null,
+        Servers: 'red',
+      }, 'card edges');
+    });
+    await shot(page, 'dashboard-attention-bars');
 
     // Rotate the key of an online node: acknowledged.
     await page.goto(`${mock.base}/servers`, `__e2e.has('WEB-PROXY02') && __e2e.has('WEB-PROXY03')`, 'the Servers page');

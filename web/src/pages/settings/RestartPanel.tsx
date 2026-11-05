@@ -73,7 +73,7 @@ export function RestartPanel({ reason, nextUrl }: { reason: string; nextUrl?: st
     return (
       <Callout tone="info" title="Restarting the management service…">
         <span className="inline-flex items-center gap-2">
-          <Spinner size={13} /> Waiting for it to come back{sameOrigin ? '; the page reloads automatically.' : '.'}
+          <Spinner size={14} /> Waiting for it to come back{sameOrigin ? '; the page reloads automatically.' : '.'}
         </span>
       </Callout>
     );
@@ -110,7 +110,7 @@ export function RestartPanel({ reason, nextUrl }: { reason: string; nextUrl?: st
       title="Restart required"
       actions={
         canRestart && (
-          <Button size="sm" variant="primary" icon={<RotateCw size={13} />} loading={restart.isPending} onClick={() => void run()}>
+          <Button size="sm" variant="primary" icon={<RotateCw size={14} />} loading={restart.isPending} onClick={() => void run()}>
             Restart now
           </Button>
         )

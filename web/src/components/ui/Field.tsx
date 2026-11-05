@@ -210,7 +210,7 @@ export function FormSection({
   return (
     <section className="grid gap-x-8 gap-y-4 border-b border-border py-6 first:pt-0 last:border-b-0 last:pb-0 xl:grid-cols-[260px_minmax(0,1fr)]">
       <div>
-        <h3 className="text-sm font-semibold text-fg">{title}</h3>
+        <h3 className="text-sm font-medium text-fg">{title}</h3>
         {description && <p className="mt-1 text-sm text-fg-subtle">{description}</p>}
         {actions && <div className="mt-3">{actions}</div>}
       </div>

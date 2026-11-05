@@ -100,7 +100,7 @@ function ScheduleForm({ settings }: { settings: BackupSettings }) {
           <FormSection
             title={
               <span className="inline-flex items-center gap-1.5">
-                <CalendarClock size={15} className="text-fg-subtle" aria-hidden /> Scheduled backups
+                <CalendarClock size={14} className="text-fg-subtle" aria-hidden /> Scheduled backups
               </span>
             }
             description="A daily backup of the database, certificate store and caddy.json, written to a local folder or a share. Older backups are removed automatically."
@@ -179,7 +179,7 @@ function BackupList() {
         actions={
           <Button
             size="sm"
-            icon={<Play size={13} />}
+            icon={<Play size={14} />}
             loading={run.isPending}
             onClick={() =>
               run.mutate(undefined, {
@@ -230,7 +230,7 @@ function BackupList() {
                     variant="ghost"
                     iconOnly
                     aria-label={`Download ${b.name}`}
-                    icon={<HardDriveDownload size={15} />}
+                    icon={<HardDriveDownload size={14} />}
                     loading={downloading === b.name}
                     onClick={() => void download(b)}
                   />

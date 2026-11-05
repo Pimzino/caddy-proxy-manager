@@ -157,7 +157,7 @@ function DialogInner({
         >
           <div className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-3.5">
             <div className="min-w-0 flex-1">
-              <h2 id={`${id}-title`} className="text-[15px] font-semibold text-fg">
+              <h2 id={`${id}-title`} className="text-md font-medium text-fg">
                 {title}
               </h2>
               {description && (

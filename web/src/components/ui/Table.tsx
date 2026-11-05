@@ -22,7 +22,7 @@ export function TH({ className, children, ...rest }: ThHTMLAttributes<HTMLTableC
     <th
       scope="col"
       {...rest}
-      className={cn('h-8 px-3 text-xs font-medium tracking-wide whitespace-nowrap text-fg-subtle uppercase first:pl-4 last:pr-4', className)}
+      className={cn('h-8 px-3 text-xs font-medium whitespace-nowrap text-fg-subtle first:pl-4 last:pr-4', className)}
     >
       {children}
     </th>
