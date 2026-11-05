@@ -158,7 +158,7 @@ function buildConfig(s: MockState): string {
       });
     if (h.kind === 'redirect')
       handlers.push({ handler: 'static_response', status_code: h.redirectCode, headers: { Location: [`${h.redirectTarget}${h.preservePath ? '{http.request.uri}' : ''}`] } });
-    if (h.kind === 'static') handlers.push({ handler: 'file_server', root: h.rootPath, ...(h.browse ? { browse: {} } : {}) });
+    if (h.kind === 'static') handlers.push({ handler: 'file_server', root: h.rootPath, ...(h.browse ? { browse: h.browsePlainTimeFormat ? { plain_time_format: h.browsePlainTimeFormat } : {} } : {}) });
     if (h.kind === 'response')
       handlers.push({ handler: 'static_response', status_code: h.responseStatus, headers: { 'Content-Type': [h.responseContentType] }, body: h.responseBody ?? '' });
     return { match: [{ host: h.domains }], handle: [{ handler: 'subroute', routes: [{ handle: handlers }] }], terminal: true };
@@ -441,6 +441,7 @@ const BLANK_HOST: SiteHostFields = {
   redirectCode: 301,
   preservePath: true,
   browse: false,
+  browsePlainTimeFormat: null,
   spaFallback: false,
   responseStatus: 200,
   responseContentType: 'text/plain; charset=utf-8',

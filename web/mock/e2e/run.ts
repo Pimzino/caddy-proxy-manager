@@ -403,6 +403,55 @@ async function logLevelsScenario() {
 }
 
 /**
+ * "Time format of plain-text listings" on a static site's Details tab (Caddy v2.11.9+ browse plain_time_format).
+ * Ways it could fail: the field shows while directory browsing is off, or is missing while it is on; a format without
+ * any element of Go's reference time (printed literally by Caddy) is saved; the saved format is not trimmed, or
+ * browsing is not saved with it; the stored format does not show when the site is opened again.
+ */
+async function browseTimeFormatScenario() {
+  const S = 'browse-time-format';
+  await scenario(S, {}, async ({ mock, page }) => {
+    const LABEL = 'Time format of plain-text listings';
+    const find = async () => (await mock.api<SiteHost[]>('GET', '/api/hosts')).find((h) => h.domains.includes('docs.example.com'))!;
+    const field = `__e2e.control(${js(LABEL)}, __e2e.dialog())`;
+    const shown = `__e2e.withText('label', ${js(LABEL)}, __e2e.dialog()).length`;
+    const save = async () => page.eval(`__e2e.click('button[type="submit"]', 'Save', __e2e.dialog())`);
+    const open = async () => {
+      await page.goto(`${mock.base}/hosts/static`, `__e2e.has('docs.example.com')`, 'the static sites list');
+      await page.eval(`__e2e.one('tr', 'docs.example.com').click()`);
+      await page.waitFor('the site editor', `!!__e2e.dialog() && __e2e.withText('label', 'Root folder', __e2e.dialog()).length > 0`);
+    };
+    await open();
+    await check(S, ['BROWSEFMT-1'], 'the field is hidden while directory browsing is off and shows when it is turned on', async () => {
+      const off = await page.eval(shown);
+      await page.eval(`__e2e.control('Directory browsing', __e2e.dialog()).click()`);
+      await page.waitFor('the field to show', `${shown} === 1`);
+      return eq([off, await page.eval(`${field}.value`)], [0, ''], 'label count while off, value when shown');
+    });
+
+    await page.eval(`__e2e.set(${field}, 'YYYY-MM-DD')`);
+    await save();
+    await check(S, ['BROWSEFMT-2'], 'a format without an element of the reference time is refused before saving', async () => {
+      await page.waitFor('the format error', `__e2e.has("Write the format with Go's reference time Mon Jan 2 15:04:05 MST 2006, for example 2006-01-02 15:04.")`);
+      const h = await find();
+      return eq([h.browse, h.browsePlainTimeFormat ?? null], [false, null], 'stored browse, format');
+    });
+
+    await page.eval(`__e2e.set(${field}, ' 2006-01-02 15:04 ')`);
+    await save();
+    await page.waitFor('the editor to close after saving', `!document.querySelector('[aria-modal="true"]')`, 10_000);
+    await check(S, ['BROWSEFMT-3'], 'the saved site has browsing on and the trimmed format', async () => {
+      const h = await find();
+      return eq([h.browse, h.browsePlainTimeFormat], [true, '2006-01-02 15:04'], 'stored browse, format');
+    });
+    await open();
+    await check(S, ['BROWSEFMT-4'], 'opening the site again shows the stored format', async () =>
+      eq(await page.eval(`${field}.value`), '2006-01-02 15:04', 'format in the editor'),
+    );
+  });
+}
+
+/**
  * Settings › Caddy › Request limits and headers (server options of Caddy v2.11.6+).
  * Ways it could fail: the section is missing; the placeholders do not show Caddy's defaults; out-of-range numbers or a
  * header name Caddy would refuse reach the API; valid values are not saved as typed; an emptied field is not sent as
@@ -1285,6 +1334,7 @@ try {
   await requestLimitsScenario();
   await urlPatternScenario();
   await logLevelsScenario();
+  await browseTimeFormatScenario();
   await dnsOnlyScenarios();
   await serversScenario();
   await brandingScenario();

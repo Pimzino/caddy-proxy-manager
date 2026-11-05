@@ -70,7 +70,7 @@ const shots: Shot[] = [
   { name: 'host-locations-tab', path: '/hosts/proxy', ready: `__e2e.has('api.example.com')`, act: `${openRow('api.example.com')}; await new Promise((r) => setTimeout(r, 300)); ${dialogTab('Locations')}`, actReady: tabActive('Locations'), crop: 'dialog' },
   { name: 'host-advanced-tab', path: '/hosts/proxy', ready: `__e2e.has('api.example.com')`, act: `${openRow('api.example.com')}; await new Promise((r) => setTimeout(r, 300)); ${dialogTab('Advanced')}`, actReady: tabActive('Advanced'), crop: 'dialog' },
   { name: 'redirect-details', path: '/hosts/redirect', ready: `__e2e.has('old-shop.example.com')`, act: openRow('old-shop.example.com'), actReady: `${dialog} && __e2e.has('Target URL')`, crop: 'dialog' },
-  { name: 'static-site-details', path: '/hosts/static', ready: `__e2e.has('docs.example.com')`, act: openRow('docs.example.com'), actReady: `${dialog} && __e2e.has('Root folder')`, crop: 'dialog' },
+  { name: 'static-site-details', path: '/hosts/static', ready: `__e2e.has('downloads.corp.example.com')`, act: openRow('downloads.corp.example.com'), actReady: `${dialog} && __e2e.has('Root folder')`, crop: 'dialog' },
   { name: 'custom-response-details', path: '/hosts/response', ready: `__e2e.has('maintenance.example.com')`, act: openRow('maintenance.example.com'), actReady: `${dialog} && __e2e.has('Content type')`, crop: 'dialog' },
   { name: 'streams-list', path: '/streams', ready: `__e2e.has('RDP gateway')`, crop: 'main' },
   { name: 'stream-dialog', path: '/streams', ready: `__e2e.has('RDP gateway')`, act: openButton('Add stream'), actReady: `${dialog} && __e2e.has('Listen port')`, crop: 'dialog' },

@@ -113,6 +113,7 @@ export function newHost(kind: HostKind): SiteHostFields {
     preservePath: true,
     rootPath: kind === 'static' ? '' : null,
     browse: false,
+    browsePlainTimeFormat: null,
     spaFallback: false,
     responseStatus: kind === 'response' ? 503 : 404,
     responseBody: kind === 'response' ? 'This site is temporarily down for maintenance.' : null,
@@ -168,6 +169,7 @@ export function toPayload(h: SiteHostFields): SiteHostFields {
     upstreamHostHeader: trimOrNull(h.upstreamHostHeader),
     redirectTarget: trimOrNull(h.redirectTarget),
     rootPath: trimOrNull(h.rootPath),
+    browsePlainTimeFormat: trimOrNull(h.browsePlainTimeFormat),
     responseBody: h.responseBody ?? null,
     advancedRoutesJson: trimOrNull(h.advancedRoutesJson),
     upstreamNtlm: h.kind === 'proxy' ? !!h.upstreamNtlm : false,
@@ -263,6 +265,12 @@ export function validateHost(h: SiteHostFields, ctx: HostValidationContext = {})
     if (!REDIRECT_CODES.some((c) => c.value === h.redirectCode)) e.redirectCode = 'Choose 301, 302, 303, 307 or 308.';
   }
   if (h.kind === 'static' && !h.rootPath?.trim()) e.rootPath = 'Enter the folder to serve.';
+  // Mirrors ModelValidation (CaddyConfigGenerator.PlainTimeFormatError).
+  const layout = h.kind === 'static' && h.browse ? (h.browsePlainTimeFormat ?? '').trim() : '';
+  if (layout.length > 64) e.browsePlainTimeFormat = 'The time format is too long (at most 64 characters).';
+  else if ([...layout].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127)) e.browsePlainTimeFormat = 'The time format may not contain tabs or line breaks.';
+  else if (layout && !/[1-6]|Jan|Mon|MST|PM|pm/.test(layout))
+    e.browsePlainTimeFormat = "Write the format with Go's reference time Mon Jan 2 15:04:05 MST 2006, for example 2006-01-02 15:04.";
   if (h.kind === 'response') {
     if (!(Number.isInteger(h.responseStatus) && h.responseStatus >= 200 && h.responseStatus <= 599))
       e.responseStatus = 'Status must be between 200 and 599 (1xx codes are informational).';
@@ -303,7 +311,7 @@ const TAB_OF_FIELD: Record<string, HostTab> = {
 
 const DETAIL_FIELDS = new Set([
   'domains', 'upstreams', 'loadBalancing', 'healthCheck', 'upstreamTlsInsecure', 'upstreamNtlm', 'upstreamHostHeader',
-  'redirectTarget', 'redirectCode', 'preservePath', 'rootPath', 'browse', 'spaFallback', 'responseStatus',
+  'redirectTarget', 'redirectCode', 'preservePath', 'rootPath', 'browse', 'browsePlainTimeFormat', 'spaFallback', 'responseStatus',
   'responseBody', 'responseContentType', 'compression', 'enabled', 'kind',
 ]);
 

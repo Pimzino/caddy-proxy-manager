@@ -119,6 +119,7 @@ const baseHost = (kind: SiteHostFields['kind']): SiteHostFields => ({
   redirectCode: 301,
   preservePath: true,
   browse: false,
+  browsePlainTimeFormat: null,
   spaFallback: false,
   responseStatus: 404,
   responseContentType: 'text/plain; charset=utf-8',
@@ -512,7 +513,7 @@ export function createState(): MockState {
     host('redirect', { domains: ['old-shop.example.com'], redirectTarget: 'https://shop.example.com', redirectCode: 308, preservePath: true }),
     host('redirect', { domains: ['portal.example.net'], redirectTarget: 'https://app.example.com/login', redirectCode: 302, preservePath: false, tls: 'acme', acmeChallenge: 'dns' }),
     host('static', { domains: ['docs.example.com'], rootPath: 'D:\\Sites\\docs\\dist', spaFallback: true, hsts: true, acmeChallenge: 'dns' }),
-    host('static', { domains: ['downloads.corp.example.com'], rootPath: '\\\\fs01.corp.example.com\\public$\\downloads', browse: true, tls: 'internal', accessListId: officeList.id }),
+    host('static', { domains: ['downloads.corp.example.com'], rootPath: '\\\\fs01.corp.example.com\\public$\\downloads', browse: true, browsePlainTimeFormat: '2006-01-02 15:04', tls: 'internal', accessListId: officeList.id }),
     host('response', { domains: ['maintenance.example.com'], responseStatus: 503, responseBody: 'We are performing scheduled maintenance. Back soon.', responseContentType: 'text/plain; charset=utf-8' }),
     host('response', { domains: ['retired.example.net'], responseStatus: 410, responseBody: '<h1>410 Gone</h1><p>This service has been retired.</p>', responseContentType: 'text/html; charset=utf-8', tls: 'none', forceHttps: false }),
     host('proxy', {

@@ -23,7 +23,7 @@ internal struct AccessEntry
 }
 
 /// <summary>
-/// Parses the JSON lines Caddy v2.11.8 writes for the `http.log.access` loggers (SPEC "Traffic statistics logging";
+/// Parses the JSON lines Caddy v2.11.9 writes for the `http.log.access` loggers (SPEC "Traffic statistics logging";
 /// field list in docs/research/round3-accesslog.md §1, source:
 /// https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddyhttp/server.go logRequest / LoggableHTTPRequest).
 /// Unknown fields and nested objects are skipped, so the filter encoder's deletions or additions do not matter.

@@ -157,6 +157,17 @@ Caddy `v2.11.8` checks configurations more strictly. A setting it used to ignore
 
 Caddy `v2.11.8` also answers requests with an invalid host name, such as `..` or a name with `/`, with `400 Bad Request` before any host handles them.
 
+## Caddyfiles behave differently after updating to Caddy v2.11.9
+
+Caddy `v2.11.9` changes how some Caddyfile directives work. Hosts that the console manages are not affected. In [Caddyfile mode](configuration.md#caddyfile-mode), in [Import Caddyfile](configuration.md#import-a-caddyfile) and in **Custom Caddy routes**, check:
+
+- Two site blocks for the same name, such as `example.com` and `example.com:443`, that set different `client_auth` in their `tls` blocks. Caddy used to keep one of them and drop the other, which could drop a client certificate requirement. Now the Caddyfile is refused with "conflicting client auth configuration". Give both blocks the same `client_auth`, or set it in one block only.
+- `try_files` with `{path}`: a request that ends in `/`, such as `/wp-admin/`, no longer matches the folder through `{path}`. List `{path}/` as well, for example `try_files {path} {path}/ /index.html`. The console's **Single-page application fallback** already does this.
+- `php_fastcgi` and the FastCGI transport: Caddy answers `400 Bad Request` for script paths with a short name such as `ADMINI~1` or a `:`, and for encoded paths that would run a different script than the decoded path, such as `/public/tool.php%2f..%2f..%2fadmin%2ftool.php`. Values set with `env` can no longer be replaced by a request header, and `HTTP_HOST` is always the host Caddy routed the request for.
+- Path matchers with placeholders, such as `path /{env.HEALTH_PATH}`, now match: Caddy keeps the letter case of the placeholder name and compares the value without regard to letter case.
+
+Read Caddy's release notes before you update: https://github.com/caddyserver/caddy/releases/tag/v2.11.9
+
 ## Clients are redirected to the wrong HTTPS port
 
 If Caddy listens on a non-standard HTTPS port behind NAT or port forwarding, HTTP-to-HTTPS redirects use that port. Set **Public HTTPS port** on **Settings › Caddy** to the port clients use, for example `443`. See [Caddy settings](caddy-settings.md).

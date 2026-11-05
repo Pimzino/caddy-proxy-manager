@@ -163,6 +163,11 @@ public sealed class SiteHost : Entity
     // ---- Static
     public string? RootPath { get; set; }
     public bool Browse { get; set; }
+    /// <summary>
+    /// Go time layout of the modification times in plain-text directory listings (Accept: text/plain), e.g.
+    /// "2006-01-02 15:04:05 MST"; null = Caddy's "January 2, 2006 at 15:04:05". Caddy v2.11.9+ browse plain_time_format.
+    /// </summary>
+    public string? BrowsePlainTimeFormat { get; set; }
     /// <summary>Rewrite unknown paths to /index.html (single-page apps).</summary>
     public bool SpaFallback { get; set; }
 

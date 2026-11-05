@@ -134,7 +134,7 @@ The **Locations** tab (proxy hosts only) sends part of a host's requests to diff
 | Field | Default | Description |
 |---|---|---|
 | Match by | Path prefix | **Path prefix** or **URL pattern**. |
-| Path prefix | `/` | Required. Must start with `/`, be unique on the host, and contain no `*` or spaces. A trailing `/` is ignored. |
+| Path prefix | `/` | Required. Must start with `/`, be unique on the host, and contain no `*` or spaces. A trailing `/` is ignored. Caddy placeholders such as `{env.API_PREFIX}` are allowed with Caddy `v2.11.9` or later. |
 | URL pattern | empty | Required for **URL pattern**. See [URL patterns](#url-patterns). |
 | Ignore case | off | Shown for **URL pattern**. Matches `/Books/1` as well as `/books/1`. |
 | Upstreams | one `http` upstream on port 80 | Same rules as the host's upstreams. All must use the same scheme. |
@@ -185,6 +185,7 @@ With **Access log** on, **Log level by path** sets the level of the log entries 
 - A path is matched like a Caddy path matcher, and letter case is ignored: `/healthz` matches only that path, `/api/*` everything below `/api`, `*.php` paths that end in `.php`, and `*` every request. A path starts with `/` or `*` and has no spaces.
 - The first rule that matches wins. Put specific paths before general ones, for example `/api/private/*` before `/api/*`.
 - The rules see the path the client sent, before **Strip path prefix** or other rewrites.
+- A path can contain Caddy placeholders, for example `/{env.HEALTH_PATH}` for a system environment variable, as Caddy read it when it started. The placeholder is replaced first, and the result is compared without regard to letter case. Placeholders need Caddy `v2.11.9` or later; with an older Caddy, saving shows a warning.
 - [Traffic statistics](traffic-statistics.md) count every request, including those left out with **Debug**.
 - Up to 50 rules per host. Each path may appear only once.
 - The rules need Caddy `v2.11.8` or later. With an older Caddy they are not applied, and saving shows a warning.

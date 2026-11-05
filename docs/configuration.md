@@ -91,7 +91,7 @@ The import turns the site blocks of an existing Caddyfile into managed hosts, fo
 
 1. Open **Caddy › Configuration** and select **Import Caddyfile**. In Caddyfile mode you can also use **Import as hosts…** above the editor; your Caddyfile is then filled in.
 2. Paste the Caddyfile.
-3. Select **Convert**. Caddy converts the Caddyfile, and the manager maps it to host drafts. Caddy must be running or at least installed for this.
+3. Select **Convert**. Caddy converts the Caddyfile, and the manager maps it to host drafts. Caddy must be running or at least installed for this. If Caddy refuses the Caddyfile, for example because two site blocks for the same name set different `client_auth`, its reason is shown and nothing is converted.
 4. Review the drafts. Clear the check box of any draft you do not want.
 5. Select **Create hosts**. The button shows the number of selected drafts.
 
@@ -104,7 +104,7 @@ The hosts are created together and applied. If any draft is invalid, or a domain
 | `reverse_proxy` | A proxy host with its upstreams, load-balancing policy, active health check, request headers (including `Host`), HTTPS upstreams and `tls_insecure_skip_verify`, and NTLM transport. |
 | `handle_path` or `handle` with a path and `reverse_proxy` | A location of the proxy host. |
 | `redir` | A redirect with code 301, 302, 303, 307 or 308. A target ending in `{uri}` keeps the path. |
-| `file_server` with `root`, `browse` | A static site. `try_files` for a single-page app becomes the SPA fallback. |
+| `file_server` with `root`, `browse` | A static site. `plain_time_format` in `browse` becomes **Time format of plain-text listings**. `try_files` for a single-page app becomes the SPA fallback. |
 | `respond` | A custom response with status, body and content type. |
 | `encode` | Compression on. |
 | `header` (response headers) | Response header rules. |
@@ -122,7 +122,7 @@ Sites served over HTTPS get ACME certificates. A site that is also served over p
 - Sites on other ports: the imported host is served on the configured HTTP or HTTPS port instead.
 - ACME settings (e-mail, CA, DNS challenge). Set them in [ACME settings](acme.md).
 - Certificate files from `tls <cert> <key>`: the draft uses ACME, and its notes tell you to add the files under [Certificates](certificates.md) and switch the host to custom TLS.
-- Options of `reverse_proxy`, `file_server` and health checks that have no field in the manager. They are ignored with a warning.
+- Options of `reverse_proxy`, `file_server`, `browse` and health checks that have no field in the manager. They are ignored with a warning.
 
 Other handlers of a site, and `basic_auth`, are kept as the draft's advanced routes (custom JSON routes that run before the host's main handler), so that a protected site stays protected. A warning asks you to review them; consider replacing `basic_auth` with an [access list](access-lists.md).
 

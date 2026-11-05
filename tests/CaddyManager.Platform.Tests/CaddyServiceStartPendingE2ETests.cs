@@ -41,7 +41,7 @@ namespace CaddyManager.Platform.Tests;
 ///     and StartAsync cannot recover it.
 /// 10. After an intentional kill the status shows "last stopped with Win32 exit code 1067" as an error.
 /// 11. The kill hits the wrong process or leaves the service process running.
-/// 12. Real Caddy v2.11.8: a start/stop cycle fails, is slow, leaves the process behind, or the service is restarted by
+/// 12. Real Caddy v2.11.9: a start/stop cycle fails, is slow, leaves the process behind, or the service is restarted by
 ///     the SCM after an intentional stop (research: the exit may race SERVICE_STOPPED).
 /// 13. The PID that QueryServiceStatusEx reports while the service is START_PENDING "may not be valid"
 ///     (https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex, Remarks), so the kill

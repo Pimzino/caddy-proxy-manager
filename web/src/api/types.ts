@@ -125,6 +125,8 @@ export interface SiteHostFields {
 
   rootPath?: string | null;
   browse: boolean;
+  /** Go time layout of plain-text directory listings (Caddy v2.11.9+ browse plain_time_format); null = Caddy's default. */
+  browsePlainTimeFormat?: string | null;
   spaFallback: boolean;
 
   responseStatus: number;

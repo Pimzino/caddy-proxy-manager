@@ -32,6 +32,15 @@ public static partial class CaddyConfigGenerator
     public const string RequestLimitsMinVersion = "v2.11.6";
     /// <summary>First Caddy release that reads the log_level request variable (access log level per request).</summary>
     public const string LogLevelMinVersion = "v2.11.8";
+    /// <summary>First Caddy release with file_server browse plain_time_format.</summary>
+    public const string PlainTimeFormatMinVersion = "v2.11.9";
+    /// <summary>
+    /// First Caddy release whose path matcher keeps the case of placeholder names ({env.NAME}) and compares their values
+    /// case-insensitively (caddy PR #8343); older releases lower-case the pattern first, so such paths rarely match.
+    /// </summary>
+    public const string PathPlaceholderMinVersion = "v2.11.9";
+    /// <summary>Longest SiteHost.BrowsePlainTimeFormat.</summary>
+    public const int MaxPlainTimeFormatLength = 64;
     /// <summary>Most access log level rules per host.</summary>
     public const int MaxAccessLogLevelRules = 50;
     public const string Layer4Module = "layer4";
@@ -892,6 +901,7 @@ public static partial class CaddyConfigGenerator
             .ToList();
         foreach (var (loc, path) in locations)
         {
+            WarnPathPlaceholder(path, $"Host '{label}', location '{path}'", ctx);
             var ups = ValidUpstreams(loc.Upstreams, $"Host '{label}', location '{path}'", ctx);
             if (ups.Count == 0)
             {
@@ -948,12 +958,20 @@ public static partial class CaddyConfigGenerator
             ctx.Warn($"Host '{site.Domains[0]}': access log levels by path need Caddy {LogLevelMinVersion} or later (installed: {ctx.Input.InstalledVersion}); requests are logged at their usual level.");
             return;
         }
+        foreach (var r in rules) WarnPathPlaceholder(r.Path.Trim(), $"Host '{site.Domains[0]}', log level rule '{r.Path.Trim()}'", ctx);
         for (var i = rules.Count - 1; i >= 0; i--)
             routes.Add(new JsonObject
             {
                 ["match"] = new JsonArray(new JsonObject { ["path"] = new JsonArray(rules[i].Path.Trim()) }),
                 ["handle"] = new JsonArray(new JsonObject { ["handler"] = "vars", ["log_level"] = rules[i].Level.ToString().ToUpperInvariant() }),
             });
+    }
+
+    /// <summary>Warns when a path matcher with a placeholder goes to a Caddy that lower-cases it before replacing (PathPlaceholderMinVersion).</summary>
+    private static void WarnPathPlaceholder(string path, string what, Ctx ctx)
+    {
+        if (path.Contains('{') && InstalledCaddyOlderThan(ctx.Input.InstalledVersion, PathPlaceholderMinVersion))
+            ctx.Warn($"{what}: paths with placeholders need Caddy {PathPlaceholderMinVersion} or later to match reliably (installed: {ctx.Input.InstalledVersion}).");
     }
 
     /// <summary>Why a path of an access log level rule is not a usable Caddy path matcher, or null.</summary>
@@ -1428,11 +1446,44 @@ public static partial class CaddyConfigGenerator
         // would hide the whole site, as it compares every component of the absolute path).
         if (!root.Replace('\\', '/').Split('/').Any(c => c.StartsWith('.') && c is not "." and not ".."))
             fs["hide"] = new JsonArray(".*");
-        if (h.Browse) fs["browse"] = new JsonObject();
+        if (h.Browse) fs["browse"] = BrowseOptions(h, label, ctx);
         routes.Add(new JsonObject { ["handle"] = new JsonArray(fs) });
     }
 
     private const string WellKnownPath = "/.well-known/*";
+
+    /// <summary>
+    /// file_server browse options. plain_time_format is left out for a Caddy older than v2.11.9, which refuses the
+    /// unknown field and with it the whole configuration.
+    /// https://github.com/caddyserver/caddy/blob/v2.11.9/modules/caddyhttp/fileserver/browse.go
+    /// </summary>
+    private static JsonObject BrowseOptions(SiteHost h, string label, Ctx ctx)
+    {
+        var browse = new JsonObject();
+        var layout = h.BrowsePlainTimeFormat;
+        if (string.IsNullOrEmpty(layout)) return browse;
+        if (InstalledCaddyOlderThan(ctx.Input.InstalledVersion, PlainTimeFormatMinVersion))
+            ctx.Warn($"Host '{label}': the time format of plain-text listings needs Caddy {PlainTimeFormatMinVersion} or later (installed: {ctx.Input.InstalledVersion}); listings use Caddy's default format.");
+        else
+            browse["plain_time_format"] = layout;
+        return browse;
+    }
+
+    /// <summary>
+    /// Why <paramref name="layout"/> is not a usable time format of plain-text listings, or null. Any text is a valid Go
+    /// layout, but one without an element of Go's reference time (Mon Jan 2 15:04:05 MST 2006), such as "YYYY-MM-DD",
+    /// prints itself instead of the time; a tab or line break would break the tab-separated listing.
+    /// </summary>
+    public static string? PlainTimeFormatError(string? layout)
+    {
+        var l = (layout ?? "").Trim();
+        if (l.Length == 0) return null;
+        if (l.Length > MaxPlainTimeFormatLength) return $"The time format is too long (at most {MaxPlainTimeFormatLength} characters).";
+        if (l.Any(char.IsControl)) return "The time format may not contain tabs or line breaks.";
+        if (!System.Text.RegularExpressions.Regex.IsMatch(l, "[1-6]|Jan|Mon|MST|PM|pm"))
+            return "Write the format with Go's reference time Mon Jan 2 15:04:05 MST 2006, for example 2006-01-02 15:04.";
+        return null;
+    }
 
     private static JsonObject ResponseHandler(SiteHost h)
     {

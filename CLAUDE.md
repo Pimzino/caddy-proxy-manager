@@ -33,7 +33,7 @@ The console serves the product documentation at `/docs` (public, no sign-in). It
 
 ## Caddy version tracking
 
-Last Caddy release the product was tested with: **v2.11.8** (`CaddyVersion.Tested` in
+Last Caddy release the product was tested with: **v2.11.9** (`CaddyVersion.Tested` in
 `src/CaddyManager.Platform/Binary/CaddyVersion.cs`; CI downloads exactly that tag).
 
 - At the start of any work, check for newer stable Caddy releases

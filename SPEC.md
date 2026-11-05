@@ -67,7 +67,7 @@ Managed mode produces one Caddy JSON document:
   - Order inside the subroute: access list (IP rules → `remote_ip` matchers + `static_response` 403; basic auth → `authentication` handler with `http_basic` provider and bcrypt accounts; honour SatisfyAny), block-exploits (403 on common probe patterns via `path_regexp`/`query` matchers), HSTS/response headers (`headers` handler), compression (`encode` gzip+zstd), AdvancedRoutesJson routes, then the kind handler:
     - Proxy: custom Locations first (`path` matcher `<path>*`, optional `rewrite` strip_path_prefix), then default `reverse_proxy` with `upstreams[].dial = host:port`, `transport.http.tls` (+ `insecure_skip_verify`) for https upstreams, `load_balancing.selection_policy`, `health_checks.active` (uri, interval, timeout, expect_status), request header ops (`headers.request`), Host header override (`{http.reverse_proxy.upstream.hostport}` when "{upstream}").
     - Redirect: `static_response` with `Location` = target (+ `{http.request.uri}` when PreservePath) and status code.
-    - Static: `file_server` with root and browse; SpaFallback → `rewrite` via `try_files` matcher (`file` matcher `{path}`, `/index.html`).
+    - Static: `file_server` with root and browse (`plain_time_format` from BrowsePlainTimeFormat, Caddy v2.11.9+); SpaFallback → `rewrite` via `try_files` matcher (`file` matcher `{path}`, `{path}/`, `/index.html`; since v2.11.9 only an entry ending in `/` matches a directory).
     - Response: `static_response` with status, body, Content-Type header.
 - TLS:
   - `Tls=None` → domains added to `automatic_https.skip` and served on an HTTP-only listener (`:HttpPort`), no redirect.

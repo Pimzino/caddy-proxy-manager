@@ -499,6 +499,26 @@ function DetailsTab({
             checked={form.browse}
             onChange={(v) => set('browse', v)}
           />
+          {form.browse && (
+            <Field
+              label="Time format of plain-text listings"
+              error={errors.browsePlainTimeFormat}
+              hint={
+                <>
+                  For clients that ask for a text listing (<span className="mono">Accept: text/plain</span>), such as scripts. Written
+                  with Go’s reference time <span className="mono">Mon Jan 2 15:04:05 MST 2006</span>. Leave empty for Caddy’s{' '}
+                  <span className="mono">January 2, 2006 at 15:04:05</span>. The HTML listing is not affected. Needs Caddy v2.11.9 or later.
+                </>
+              }
+            >
+              <Input
+                mono
+                placeholder="2006-01-02 15:04:05 MST"
+                value={form.browsePlainTimeFormat ?? ''}
+                onChange={(e) => set('browsePlainTimeFormat', e.target.value)}
+              />
+            </Field>
+          )}
           <SwitchField
             label="Single-page application fallback"
             description="Serve /index.html for paths that do not exist (React, Angular, Vue routers)."
@@ -1030,7 +1050,7 @@ function AccessLogLevelRules({ form, set, errors }: { form: SiteHostFields; set:
     <Field
       label="Log level by path"
       error={errors.accessLogLevels}
-      hint="Requests whose path matches are logged at this level instead of Info (Error for 5xx responses). Debug leaves them out of the access log, for example health checks; traffic statistics still count them. /api/* matches everything below /api, *.php the end of paths, * every request. The first matching rule wins. Needs Caddy v2.11.8 or later."
+      hint="Requests whose path matches are logged at this level instead of Info (Error for 5xx responses). Debug leaves them out of the access log, for example health checks; traffic statistics still count them. /api/* matches everything below /api, *.php the end of paths, * every request. The first matching rule wins. Needs Caddy v2.11.8 or later; placeholders such as {env.HEALTH_PATH} need v2.11.9."
     >
       <div className="flex flex-col gap-2">
         {rules.map((r, i) => (

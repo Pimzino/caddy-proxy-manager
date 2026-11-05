@@ -86,7 +86,7 @@ jobs:
         run: ./.github/scripts/get-caddy.ps1 -Which tested
 
       # Go for the Caddy builds with plugins in get-e2e-tools.ps1: caddyserver.com's build server cannot pin the Caddy
-      # version of a custom build, so the script compiles CaddyVersion.Tested itself. Caddy v2.11.8's go.mod needs Go
+      # version of a custom build, so the script compiles CaddyVersion.Tested itself. Caddy v2.11.9's go.mod needs Go
       # 1.26.0 or newer. No go.sum in this repository, so setup-go's module cache has nothing to key on: off.
       # https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@v7

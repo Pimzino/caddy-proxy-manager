@@ -19,17 +19,40 @@ The search box also matches the root folder.
 
 ## Files settings
 
-![The Details tab of a static site with the root folder, directory browsing and single-page application fallback](images/static-site-details.webp)
+![The Details tab of a static site with the root folder, directory browsing with a time format for plain-text listings, and the single-page application fallback](images/static-site-details.webp)
 
 | Field | Default | Description |
 |---|---|---|
 | Root folder | empty | Required. An absolute local path or UNC share that holds the site's files. |
 | Directory browsing | off | Lists the folder contents when a folder has no index file. |
+| Time format of plain-text listings | empty | Shown with **Directory browsing** on. How plain-text listings write the time a file was changed. Empty uses Caddy's format, such as `November 5, 2026 at 09:30:12`. See [Plain-text listings](#plain-text-listings). |
 | Single-page application fallback | off | Serves `/index.html` for paths that do not exist, so client-side routes work. |
 | Compression | on | Compresses responses with zstd or gzip when the client supports it. |
 
 - For a folder, Caddy serves `index.html` (or `index.txt`) when it exists.
 - With the single-page application fallback on, an existing file or folder is still served as usual. Only paths that do not exist get `/index.html`.
+
+## Plain-text listings
+
+A client that sends `Accept: text/plain`, such as a script, gets the listing as text instead of HTML: one line per entry with the name, the size and the time it was changed, separated by tabs. For example:
+
+```powershell
+curl.exe -H "Accept: text/plain" https://downloads.corp.example.com/
+```
+
+**Time format of plain-text listings** sets how that time is written. Write the format with Go's reference time, `Mon Jan 2 15:04:05 MST 2006`: each part of it stands for the same part of the file's time.
+
+| Format | Example |
+|---|---|
+| `2006-01-02 15:04` | `2026-11-05 09:30` |
+| `2006-01-02T15:04:05Z07:00` | `2026-11-05T09:30:12Z` |
+| `02/01/2006 15:04:05 MST` | `05/11/2026 09:30:12 UTC` |
+| `Jan 2, 2006 3:04 PM` | `Nov 5, 2026 9:30 AM` |
+
+- A format without any part of the reference time, such as `YYYY-MM-DD` or `dd.MM.yyyy`, is refused, because Caddy would print it as it is.
+- The format can have up to 64 characters, and no tabs or line breaks.
+- The HTML listing that browsers see is not affected.
+- The format needs Caddy `v2.11.9` or later. With an older Caddy, plain-text listings use Caddy's format, and saving shows a warning.
 
 ## Folders you can use
 

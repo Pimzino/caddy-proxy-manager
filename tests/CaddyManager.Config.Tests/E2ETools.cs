@@ -32,7 +32,7 @@ public static class E2ETools
             var m = file is not null && File.Exists(file)
                 ? System.Text.RegularExpressions.Regex.Match(File.ReadAllText(file), "public const string Tested = \"(v\\d+\\.\\d+\\.\\d+)\";")
                 : null;
-            return _caddyVersion = m is { Success: true } ? m.Groups[1].Value : "v2.11.8";
+            return _caddyVersion = m is { Success: true } ? m.Groups[1].Value : throw new InvalidOperationException("CaddyVersion.Tested was not found in src/CaddyManager.Platform/Binary/CaddyVersion.cs.");
         }
     }
     private static string? _caddyVersion;

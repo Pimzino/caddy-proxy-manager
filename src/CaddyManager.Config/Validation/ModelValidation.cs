@@ -37,6 +37,7 @@ public static partial class ModelValidation
         h.HealthCheck ??= new();
         h.AccessLogLevels ??= new();
         foreach (var r in h.AccessLogLevels) r.Path = (r.Path ?? "").Trim();
+        h.BrowsePlainTimeFormat = string.IsNullOrWhiteSpace(h.BrowsePlainTimeFormat) ? null : h.BrowsePlainTimeFormat.Trim();
         foreach (var u in h.Upstreams) u.Host = (u.Host ?? "").Trim();
         foreach (var l in h.Locations)
         {
@@ -142,6 +143,7 @@ public static partial class ModelValidation
             case HostKind.Static:
                 if (string.IsNullOrWhiteSpace(h.RootPath)) v.Add("rootPath", "Root folder is required.");
                 else if (!IsAbsolutePath(h.RootPath)) v.Add("rootPath", "Root folder must be an absolute path, e.g. C:\\sites\\example.");
+                if (h.Browse && CaddyConfigGenerator.PlainTimeFormatError(h.BrowsePlainTimeFormat) is { } layoutError) v.Add("browsePlainTimeFormat", layoutError);
                 break;
             case HostKind.Response:
                 // 1xx codes are informational; Caddy would send them and then an implicit 200.

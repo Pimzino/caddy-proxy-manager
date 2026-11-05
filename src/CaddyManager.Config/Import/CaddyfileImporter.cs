@@ -293,6 +293,12 @@ public static class CaddyfileImporter
                 d.Kind = HostKind.Static;
                 site.FileServerRoot = Str(h["root"]);
                 d.Browse = h["browse"] is JsonObject;
+                if (h["browse"] is JsonObject browse)
+                {
+                    d.BrowsePlainTimeFormat = Str(browse["plain_time_format"]);
+                    foreach (var key in browse.Select(p => p.Key).Where(k => k is not "plain_time_format"))
+                        ctx.Warn($"'{site.Label}': file_server browse option '{key}' is not supported and was ignored.");
+                }
                 foreach (var key in h.Select(p => p.Key).Where(k => k is not ("handler" or "root" or "browse" or "hide")))
                     ctx.Warn($"'{site.Label}': file_server option '{key}' is not supported and was ignored.");
                 site.Main = "file_server";
