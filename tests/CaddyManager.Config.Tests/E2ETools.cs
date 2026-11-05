@@ -9,11 +9,11 @@ namespace CaddyManager.Config.Tests;
 
 /// <summary>
 /// External tools of the Round 3 end-to-end tests, kept in the repository's gitignored .dev/bin (CI downloads them first
-/// with .github/scripts/get-e2e-tools.ps1; on a developer machine this class downloads them on first use):
+/// with .github/scripts/get-e2e-tools.ps1; on a developer machine this class downloads Pebble on first use):
 /// - Pebble (Let's Encrypt's test ACME CA), a pinned release verified against the SHA-256 digest GitHub publishes for the asset;
-/// - a Caddy build of the tested version with github.com/caddy-dns/rfc2136 and github.com/caddy-dns/cloudflare from
-///   caddyserver.com's build server (version pinned with &amp;version=; no checksum exists for custom builds, so the binary
-///   is verified by running `caddy version` and `caddy list-modules`).
+/// - a Caddy build of the tested version with github.com/caddy-dns/rfc2136 and github.com/caddy-dns/cloudflare, compiled by
+///   .github/scripts/get-e2e-tools.ps1 with Go (caddyserver.com's build server cannot pin the version of a custom build);
+///   it is verified by running `caddy version` and `caddy list-modules`.
 /// Set CPM_E2E_NO_DOWNLOAD=1 to never download. Overrides: CPM_TEST_PEBBLE, CPM_TEST_CADDY_DNS, CPM_TEST_CADDY_PLUGINS.
 /// </summary>
 public static class E2ETools
@@ -36,7 +36,6 @@ public static class E2ETools
         }
     }
     private static string? _caddyVersion;
-    public static readonly string[] DnsBuildPackages = ["github.com/caddy-dns/rfc2136", "github.com/caddy-dns/cloudflare"];
 
     private static readonly object Gate = new();
     private static (string? Path, string? Reason)? _pebble;
@@ -72,7 +71,7 @@ public static class E2ETools
     /// <summary>Caddy with caddy-dns/rfc2136 (+ cloudflare), or null with the reason.</summary>
     public static (string? Path, string? Reason) CaddyDns()
     {
-        lock (Gate) return _caddyDns ??= Locate("CPM_TEST_CADDY_DNS", Exe("caddy-rfc2136"), DownloadCaddyDns, verify: p => VerifyCaddy(p, "dns.providers.rfc2136"));
+        lock (Gate) return _caddyDns ??= Locate("CPM_TEST_CADDY_DNS", Exe("caddy-rfc2136"), CaddyDnsNotBuilt, verify: p => VerifyCaddy(p, "dns.providers.rfc2136"));
     }
 
     /// <summary>A Caddy binary with dns.providers.cloudflare: the dev plugins build (.dev/bin/caddy-plugins) or the DNS build.</summary>
@@ -164,15 +163,8 @@ public static class E2ETools
         return null;
     }
 
-    private static string? DownloadCaddyDns(string dest)
-    {
-        using var http = Http();
-        var url = $"https://caddyserver.com/api/download?os={GoOs}&arch={GoArch}&version={CaddyVersion}" + string.Concat(DnsBuildPackages.Select(p => "&p=" + p));
-        var bytes = http.GetByteArrayAsync(url).GetAwaiter().GetResult();
-        if (bytes.Length < 1_000_000) return $"The Caddy build server returned {bytes.Length} bytes for {url}.";
-        WriteExecutable(dest, bytes);
-        return null;
-    }
+    private static string? CaddyDnsNotBuilt(string dest) =>
+        $"{Path.GetFileName(dest)} is not in .dev/bin: run .github/scripts/get-e2e-tools.ps1 (needs Go) to build it.";
 
     private static void WriteExecutable(string dest, byte[] content)
     {
